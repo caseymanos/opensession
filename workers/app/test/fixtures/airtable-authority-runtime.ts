@@ -343,6 +343,45 @@ const fixtureHandler = {
       ]);
       return new Response(null, { status: 204 });
     }
+    if (url.pathname === "/replace-tenant-source") {
+      const body = (await request.json()) as {
+        organizationId: string;
+        preserveReadiness?: boolean;
+        sourceRecordId: string;
+      };
+      const now = new Date().toISOString();
+      const current = await env.DB.prepare(
+        `SELECT authority_ready_at FROM tenant_registry
+         WHERE organization_id = ? AND base_key = ?`,
+      )
+        .bind(body.organizationId, `${env.APP_ENV}:${env.AIRTABLE_BASE_ID}`)
+        .first<{ authority_ready_at: string | null }>();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE tenant_registry
+           SET source_record_id = ?, authority_ready_at = NULL, updated_at = ?
+           WHERE organization_id = ? AND base_key = ?`,
+        ).bind(
+          body.sourceRecordId,
+          now,
+          body.organizationId,
+          `${env.APP_ENV}:${env.AIRTABLE_BASE_ID}`,
+        ),
+        env.DB.prepare(
+          `UPDATE tenant_registry
+           SET authority_roster_version = 1, authority_ready_at = ?,
+               updated_at = ?
+           WHERE organization_id = ? AND base_key = ? AND source_record_id = ?`,
+        ).bind(
+          body.preserveReadiness ? (current?.authority_ready_at ?? null) : null,
+          now,
+          body.organizationId,
+          `${env.APP_ENV}:${env.AIRTABLE_BASE_ID}`,
+          body.sourceRecordId,
+        ),
+      ]);
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === "/fail-room-projection") {
       await env.DB.prepare(
         `CREATE TRIGGER IF NOT EXISTS authority_fixture_fail_room_projection
