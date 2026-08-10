@@ -8,6 +8,7 @@ import type {
 } from "../../src/cfp/submission-authority.js";
 import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
+import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface FixtureEnvironment extends BaseAuthorityEnvironment {
   AIRTABLE_UPSTREAM: Fetcher;
@@ -251,7 +252,7 @@ async function initializeD1(
   );
 }
 
-export default {
+const fixtureHandler = {
   async fetch(request, env, executionContext): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/setup") {
@@ -1013,3 +1014,13 @@ export default {
     return new Response("not found", { status: 404 });
   },
 } satisfies ExportedHandler<FixtureEnvironment>;
+
+export default class FixtureAuthorityRuntime extends WorkerEntrypoint<FixtureEnvironment> {
+  override fetch(request: Request): Promise<Response> {
+    return fixtureHandler.fetch(
+      request as Request<unknown, IncomingRequestCfProperties>,
+      this.env,
+      this.ctx,
+    );
+  }
+}
