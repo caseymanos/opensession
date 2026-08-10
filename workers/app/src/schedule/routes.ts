@@ -1,4 +1,5 @@
 import {
+  scheduleConflictReportSchema,
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
   scheduleSnapshotSchema,
@@ -6,6 +7,10 @@ import {
   ScheduleValidationError,
   ScheduleVersionConflictError,
 } from "@sessionbox-killer/contracts";
+import {
+  evaluateScheduleConflicts,
+  ScheduleHardConflictError,
+} from "@sessionbox-killer/domain";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
@@ -142,6 +147,19 @@ function validationResponse(
 }
 
 function commandFailure(context: Context<AppContext>, error: unknown) {
+  if (error instanceof ScheduleHardConflictError) {
+    return context.json(
+      scheduleCommandResponseSchema.parse({
+        error: {
+          code: error.code,
+          conflicts: error.conflicts,
+          message: error.message,
+        },
+        ok: false,
+      }),
+      409,
+    );
+  }
   if (error instanceof ScheduleValidationError) {
     return validationResponse(
       context,
@@ -244,6 +262,48 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
         ),
     }),
   );
+
+  app.get("/api/events/:eventKey/schedule/conflicts", async (context) => {
+    const eventKey = context.req.param("eventKey");
+    try {
+      const authentication = authService(context);
+      const session = await authentication.authenticate(sessionToken(context));
+      const resolution = await resolveAuthorizedEvent(
+        context,
+        eventKey,
+        session.user,
+        "session:read:any",
+      );
+      if (resolution.kind !== "resolved") {
+        return eventResolutionFailure(context, resolution);
+      }
+      const snapshot = await new D1ScheduleProjectionRepository(
+        context.env.DB,
+      ).read(resolution.eventId);
+      if (!snapshot) {
+        return standardError(
+          context,
+          404,
+          "schedule_not_found",
+          "The requested event schedule does not exist.",
+        );
+      }
+      return context.json(
+        scheduleConflictReportSchema.parse(evaluateScheduleConflicts(snapshot)),
+      );
+    } catch (error) {
+      try {
+        return authFailure(context, error);
+      } catch {
+        return standardError(
+          context,
+          503,
+          "schedule_projection_unavailable",
+          "The event schedule conflict report is temporarily unavailable.",
+        );
+      }
+    }
+  });
 
   app.get("/api/events/:eventKey/schedule", async (context) => {
     const eventKey = context.req.param("eventKey");

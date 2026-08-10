@@ -1,5 +1,6 @@
 import {
   scheduleCommandResultSchema,
+  scheduleSnapshotSchema,
   ScheduleIdempotencyConflictError,
   type ScheduleCommand,
   type ScheduleCommandPort,
@@ -8,7 +9,10 @@ import {
   type ScheduleSlot,
   type ScheduleSnapshot,
 } from "@sessionbox-killer/contracts";
-import { applyScheduleCommand } from "@sessionbox-killer/domain";
+import {
+  applyScheduleCommand,
+  evaluateScheduleConflicts,
+} from "@sessionbox-killer/domain";
 
 import type { BaseAuthority } from "../authority/base-authority.js";
 import {
@@ -109,6 +113,26 @@ function rowsById<T extends EntityPersistenceRow>(
   return new Map(rows.map((row) => [row.id, row]));
 }
 
+function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
+  const current = scheduleCommandResultSchema.safeParse(value);
+  if (current.success) return current.data;
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !("analysis" in value) &&
+    "snapshot" in value
+  ) {
+    const snapshot = scheduleSnapshotSchema.parse(value.snapshot);
+    return scheduleCommandResultSchema.parse({
+      ...value,
+      analysis: evaluateScheduleConflicts(snapshot),
+      snapshot,
+    });
+  }
+  return scheduleCommandResultSchema.parse(value);
+}
+
 export class AirtableScheduleCommandService implements ScheduleCommandPort {
   readonly #actorId: string;
   readonly #authority: Pick<BaseAuthority, "execute">;
@@ -199,7 +223,7 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     receipt: CommandReceiptRow,
     complete: boolean,
   ): Promise<ScheduleCommandResult> {
-    const result = scheduleCommandResultSchema.parse(
+    const result = parseStoredCommandResult(
       JSON.parse(receipt.result_json) as unknown,
     );
     if (complete) return { ...result, replayed: true };
@@ -339,7 +363,7 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
             {
               "End UTC": nextSession.slot.endAt,
               Event: [persistence.event.source_record_id],
-              "Override reason": null,
+              "Override reason": nextSession.slot.overrideReason ?? null,
               "Published version": nextSession.slot.publicationVersion,
               Room: [room.source_record_id],
               Session: [sessionRecord.source_record_id],
@@ -406,6 +430,10 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         safeDiff: {
           command_type: command.type,
           entity_id: entityId,
+          override_reason_provided:
+            (command.type === "place_session" ||
+              command.type === "reschedule_session") &&
+            command.overrideReason !== undefined,
           schedule_version: command.expectedVersion + 1,
         },
       },

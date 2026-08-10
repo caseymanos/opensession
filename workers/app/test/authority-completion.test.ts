@@ -519,6 +519,7 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       durationMinutes: 60,
       eventId: demoEventId,
       expectedVersion: 3,
+      overrideReason: "Speaker readiness exception approved for rehearsal",
       roomId: "room_redwood",
       sessionId: "session_05",
       startAt: "2026-10-14T19:00:00.000Z",
@@ -529,6 +530,18 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       200,
     );
     await expect(placedResponse.json()).resolves.toMatchObject({
+      analysis: {
+        softWarnings: expect.arrayContaining([
+          expect.objectContaining({
+            code: "missing_readiness",
+            override: {
+              allowed: true,
+              reason: "Speaker readiness exception approved for rehearsal",
+              sessionId: "session_05",
+            },
+          }),
+        ]),
+      },
       changedSessionIds: ["session_05"],
       replayed: false,
       snapshot: {
@@ -585,6 +598,8 @@ describe.sequential("RAL-34 completed authority data plane", () => {
         return (
           Array.isArray(sessions) &&
           sessions[0] === "rec_sessions_session_05" &&
+          fields["Override reason"] ===
+            "Speaker readiness exception approved for rehearsal" &&
           fields.Version === 4
         );
       }),

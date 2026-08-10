@@ -38,8 +38,10 @@ interface SessionRow {
   abstract: string | null;
   duration_minutes: number | null;
   ends_at: string | null;
+  expected_attendance: number | null;
   format_id: string | null;
   id: string;
+  override_reason: string | null;
   published_version: number | null;
   room_id: string | null;
   starts_at: string | null;
@@ -52,6 +54,8 @@ interface SessionRow {
 interface ParticipantRow {
   contact_id: string;
   display_name: string;
+  missing_required_task_count: number;
+  readiness_state: "missing_required_tasks" | "not_configured" | "ready";
   role: string;
   session_id: string;
 }
@@ -81,6 +85,7 @@ function slotForSession(row: SessionRow) {
   }
   return {
     endAt: row.ends_at,
+    overrideReason: row.override_reason?.trim() || null,
     publicationVersion: row.published_version,
     roomId: row.room_id,
     startAt: row.starts_at,
@@ -146,7 +151,8 @@ export class D1ScheduleProjectionRepository {
           .prepare(
             `SELECT session.id, session.title, session.abstract, session.status,
                     session.track_id, session.format_id,
-                    session.duration_minutes, slot.room_id,
+                    session.duration_minutes, session.expected_attendance,
+                    slot.room_id, slot.override_reason,
                     slot.starts_at, slot.ends_at, slot.version,
                     slot.published_version
              FROM p_sessions AS session
@@ -166,7 +172,34 @@ export class D1ScheduleProjectionRepository {
         this.#database
           .prepare(
             `SELECT participant.session_id, participant.contact_id,
-                    participant.role, contact.display_name
+                    participant.role, contact.display_name,
+                    CASE
+                      WHEN COUNT(assignment.id) = 0 THEN 'not_configured'
+                      WHEN SUM(
+                        CASE
+                          WHEN assignment.status = 'waived' OR (
+                            assignment.status = 'complete' AND (
+                              definition.approval_required = 0 OR
+                              assignment.approved_at IS NOT NULL
+                            )
+                          ) THEN 0
+                          ELSE 1
+                        END
+                      ) = 0 THEN 'ready'
+                      ELSE 'missing_required_tasks'
+                    END AS readiness_state,
+                    SUM(
+                      CASE
+                        WHEN assignment.id IS NULL OR
+                          assignment.status = 'waived' OR (
+                            assignment.status = 'complete' AND (
+                              definition.approval_required = 0 OR
+                              assignment.approved_at IS NOT NULL
+                            )
+                          ) THEN 0
+                        ELSE 1
+                      END
+                    ) AS missing_required_task_count
              FROM p_session_participants AS participant
              JOIN p_contacts AS contact
                ON contact.organization_id = participant.organization_id
@@ -178,9 +211,27 @@ export class D1ScheduleProjectionRepository {
               AND session.id = participant.session_id
               AND session.status IN ('accepted', 'scheduled', 'published', 'canceled')
               AND session.source_deleted_at IS NULL
+             LEFT JOIN p_task_assignments AS assignment
+               ON assignment.organization_id = participant.organization_id
+              AND assignment.event_id = participant.event_id
+              AND assignment.contact_id = participant.contact_id
+              AND assignment.required = 1
+              AND (
+                assignment.session_id IS NULL OR
+                assignment.session_id = participant.session_id
+              )
+              AND assignment.source_deleted_at IS NULL
+             LEFT JOIN p_task_definitions AS definition
+               ON definition.organization_id = assignment.organization_id
+              AND definition.event_id = assignment.event_id
+              AND definition.id = assignment.definition_id
+              AND definition.source_deleted_at IS NULL
              WHERE participant.organization_id = ? AND participant.event_id = ?
                AND participant.confirmed_state <> 'declined'
                AND participant.source_deleted_at IS NULL
+             GROUP BY participant.id, participant.session_id,
+                      participant.contact_id, participant.role,
+                      participant.sort_order, contact.display_name
              ORDER BY participant.session_id, participant.sort_order,
                       participant.id
              LIMIT 10001`,
@@ -203,7 +254,15 @@ export class D1ScheduleProjectionRepository {
 
     const participantsBySession = new Map<
       string,
-      { displayName: string; personId: string; role: string }[]
+      {
+        displayName: string;
+        personId: string;
+        readiness: {
+          missingRequiredTaskCount: number;
+          state: ParticipantRow["readiness_state"];
+        };
+        role: string;
+      }[]
     >();
     for (const participant of participantRows.results) {
       const participants =
@@ -211,6 +270,10 @@ export class D1ScheduleProjectionRepository {
       participants.push({
         displayName: participant.display_name,
         personId: participant.contact_id,
+        readiness: {
+          missingRequiredTaskCount: participant.missing_required_task_count,
+          state: participant.readiness_state,
+        },
         role: participant.role,
       });
       participantsBySession.set(participant.session_id, participants);
@@ -241,6 +304,7 @@ export class D1ScheduleProjectionRepository {
       sessions: sessionRows.results.map((session) => ({
         abstract: session.abstract ?? "",
         durationMinutes: session.duration_minutes,
+        expectedAttendance: session.expected_attendance,
         formatId: session.format_id,
         id: session.id,
         participants: participantsBySession.get(session.id) ?? [],

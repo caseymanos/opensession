@@ -26,6 +26,12 @@ function commandSuccess() {
   return {
     ok: true,
     result: {
+      analysis: {
+        eventId: command.eventId,
+        hardConflicts: [],
+        policy: { transitionBufferMinutes: 15 },
+        softWarnings: [],
+      },
       changedSessionIds: [command.sessionId],
       commandId: command.commandId,
       replayed: false,
@@ -98,6 +104,48 @@ describe("schedule HTTP command port", () => {
       domainError: {
         actualVersion: command.expectedVersion + 1,
         expectedVersion: command.expectedVersion,
+      },
+      status: 409,
+    });
+  });
+
+  it("preserves structured hard conflicts for direct resolution", async () => {
+    const conflict = {
+      code: "room_overlap",
+      entity: { id: "room_main", name: "Main room", type: "room" },
+      eventId: command.eventId,
+      overlap: {
+        endAt: "2026-09-15T17:30:00.000Z",
+        startAt: "2026-09-15T17:15:00.000Z",
+      },
+      overrideAllowed: false,
+      resolutionHref:
+        "/app/ai-engineering-summit/agenda?session=session_opening&conflict=session_benchmarks",
+      sessionA: { id: "session_opening", title: "Opening" },
+      sessionB: { id: "session_benchmarks", title: "Benchmarks" },
+    } as const;
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      response(
+        {
+          error: {
+            code: "schedule_hard_conflict",
+            conflicts: [conflict],
+            message: "Opening and Benchmarks overlap in Main room.",
+          },
+          ok: false,
+        },
+        409,
+      ),
+    );
+    const port = createScheduleCommandPort(fetcher, () => "e".repeat(40));
+
+    const error = await port.execute(command).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ScheduleApiError);
+    expect(error).toMatchObject({
+      code: "schedule_hard_conflict",
+      domainError: {
+        code: "schedule_hard_conflict",
+        conflicts: [conflict],
       },
       status: 409,
     });

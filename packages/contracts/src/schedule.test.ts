@@ -97,5 +97,42 @@ describe("schedule contracts", () => {
       error: { code: "schedule_version_conflict" },
       ok: false,
     });
+
+    expect(
+      scheduleCommandResponseSchema.parse({
+        error: {
+          code: "schedule_hard_conflict",
+          conflicts: [
+            {
+              code: "room_overlap",
+              entity: { id: "room_main", name: "Main room", type: "room" },
+              eventId: "event_main",
+              overlap: {
+                endAt: "2026-09-15T17:30:00.000Z",
+                startAt: "2026-09-15T17:15:00.000Z",
+              },
+              overrideAllowed: false,
+              resolutionHref:
+                "/app/event-main/agenda?session=session_alpha&conflict=session_beta",
+              sessionA: { id: "session_alpha", title: "Alpha" },
+              sessionB: { id: "session_beta", title: "Beta" },
+            },
+          ],
+          message: "Alpha and Beta overlap in Main room.",
+        },
+        ok: false,
+      }),
+    ).toMatchObject({
+      error: {
+        code: "schedule_hard_conflict",
+        conflicts: [
+          expect.objectContaining({
+            entity: expect.objectContaining({ name: "Main room" }),
+            overrideAllowed: false,
+          }),
+        ],
+      },
+      ok: false,
+    });
   });
 });
