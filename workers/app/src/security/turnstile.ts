@@ -6,9 +6,34 @@ const productionEnvironment = "production";
 
 interface SiteverifyResponse {
   action?: string;
+  errorCode?: SiteverifyErrorCode | "unknown";
   hostname?: string;
   success?: boolean;
 }
+
+const siteverifyErrorCodes = new Set([
+  "bad-request",
+  "internal-error",
+  "invalid-input-response",
+  "invalid-input-secret",
+  "missing-input-response",
+  "missing-input-secret",
+  "timeout-or-duplicate",
+] as const);
+
+type SiteverifyErrorCode =
+  typeof siteverifyErrorCodes extends Set<infer Code> ? Code : never;
+
+export type TurnstileFailureCode =
+  | "input.invalid"
+  | "siteverify.action-mismatch"
+  | "siteverify.hostname-mismatch"
+  | "siteverify.http-error"
+  | "siteverify.invalid-response"
+  | "siteverify.network-error"
+  | "siteverify.rejected"
+  | "siteverify.unknown"
+  | `siteverify.${SiteverifyErrorCode}`;
 
 export interface TurnstileVerification {
   action: TurnstileAction;
@@ -23,10 +48,25 @@ interface TurnstileVerifierOptions {
 }
 
 export class TurnstileVerificationError extends Error {
-  constructor() {
+  readonly failureCode: TurnstileFailureCode;
+
+  constructor(failureCode: TurnstileFailureCode = "input.invalid") {
     super("The security check could not be verified.");
     this.name = "TurnstileVerificationError";
+    this.failureCode = failureCode;
   }
+}
+
+function siteverifyErrorCode(
+  value: unknown,
+): SiteverifyErrorCode | "unknown" | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const known = value.find(
+    (code): code is SiteverifyErrorCode =>
+      typeof code === "string" &&
+      siteverifyErrorCodes.has(code as SiteverifyErrorCode),
+  );
+  return known ?? (value.length > 0 ? "unknown" : undefined);
 }
 
 function parseResponse(value: unknown): SiteverifyResponse | null {
@@ -34,8 +74,10 @@ function parseResponse(value: unknown): SiteverifyResponse | null {
     return null;
   }
   const response = value as Record<string, unknown>;
+  const errorCode = siteverifyErrorCode(response["error-codes"]);
   return {
     ...(typeof response.action === "string" ? { action: response.action } : {}),
+    ...(errorCode ? { errorCode } : {}),
     ...(typeof response.hostname === "string"
       ? { hostname: response.hostname }
       : {}),
@@ -92,7 +134,7 @@ export class TurnstileVerifier {
       (this.#environment === productionEnvironment &&
         (this.#hostnames.has("localhost") || this.#hostnames.has("127.0.0.1")))
     ) {
-      throw new TurnstileVerificationError();
+      throw new TurnstileVerificationError("input.invalid");
     }
 
     const body = new URLSearchParams({
@@ -113,24 +155,31 @@ export class TurnstileVerifier {
         signal: AbortSignal.timeout(10_000),
       });
     } catch {
-      throw new TurnstileVerificationError();
+      throw new TurnstileVerificationError("siteverify.network-error");
     }
 
     let payload: SiteverifyResponse | null;
     try {
       payload = parseResponse(await response.json());
     } catch {
-      throw new TurnstileVerificationError();
+      throw new TurnstileVerificationError("siteverify.invalid-response");
     }
     const hostname = payload?.hostname?.toLowerCase();
-    if (
-      !response.ok ||
-      payload?.success !== true ||
-      payload.action !== expectedAction ||
-      !hostname ||
-      !this.#hostnames.has(hostname)
-    ) {
-      throw new TurnstileVerificationError();
+    if (!response.ok) {
+      throw new TurnstileVerificationError("siteverify.http-error");
+    }
+    if (payload?.success !== true) {
+      throw new TurnstileVerificationError(
+        payload?.errorCode
+          ? `siteverify.${payload.errorCode}`
+          : "siteverify.rejected",
+      );
+    }
+    if (payload.action !== expectedAction) {
+      throw new TurnstileVerificationError("siteverify.action-mismatch");
+    }
+    if (!hostname || !this.#hostnames.has(hostname)) {
+      throw new TurnstileVerificationError("siteverify.hostname-mismatch");
     }
 
     return { action: expectedAction, hostname };

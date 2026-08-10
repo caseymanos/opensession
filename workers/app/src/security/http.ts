@@ -2,8 +2,9 @@ import type { TurnstileAction } from "@sessionbox-killer/contracts";
 import type { Context } from "hono";
 
 import type { AppContext } from "../app-context";
+import { emitOperationalLog } from "../observability";
 import { AbuseProtectionService, type AbuseOperation } from "./abuse";
-import { TurnstileVerifier } from "./turnstile";
+import { TurnstileVerificationError, TurnstileVerifier } from "./turnstile";
 
 export function abuseProtection(context: Context<AppContext>) {
   return new AbuseProtectionService({
@@ -41,9 +42,25 @@ export async function verifyTurnstile(
   if (context.env.APP_ENV === "local" && !context.env.TURNSTILE_SECRET) {
     return;
   }
-  await new TurnstileVerifier({
-    environment: context.env.APP_ENV,
-    hostnames: context.env.TURNSTILE_HOSTNAMES,
-    secret: context.env.TURNSTILE_SECRET,
-  }).verify(token, action, context.req.header("CF-Connecting-IP") ?? null);
+  try {
+    await new TurnstileVerifier({
+      environment: context.env.APP_ENV,
+      hostnames: context.env.TURNSTILE_HOSTNAMES,
+      secret: context.env.TURNSTILE_SECRET,
+    }).verify(token, action, context.req.header("CF-Connecting-IP") ?? null);
+  } catch (error) {
+    if (error instanceof TurnstileVerificationError) {
+      emitOperationalLog("warn", context.env, {
+        error_type: error.failureCode,
+        event: "turnstile.verification.failed",
+        outcome: "client_error",
+        request_id: context.get("requestId"),
+        status: 400,
+        ...(context.env.WORKER_VERSION?.id
+          ? { version_id: context.env.WORKER_VERSION.id }
+          : {}),
+      });
+    }
+    throw error;
+  }
 }
