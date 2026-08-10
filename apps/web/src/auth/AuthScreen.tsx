@@ -4,19 +4,16 @@ import {
   TurnstileWidget,
   type TurnstileWidgetHandle,
 } from "../security/TurnstileWidget";
+import {
+  exchangeMagicLink,
+  requestMagicLink,
+  safeAuthRedirectPath,
+} from "./authClient";
 
 import "./auth-screen.css";
 
 type RequestState = "editing" | "sending" | "sent" | "error";
 type ExchangeState = "checking" | "error";
-
-interface ErrorResponse {
-  error?: { message?: string };
-}
-
-interface ExchangeResponse {
-  redirect_path: string;
-}
 
 function BrandMark() {
   return (
@@ -62,7 +59,7 @@ function AuthFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SignIn() {
+function SignIn({ redirectPath }: { redirectPath: string }) {
   const [email, setEmail] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [state, setState] = useState<RequestState>("editing");
@@ -80,27 +77,13 @@ function SignIn() {
     setState("sending");
 
     try {
-      const response = await fetch("/api/auth/magic-links", {
-        body: JSON.stringify({
-          email,
-          purpose: "sign_in",
-          redirect_path: "/",
-          turnstile_action: "sign_in",
-          turnstile_token: turnstileToken,
-        }),
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
+      await requestMagicLink({
+        email,
+        purpose: "sign_in",
+        redirect_path: redirectPath,
+        turnstile_action: "sign_in",
+        turnstile_token: turnstileToken,
       });
-      if (!response.ok) {
-        const failure = (await response
-          .json()
-          .catch(() => null)) as ErrorResponse | null;
-        throw new Error(
-          failure?.error?.message ??
-            "We couldn’t request a link just now. Please try again.",
-        );
-      }
       setState("sent");
     } catch (error) {
       setErrorMessage(
@@ -213,22 +196,7 @@ function MagicExchange() {
     }
 
     const controller = new AbortController();
-    void fetch("/api/auth/magic-links/exchange", {
-      body: JSON.stringify({ token }),
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const failure = (await response
-            .json()
-            .catch(() => null)) as ErrorResponse | null;
-          throw new Error(failure?.error?.message ?? "exchange_failed");
-        }
-        return response.json() as Promise<ExchangeResponse>;
-      })
+    void exchangeMagicLink(token, window.fetch.bind(window), controller.signal)
       .then(({ redirect_path: redirectPath }) => {
         window.location.replace(redirectPath);
       })
@@ -271,6 +239,9 @@ function MagicExchange() {
 
 export function AuthScreen() {
   const exchanging = window.location.pathname === "/auth/magic";
+  const redirectPath = safeAuthRedirectPath(
+    new URLSearchParams(window.location.search).get("return_to"),
+  );
 
   useEffect(() => {
     document.title = exchanging
@@ -278,5 +249,9 @@ export function AuthScreen() {
       : "Sign in — OpenSession";
   }, [exchanging]);
 
-  return <AuthFrame>{exchanging ? <MagicExchange /> : <SignIn />}</AuthFrame>;
+  return (
+    <AuthFrame>
+      {exchanging ? <MagicExchange /> : <SignIn redirectPath={redirectPath} />}
+    </AuthFrame>
+  );
 }

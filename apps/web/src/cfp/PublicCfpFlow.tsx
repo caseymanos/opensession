@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 
 import {
-  authSessionResponseSchema,
   magicLinkRequestSchema,
   protectedMagicLinkRequestSchema,
   protectedPublicCfpSubmissionRequestSchema,
@@ -46,6 +45,12 @@ import {
   TextAreaField,
   TextField,
 } from "@sessionbox-killer/ui";
+
+import {
+  AuthApiError,
+  readAuthSession,
+  readCsrfToken,
+} from "../auth/authClient";
 
 import {
   TurnstileWidget,
@@ -169,15 +174,6 @@ function metadataFromDraft(draft: PublicCfpOwnedDraft): ServerDraftMetadata {
     sourceVersion: draft.source_version,
     submissionId: draft.submission_id,
   };
-}
-
-function csrfToken() {
-  const prefix = "__Host-opensession-csrf=";
-  const cookie = document.cookie
-    .split(";")
-    .map((value) => value.trim())
-    .find((value) => value.startsWith(prefix));
-  return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
 }
 
 function readStorage(key: string) {
@@ -1679,16 +1675,10 @@ function InteractivePublicCfpFlow({
     void (async () => {
       let sessionEstablished = false;
       try {
-        const response = await fetch("/api/auth/session", {
-          credentials: "same-origin",
-          signal: controller.signal,
-        });
-        if (response.status === 401 || response.status === 403) {
-          setSessionCheckFailed(false);
-          return;
-        }
-        if (!response.ok) throw new Error("session_unavailable");
-        const session = authSessionResponseSchema.parse(await response.json());
+        const session = await readAuthSession(
+          window.fetch.bind(window),
+          controller.signal,
+        );
         sessionEstablished = true;
         setSessionCheckFailed(false);
         setAuthenticatedEmail(session.user.email);
@@ -1927,6 +1917,13 @@ function InteractivePublicCfpFlow({
           setAnnouncement("Email verified. Continue to your proposal.");
         }
       } catch (error) {
+        if (
+          error instanceof AuthApiError &&
+          (error.status === 401 || error.status === 403)
+        ) {
+          setSessionCheckFailed(false);
+          return;
+        }
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           setSessionCheckFailed(!sessionEstablished);
           setOwnershipReady(false);
@@ -2350,7 +2347,7 @@ function InteractivePublicCfpFlow({
     ) {
       return false;
     }
-    const csrf = csrfToken();
+    const csrf = readCsrfToken(document.cookie);
     if (!csrf) {
       setSaveState("failed");
       return false;
@@ -2798,7 +2795,7 @@ function InteractivePublicCfpFlow({
         : { fingerprint: finalFingerprint, key: window.crypto.randomUUID() };
     submissionIdentity.current = identity;
     writeStorage(idempotencyStorageKey, JSON.stringify(identity));
-    const csrf = csrfToken();
+    const csrf = readCsrfToken(document.cookie);
     if (!csrf) {
       setSubmitting(false);
       setSubmitError(

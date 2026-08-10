@@ -1,10 +1,14 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-const portalPath = "/portal/ai-engineer-summit";
-const speakerTaskPath = `${portalPath}/tasks/final-slides`;
+import { mockPortalAuth } from "./portal-auth";
+
+const portalPath = "/fixtures/portal/active";
+const speakerTaskPath = "/fixtures/portal-task/default";
 const organizerTaskPath =
   "/app/ai-engineer-summit/people/mina-okafor/tasks/final-slides";
+
+test.beforeEach(async ({ page }) => mockPortalAuth(page));
 
 test("speaker can reach a complete task brief without exposing event task data in the profile", async ({
   page,
