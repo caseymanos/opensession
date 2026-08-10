@@ -17,12 +17,14 @@
     ]
   },
   "scripts": {
-    "build": "pnpm build:web && pnpm build:worker && pnpm cloudflare:build",
+    "build": "pnpm build:web && pnpm build:worker && pnpm cloudflare:demo:build",
     "build:web": "vite build --config apps/web/vite.config.ts && pnpm check:public-bundle",
     "build:worker": "wrangler deploy --dry-run --env=\"\" --config workers/app/wrangler.jsonc --outdir dist/worker",
     "cloudflare:build": "tsc --project scripts/cloudflare/tsconfig.build.json",
     "cloudflare:deploy:preview": "pnpm build:web && pnpm cloudflare:run deploy --environment preview",
-    "cloudflare:demo:bootstrap": "pnpm --filter @sessionbox-killer/data build && pnpm cloudflare:build && node --env-file-if-exists=.dev.vars .cloudflare/bin/demo-bootstrap.js",
+    "cloudflare:demo:bootstrap": "pnpm cloudflare:demo:build && node --conditions=sessionbox-operator-runtime --env-file-if-exists=.dev.vars .cloudflare/bin/demo-bootstrap.js",
+    "cloudflare:demo:build": "pnpm --filter @sessionbox-killer/domain build && pnpm --filter @sessionbox-killer/data build && pnpm cloudflare:build && pnpm cloudflare:demo:runtime-check",
+    "cloudflare:demo:runtime-check": "node --conditions=sessionbox-operator-runtime -e \"import('./packages/data/dist/airtable/internal.js')\"",
     "cloudflare:plan": "pnpm cloudflare:run plan --environment preview",
     "cloudflare:public-performance:preview": "pnpm cloudflare:build && node .cloudflare/bin/public-performance.js --environment preview",
     "cloudflare:provision:preview": "pnpm cloudflare:run apply --environment preview",
