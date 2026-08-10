@@ -58,6 +58,34 @@ describe("TurnstileVerifier", () => {
     );
   });
 
+  it("invokes the Siteverify fetcher without a verifier receiver", async () => {
+    const receivers: unknown[] = [];
+    const fetcher = vi.fn(function (this: unknown) {
+      receivers.push(this);
+      return Promise.resolve(
+        Response.json({
+          action: "sign_in",
+          hostname: "preview.opensessionboard.com",
+          success: true,
+        }),
+      );
+    }) as unknown as typeof fetch;
+    const service = new TurnstileVerifier({
+      environment: "preview",
+      fetcher,
+      hostnames: "preview.opensessionboard.com",
+      secret: "test-secret",
+    });
+
+    await expect(
+      service.verify("valid-token", "sign_in", null),
+    ).resolves.toEqual({
+      action: "sign_in",
+      hostname: "preview.opensessionboard.com",
+    });
+    expect(receivers).toEqual([undefined]);
+  });
+
   it.each([
     [
       {

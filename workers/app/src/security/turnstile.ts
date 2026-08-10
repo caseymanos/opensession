@@ -115,8 +115,9 @@ export class TurnstileVerifier {
   readonly #secret: string;
 
   constructor(options: TurnstileVerifierOptions) {
+    const fetcher = options.fetcher ?? fetch;
     this.#environment = options.environment;
-    this.#fetcher = options.fetcher ?? fetch;
+    this.#fetcher = (input, init) => fetcher(input, init);
     this.#hostnames = turnstileHostnames(options.hostnames);
     this.#secret = options.secret;
   }
