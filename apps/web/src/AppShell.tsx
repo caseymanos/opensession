@@ -1,3 +1,9 @@
+import {
+  demoEventDateLabel,
+  demoEventName,
+  demoEventSlug,
+  demoResetPhrase,
+} from "@sessionbox-killer/domain";
 import { useCallback, useState, type ReactNode } from "react";
 import {
   CalendarDays,
@@ -18,18 +24,21 @@ import {
   Sparkles,
   Users,
 } from "lucide-react";
+import type { DemoResetResponse } from "@sessionbox-killer/contracts";
 
 import {
-  ConfirmDialog,
+  Button,
+  Dialog,
   Drawer,
   EnvironmentBanner,
   ProductWordmark,
+  TextField,
   ToastRegion,
   type AppEnvironment,
   type ToastMessage,
 } from "@sessionbox-killer/ui";
 
-const eventSlug = "ai-engineer-summit";
+const eventSlug = demoEventSlug;
 
 const navigation = [
   {
@@ -122,8 +131,8 @@ function EventSwitcher() {
     <button className="event-switcher" type="button">
       <span className="event-avatar">AS</span>
       <span>
-        <strong>AI Engineer Summit</strong>
-        <small>August 18–19, 2026</small>
+        <strong>{demoEventName}</strong>
+        <small>{demoEventDateLabel}</small>
       </span>
       <ChevronDown size={16} aria-hidden="true" />
     </button>
@@ -213,17 +222,23 @@ export function AppShell({
   children: ReactNode;
   environment: AppEnvironment | null;
   isDemoEvent: boolean;
-  onResetDemo: () => void;
+  onResetDemo: (confirmation: string) => Promise<DemoResetResponse>;
 }) {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetError, setResetError] = useState<string | undefined>();
+  const [resetPending, setResetPending] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const closeNavigation = useCallback(() => {
     setNavigationOpen(false);
   }, []);
   const closeReset = useCallback(() => {
+    if (resetPending) return;
     setResetOpen(false);
-  }, []);
+    setResetConfirmation("");
+    setResetError(undefined);
+  }, [resetPending]);
 
   function showSearchNotice() {
     setToasts([
@@ -236,17 +251,39 @@ export function AppShell({
     ]);
   }
 
-  function confirmReset() {
-    closeReset();
-    onResetDemo();
-    setToasts([
-      {
-        id: "demo-reset",
-        title: "Demo view reset",
-        message: "The workspace returned to its starting screen.",
-        tone: "success",
-      },
-    ]);
+  async function confirmReset() {
+    if (resetConfirmation !== demoResetPhrase || resetPending) return;
+    setResetPending(true);
+    setResetError(undefined);
+    try {
+      const result = await onResetDemo(resetConfirmation);
+      setResetOpen(false);
+      setResetConfirmation("");
+      setToasts([
+        {
+          id: "demo-reset",
+          title: "Demo data reset",
+          message: `${result.receipt.operation_count} authoritative records restored from ${result.receipt.snapshot_id} · digest ${result.receipt.digest.slice(0, 12)}…`,
+          tone: "success",
+        },
+      ]);
+    } catch (error) {
+      setResetError(
+        error instanceof Error
+          ? error.message
+          : "The demo could not be reset. Try again.",
+      );
+      setToasts([
+        {
+          id: "demo-reset-failed",
+          title: "Demo reset did not finish",
+          message: "Your existing demo data was left in a recoverable state.",
+          tone: "error",
+        },
+      ]);
+    } finally {
+      setResetPending(false);
+    }
   }
 
   return (
@@ -298,6 +335,8 @@ export function AppShell({
               environment={environment}
               isDemoEvent={isDemoEvent}
               onReset={() => {
+                setResetConfirmation("");
+                setResetError(undefined);
                 setResetOpen(true);
               }}
             />
@@ -308,7 +347,7 @@ export function AppShell({
       </div>
 
       <Drawer
-        description="Navigate the AI Engineer Summit workspace."
+        description={`Navigate the ${demoEventName} workspace.`}
         onClose={closeNavigation}
         open={navigationOpen}
         title="Event navigation"
@@ -320,14 +359,40 @@ export function AppShell({
         </div>
       </Drawer>
 
-      <ConfirmDialog
-        confirmLabel="Reset demo view"
-        description="Return this synthetic event workspace to its starting screen? Real event data is never included in this action."
+      <Dialog
+        description="Replace this synthetic event with the compiled starting snapshot. The guard cannot target a real event."
         onClose={closeReset}
-        onConfirm={confirmReset}
         open={resetOpen}
-        title="Reset the demo?"
-      />
+        title="Reset all demo data?"
+      >
+        <TextField
+          autoComplete="off"
+          description={`Type ${demoResetPhrase} to confirm.`}
+          disabled={resetPending}
+          error={resetError}
+          label="Confirmation phrase"
+          onChange={(event) => {
+            setResetConfirmation(event.currentTarget.value);
+            setResetError(undefined);
+          }}
+          value={resetConfirmation}
+        />
+        <div className="ui-confirm-actions">
+          <Button
+            disabled={resetPending}
+            variant="secondary"
+            onClick={closeReset}
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={resetPending || resetConfirmation !== demoResetPhrase}
+            onClick={() => void confirmReset()}
+          >
+            {resetPending ? "Resetting…" : "Reset demo data"}
+          </Button>
+        </div>
+      </Dialog>
 
       <ToastRegion
         messages={toasts}

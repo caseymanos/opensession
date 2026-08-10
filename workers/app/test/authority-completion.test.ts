@@ -82,6 +82,7 @@ function readMigrationStatements(): string[] {
     "0012_cfp_submission_reservations.sql",
     "0013_email_queue_handoff.sql",
     "0014_schedule_domain.sql",
+    "0015_demo_bootstrap_authorization.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -910,12 +911,34 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       requireAuthoritativeDemo: true as const,
       resetRunId,
     };
+    const resetRequest = {
+      actor: {
+        id: actorId,
+        organizationId: demoOrganizationId,
+        permissions: ["organization:manage"] as const,
+      },
+      confirmation: plan.resetPhrase,
+      eventId: demoEventId,
+      organizationId: demoOrganizationId,
+      requestId: resetRunId,
+    };
     const preSnapshotMutations = await providerMutationCount();
     expect((await post("/fail-room-projection")).status).toBe(204);
     const pendingSnapshot = await post("/snapshot", snapshotInput);
     expect(pendingSnapshot.status).toBe(409);
+    const partiallyAppliedEvent = (await (
+      await fixtureFetch(
+        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
+      )
+    ).json()) as { source_version: number };
+    expect(partiallyAppliedEvent.source_version).toBeGreaterThan(
+      preSnapshotEventState.source_version,
+    );
     expect((await post("/allow-room-projection")).status).toBe(204);
-    const snapshot = await post("/snapshot", snapshotInput);
+    const snapshot = await post("/demo-reset", {
+      plan,
+      request: resetRequest,
+    });
     expect(snapshot.status, await snapshot.clone().text()).toBe(200);
     await expect(snapshot.json()).resolves.toMatchObject({
       digest: plan.digest,
@@ -928,7 +951,10 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       preSnapshotMutations + plan.operations.length + 1,
     );
     const mutationCount = await providerMutationCount();
-    const replay = await post("/snapshot", snapshotInput);
+    const replay = await post("/demo-reset", {
+      plan,
+      request: resetRequest,
+    });
     await expect(replay.json()).resolves.toMatchObject({ outcome: "replayed" });
     expect(await providerMutationCount()).toBe(mutationCount);
     const changedPlan: CompiledDemoSeed = {
@@ -942,11 +968,20 @@ describe.sequential("RAL-34 completed authority data plane", () => {
           : operation,
       ),
     };
-    const conflictingReplay = await post("/snapshot", {
-      ...snapshotInput,
+    const conflictingReplay = await post("/demo-reset", {
       plan: changedPlan,
+      request: resetRequest,
     });
     expect(conflictingReplay.status).toBe(409);
+    expect(await providerMutationCount()).toBe(mutationCount);
+    const conflictingActor = await post("/demo-reset", {
+      plan,
+      request: {
+        ...resetRequest,
+        actor: { ...resetRequest.actor, id: "actor_conflicting_replay" },
+      },
+    });
+    expect(conflictingActor.status).toBe(409);
     expect(await providerMutationCount()).toBe(mutationCount);
 
     const assets = await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`);

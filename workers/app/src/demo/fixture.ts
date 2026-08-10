@@ -1,3 +1,12 @@
+import {
+  demoEventId,
+  demoEventRootFields,
+  demoOrganizationId,
+  demoOrganizationRootFields,
+  demoResetPhrase,
+  demoSeedVersion,
+} from "@sessionbox-killer/domain";
+
 import type {
   DemoAirtableTableKey,
   DemoEntityReference,
@@ -6,13 +15,9 @@ import type {
   DemoSeedSource,
 } from "./types";
 
-export const demoOrganizationId = "org_ai_engineer_summit";
-export const demoEventId = "evt_ai_engineer_summit_2026";
-export const demoResetPhrase = "RESET AI ENGINEER SUMMIT 2026";
+export { demoEventId, demoOrganizationId, demoResetPhrase };
 
 const createdAt = "2026-07-01T16:00:00.000Z";
-const eventStart = "2026-10-13T16:00:00.000Z";
-const eventEnd = "2026-10-15T00:00:00.000Z";
 const futureDue = "2026-08-15T23:59:00.000Z";
 const overdueDue = "2026-08-01T23:59:00.000Z";
 
@@ -37,43 +42,10 @@ function json(value: unknown): string {
 }
 
 const organizationAndEvent: DemoSeedEntity[] = [
-  entity("organizations", demoOrganizationId, {
-    "Default timezone": "America/Los_Angeles",
-    Name: "OpenSession Demo Organization",
-    Slug: "opensession-demo",
-  }),
+  entity("organizations", demoOrganizationId, demoOrganizationRootFields),
   entity("events", demoEventId, {
-    "Brand JSON": json({
-      accent: "#cde878",
-      background: "#f5f2ea",
-      ink: "#10201d",
-    }),
-    "CFP closes": "2026-08-22T00:00:00.000Z",
-    "CFP opens": "2026-06-01T16:00:00.000Z",
-    End: eventEnd,
-    "Is demo": true,
-    Name: "AI Engineer Summit 2026",
+    ...demoEventRootFields,
     Organization: links(demoOrganizationId),
-    "Published version": 3,
-    "Schedule days JSON": json([
-      {
-        businessEnd: "17:00",
-        businessStart: "09:00",
-        date: "2026-10-13",
-      },
-      {
-        businessEnd: "17:00",
-        businessStart: "09:00",
-        date: "2026-10-14",
-      },
-    ]),
-    "Schedule snap minutes": 15,
-    "Schedule version": 3,
-    Slug: "ai-engineer-summit",
-    Start: eventStart,
-    Status: "published",
-    Timezone: "America/Los_Angeles",
-    Venue: "Fort Mason Center · San Francisco",
   }),
 ];
 
@@ -892,5 +864,5 @@ export const demoSeedSource: DemoSeedSource = {
   organizationId: demoOrganizationId,
   resetPhrase: demoResetPhrase,
   schemaVersion: 1,
-  seedVersion: 1,
+  seedVersion: demoSeedVersion,
 };

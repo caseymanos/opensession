@@ -11,6 +11,7 @@ import type {
 
 export type DemoResetErrorCode =
   | "authority_unavailable"
+  | "idempotency_conflict"
   | "invalid_audit_context"
   | "invalid_confirmation"
   | "invalid_target"
@@ -216,6 +217,27 @@ export class DemoResetService {
       );
     }
 
+    const existingRun =
+      (await this.#authority.inspectDemoEventReplacement?.(
+        request.organizationId,
+        request.requestId,
+      )) ?? null;
+    if (
+      existingRun &&
+      (existingRun.actorId !== request.actor.id ||
+        existingRun.organizationId !== request.organizationId ||
+        existingRun.eventId !== request.eventId ||
+        existingRun.resetRunId !== request.requestId ||
+        existingRun.snapshotId !== this.#plan.snapshotId ||
+        existingRun.digest !== this.#plan.digest ||
+        existingRun.operationCount !== this.#plan.operations.length)
+    ) {
+      throw new DemoResetError(
+        "idempotency_conflict",
+        "Demo reset idempotency key conflicts with durable state.",
+      );
+    }
+
     const event = await this.#eventReader.read(
       request.organizationId,
       request.eventId,
@@ -230,7 +252,9 @@ export class DemoResetService {
       event.organizationId !== request.organizationId ||
       event.eventId !== request.eventId ||
       !Number.isInteger(event.sourceVersion) ||
-      event.sourceVersion < 0
+      event.sourceVersion < 0 ||
+      (existingRun !== null &&
+        event.sourceVersion < existingRun.expectedSourceVersion)
     ) {
       throw new DemoResetError(
         "invalid_target",
@@ -251,7 +275,8 @@ export class DemoResetService {
 
     const receipt = await this.#authority.replaceDemoEvent({
       actorId: request.actor.id,
-      expectedSourceVersion: event.sourceVersion,
+      expectedSourceVersion:
+        existingRun?.expectedSourceVersion ?? event.sourceVersion,
       operation: "demo.snapshot.replace",
       plan: this.#plan,
       requireActiveOwner: true,

@@ -22,6 +22,7 @@ export {
   AirtableVersionConflictError,
 } from "./errors.js";
 export { runAirtableProbe } from "./probe.js";
+export { runAirtableDemoRootBootstrap } from "./demo-root.js";
 export { AirtableRateLimiter } from "./rate-limiter.js";
 export {
   AIRTABLE_SCHEMA_VERSION,

@@ -10,6 +10,7 @@ import type {
   CompiledDemoSeed,
   DemoSeedAuthorityCapabilities,
   DemoSeedAuthorityReceipt,
+  DemoSnapshotRunInspection,
 } from "../demo/types.js";
 import {
   projectionSpecs,
@@ -26,6 +27,19 @@ import type { AuthorityResponse, BaseAuthorityCommand } from "./types.js";
 interface SnapshotRunRow extends Record<string, SqlStorageValue> {
   receipt_json: string | null;
   request_hash: string;
+  state: string;
+}
+
+interface SnapshotInspectionRow extends Record<string, SqlStorageValue> {
+  actor_id: string;
+  digest: string;
+  event_id: string;
+  expected_source_version: number;
+  operation_count: number;
+  organization_id: string;
+  receipt_available: number;
+  reset_run_id: string;
+  snapshot_id: string;
   state: string;
 }
 
@@ -182,6 +196,44 @@ export class DemoSnapshotAuthority {
       privateAssets: true,
       supportedTables: [...projectionTableOrder],
     };
+  }
+
+  inspect(
+    organizationId: string,
+    resetRunId: string,
+  ): DemoSnapshotRunInspection | null {
+    if (
+      !stableIdPattern.test(organizationId) ||
+      !stableIdPattern.test(resetRunId)
+    ) {
+      throw new Error("Demo snapshot inspection identifiers are invalid.");
+    }
+    const row =
+      this.#storage.sql
+        .exec<SnapshotInspectionRow>(
+          `SELECT organization_id, event_id, reset_run_id, snapshot_id,
+                  digest, actor_id, expected_source_version, operation_count,
+                  state, receipt_json IS NOT NULL AS receipt_available
+           FROM demo_snapshot_runs
+           WHERE organization_id = ? AND reset_run_id = ?`,
+          organizationId,
+          resetRunId,
+        )
+        .toArray()[0] ?? null;
+    return row
+      ? {
+          actorId: row.actor_id,
+          digest: row.digest,
+          eventId: row.event_id,
+          expectedSourceVersion: row.expected_source_version,
+          operationCount: row.operation_count,
+          organizationId: row.organization_id,
+          receiptAvailable: row.receipt_available === 1,
+          resetRunId: row.reset_run_id,
+          snapshotId: row.snapshot_id,
+          state: row.state,
+        }
+      : null;
   }
 
   async replace(
