@@ -254,7 +254,9 @@ export function scheduleSnapshotToAgendaView(
       participants: session.participants.map((participant) => ({
         ...participant,
       })),
-      speakers: session.participants.map(({ displayName }) => displayName),
+      speakers: session.participants
+        .filter(({ role }) => role === "speaker")
+        .map(({ displayName }) => displayName),
       state: session.state,
       title: session.title,
       track: track.name,

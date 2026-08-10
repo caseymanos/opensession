@@ -1,7 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { mockAgendaApi } from "./agenda-api";
+
 const agendaPath = "/app/ai-engineer-summit/agenda";
+
+test.beforeEach(async ({ page }) => {
+  await mockAgendaApi(page);
+});
 
 test("agenda route exposes searchable rail and room grid", async ({ page }) => {
   await page.goto(agendaPath);
@@ -22,7 +28,7 @@ test("agenda route exposes searchable rail and room grid", async ({ page }) => {
   if (await mobileMenu.isVisible()) {
     await page.getByRole("button", { name: "Close Event navigation" }).click();
   }
-  await expect(page.getByText("Speaker conflict")).toBeVisible();
+  await expect(page.getByText("Speaker conflict")).toHaveCount(0);
 
   const results = await new AxeBuilder({ page })
     .include(".agenda-page")
@@ -127,6 +133,7 @@ test("failed placement restores the attempted values and focus", async ({
   await dialog.getByLabel("Room").selectOption("firehouse");
   await dialog.getByRole("button", { name: "Schedule session" }).click();
 
+  await expect(page.locator(".ui-toast")).toContainText("Saving placement");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("alert")).toContainText(
     "Your day, time, room, and duration are preserved",
@@ -176,7 +183,7 @@ test("selected agenda day controls where a placement appears", async ({
 });
 
 test("conflict and publish previews explain blockers", async ({ page }) => {
-  await page.goto(agendaPath);
+  await page.goto("/fixtures/agenda/default");
   await page.getByRole("button", { name: "1 hard conflict" }).click();
   const conflicts = page.getByRole("dialog", { name: "Agenda conflicts" });
   await expect(conflicts).toContainText("Ren Ito is scheduled twice");

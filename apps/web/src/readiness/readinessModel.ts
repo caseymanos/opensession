@@ -1,3 +1,10 @@
+import {
+  scheduleSnapshotSchema,
+  type ScheduleSnapshot,
+} from "@sessionbox-killer/contracts";
+
+import { agendaScheduleSnapshotFixture } from "../agenda/agendaModel";
+
 export interface SpeakerReadinessView {
   company: string;
   completedRequired: number;
@@ -157,9 +164,3 @@ export const speakerReadinessFixture: SpeakerReadinessView[] =
     sessions:
       agendaSpeakerScheduleFacts.sessionTitlesBySpeakerId.get(speaker.id) ?? [],
   }));
-import {
-  scheduleSnapshotSchema,
-  type ScheduleSnapshot,
-} from "@sessionbox-killer/contracts";
-
-import { agendaScheduleSnapshotFixture } from "../agenda/agendaModel";

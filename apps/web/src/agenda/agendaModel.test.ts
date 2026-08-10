@@ -36,6 +36,9 @@ describe("agenda schedule adapter", () => {
     );
     expect(overlap).toHaveLength(2);
     expect(overlap.every(({ status }) => status === undefined)).toBe(true);
+    expect(
+      view.scheduled.find(({ id }) => id === "session_benchmarks")?.speakers,
+    ).toEqual(["Noor Malik"]);
   });
 
   it("converts organizer-local form values to authoritative UTC commands", () => {

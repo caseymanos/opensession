@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 
 import { healthResponseSchema } from "@sessionbox-killer/contracts";
-import type { AppEnvironment } from "@sessionbox-killer/ui";
+import { StatePanel, type AppEnvironment } from "@sessionbox-killer/ui";
 
 import { AppShell } from "./AppShell";
 import { AgendaBuilder, type AgendaFixtureState } from "./agenda/AgendaBuilder";
+import { workspaceEventSlug } from "./agenda/agendaRoute";
+import { AgendaWorkspace } from "./agenda/AgendaWorkspace";
 import { CfpBuilder } from "./cfp/CfpBuilder";
 import { Dashboard } from "./Dashboard";
 import { DecisionWorkspace } from "./decisions/DecisionWorkspace";
@@ -69,6 +71,8 @@ export function WorkspaceApp({
   const isAgendaRoute =
     currentPath.endsWith("/agenda") ||
     currentPath.startsWith("/fixtures/agenda/");
+  const isAgendaFixtureRoute = currentPath.startsWith("/fixtures/agenda/");
+  const agendaEventSlug = workspaceEventSlug(currentPath);
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
@@ -87,7 +91,20 @@ export function WorkspaceApp({
   ) : currentPath.endsWith("/decisions") ? (
     <DecisionWorkspace key={resetVersion} />
   ) : isAgendaRoute ? (
-    <AgendaBuilder fixtureState={agendaFixtureState} key={resetVersion} />
+    isAgendaFixtureRoute ? (
+      <AgendaBuilder fixtureState={agendaFixtureState} key={resetVersion} />
+    ) : agendaEventSlug ? (
+      <AgendaWorkspace
+        eventSlug={agendaEventSlug}
+        key={`${agendaEventSlug}:${resetVersion}`}
+      />
+    ) : (
+      <StatePanel
+        description="Open the agenda from a valid event workspace."
+        state="error"
+        title="Event route not found"
+      />
+    )
   ) : currentPath.endsWith("/people/mina-okafor/tasks/final-slides") ? (
     <OrganizerTaskReviewWorkspace key={resetVersion} />
   ) : isReadinessRoute ? (

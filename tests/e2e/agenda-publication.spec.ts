@@ -1,7 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { mockAgendaApi } from "./agenda-api";
+
 const agendaPath = "/app/ai-engineer-summit/agenda";
+
+test.beforeEach(async ({ page }) => {
+  await mockAgendaApi(page);
+});
 
 test("agenda views and shareable filters stay encoded in the URL", async ({
   page,
@@ -15,7 +21,7 @@ test("agenda views and shareable filters stay encoded in the URL", async ({
   ).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-view="week"]')).toBeVisible();
   await expect(page.locator(".agenda-view-context")).toContainText(
-    "Both event days · Evaluation · Gallery 308",
+    "All event days · Evaluation · Gallery 308",
   );
 
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -53,7 +59,7 @@ test("organizers can move among list, day, week, track, and room views", async (
 test("publish preview blocks an unsafe draft and versions a ready snapshot", async ({
   page,
 }) => {
-  await page.goto(agendaPath);
+  await page.goto("/fixtures/agenda/default");
   await page.getByRole("button", { name: "Preview publish" }).click();
   let publish = page.getByRole("dialog", { name: "Publish agenda preview" });
   await expect(publish).toContainText("3 blocker categories need attention");
@@ -104,7 +110,7 @@ test("published session detail explains impact before rescheduling", async ({
 test("placement edits preserve conflicts and await authoritative revalidation", async ({
   page,
 }) => {
-  await page.goto(agendaPath);
+  await page.goto("/fixtures/agenda/default");
   await page
     .locator(".agenda-scheduled-card")
     .filter({ hasText: "The Agent Runtime Is the Product" })

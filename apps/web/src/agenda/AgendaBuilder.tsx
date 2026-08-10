@@ -24,7 +24,10 @@ import {
   Users,
 } from "lucide-react";
 
-import type { ScheduleCommandPort } from "@sessionbox-killer/contracts";
+import type {
+  ScheduleCommandPort,
+  ScheduleSnapshot,
+} from "@sessionbox-killer/contracts";
 
 import {
   Button,
@@ -40,17 +43,13 @@ import {
 } from "@sessionbox-killer/ui";
 
 import {
-  agendaDays,
   agendaLocalDateTimeToUtc,
-  agendaRooms,
-  agendaScheduleView,
-  agendaTimes,
-  agendaTracks,
-  publishableScheduledSessionFixture,
+  agendaScheduleView as agendaScheduleFixtureView,
+  readyAgendaScheduleView,
   scheduleSnapshotToAgendaView,
-  scheduledSessionFixture,
-  unscheduledSessionFixture,
   type AgendaDay,
+  type AgendaDayView,
+  type AgendaScheduleView,
   type AgendaSessionView,
   type AgendaView,
   type ScheduledSessionView,
@@ -85,13 +84,13 @@ interface AgendaDragTarget {
   slot: number;
 }
 
-function getAgendaUrlState(): AgendaUrlState {
+function getAgendaUrlState(schedule: AgendaScheduleView): AgendaUrlState {
   const params = new URLSearchParams(window.location.search);
   const candidateView = params.get("view");
   const candidateRoom = params.get("room");
   const candidateTrack = params.get("track");
   const candidateDay = params.get("day");
-  const matchedDay = agendaDays.find(
+  const matchedDay = schedule.days.find(
     (day) =>
       day.date === candidateDay ||
       day.fullLabel.toLowerCase().startsWith(candidateDay?.toLowerCase() ?? ""),
@@ -105,24 +104,22 @@ function getAgendaUrlState(): AgendaUrlState {
       : "day";
 
   return {
-    day: matchedDay?.date ?? agendaDays[0]?.date ?? "",
+    day: matchedDay?.date ?? schedule.days[0]?.date ?? "",
     room:
-      candidateRoom && agendaRooms.some((room) => room.id === candidateRoom)
+      candidateRoom && schedule.rooms.some((room) => room.id === candidateRoom)
         ? candidateRoom
         : "all",
     track:
       candidateTrack &&
-      agendaTracks.some((track) => track.name === candidateTrack)
+      schedule.tracks.some((track) => track.name === candidateTrack)
         ? candidateTrack
         : "all",
     view,
   };
 }
 
-function agendaDay(day: AgendaDay) {
-  return (
-    agendaDays.find((candidate) => candidate.date === day) ?? agendaDays[0]
-  );
+function agendaDay(days: readonly AgendaDayView[], day: AgendaDay) {
+  return days.find((candidate) => candidate.date === day) ?? days[0];
 }
 
 function replaceAgendaUrl(patch: Partial<AgendaUrlState>) {
@@ -181,10 +178,12 @@ function UnscheduledCard({
 }
 
 function ScheduledCard({
+  days,
   onSelect,
   saving,
   session,
 }: {
+  days: readonly AgendaDayView[];
   onSelect: () => void;
   saving: boolean;
   session: ScheduledSessionView;
@@ -197,7 +196,7 @@ function ScheduledCard({
       type="button"
     >
       <span>
-        {agendaDay(session.day)?.times[session.slot - 1]} ·{" "}
+        {agendaDay(days, session.day)?.times[session.slot - 1]} ·{" "}
         {session.durationMinutes}m
       </span>
       <strong>{session.title}</strong>
@@ -219,15 +218,28 @@ function ScheduledCard({
 export function AgendaBuilder({
   commandPort,
   fixtureState = "default",
+  initialSnapshot,
 }: {
   commandPort?: Pick<ScheduleCommandPort, "execute"> | undefined;
   fixtureState?: AgendaFixtureState | undefined;
+  initialSnapshot?: ScheduleSnapshot | undefined;
 } = {}) {
-  const initialUrlState = getAgendaUrlState();
   const readyFixture =
     fixtureState === "ready" ||
     fixtureState === "published" ||
     fixtureState === "ready-readonly";
+  const initialScheduleView = useMemo(
+    () =>
+      initialSnapshot
+        ? scheduleSnapshotToAgendaView(initialSnapshot)
+        : readyFixture
+          ? readyAgendaScheduleView
+          : agendaScheduleFixtureView,
+    [initialSnapshot, readyFixture],
+  );
+  const [agendaScheduleView, setAgendaScheduleView] =
+    useState(initialScheduleView);
+  const initialUrlState = getAgendaUrlState(initialScheduleView);
   const emptyFixture = fixtureState === "empty";
   const readOnly = fixtureState === "ready-readonly";
   const placementShouldFail = fixtureState === "placement-failed";
@@ -243,27 +255,46 @@ export function AgendaBuilder({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
-  const [scheduled, setScheduled] = useState(
-    readyFixture ? publishableScheduledSessionFixture : scheduledSessionFixture,
-  );
-  const [placedIds, setPlacedIds] = useState<string[]>(
-    readyFixture ? unscheduledSessionFixture.map((session) => session.id) : [],
+  const [scheduled, setScheduled] = useState(initialScheduleView.scheduled);
+  const [unscheduledSessions, setUnscheduledSessions] = useState(
+    initialScheduleView.unscheduled,
   );
   const [selectedScheduled, setSelectedScheduled] =
     useState<ScheduledSessionView | null>(null);
   const [publishedVersion, setPublishedVersion] = useState(
-    readyFixture ? 3 : 2,
+    initialScheduleView.publicationVersion,
   );
   const [scheduleVersion, setScheduleVersion] = useState(
-    agendaScheduleView.version,
+    initialScheduleView.version,
   );
-  const [published, setPublished] = useState(fixtureState === "published");
+  const [published, setPublished] = useState(
+    fixtureState === "published" ||
+      Boolean(
+        initialSnapshot &&
+        initialScheduleView.publicationVersion > 0 &&
+        initialScheduleView.scheduled.length > 0 &&
+        initialScheduleView.scheduled.every(
+          ({ publicationVersion }) =>
+            publicationVersion === initialScheduleView.publicationVersion,
+        ),
+      ),
+  );
   const [hasUnpublishedChanges, setHasUnpublishedChanges] = useState(false);
   const [savingPlacementIds, setSavingPlacementIds] = useState<string[]>([]);
   const [conflictValidationPending, setConflictValidationPending] =
     useState(false);
-  const [room, setRoom] = useState("gallery");
-  const [start, setStart] = useState("11:30 AM");
+  const [room, setRoom] = useState(
+    initialScheduleView.rooms.find((candidate) => candidate.id === "gallery")
+      ?.id ??
+      initialScheduleView.rooms[0]?.id ??
+      "",
+  );
+  const [start, setStart] = useState(() => {
+    const firstDay = initialScheduleView.days[0];
+    return firstDay?.times.includes("11:30 AM")
+      ? "11:30 AM"
+      : (firstDay?.times[0] ?? "9:00 AM");
+  });
   const [duration, setDuration] = useState("30");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [draggedSession, setDraggedSession] =
@@ -271,7 +302,11 @@ export function AgendaBuilder({
   const [dragTarget, setDragTarget] = useState<AgendaDragTarget | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [placementError, setPlacementError] = useState("");
-  const activeDay = agendaDay(day);
+  const agendaDays = agendaScheduleView.days;
+  const agendaRooms = agendaScheduleView.rooms;
+  const agendaTracks = agendaScheduleView.tracks;
+  const agendaTimes = agendaDays[0]?.times ?? [];
+  const activeDay = agendaDay(agendaDays, day);
   const activeTimes = activeDay?.times ?? agendaTimes;
   const gridStyle = {
     "--agenda-room-count": agendaRooms.length,
@@ -284,14 +319,12 @@ export function AgendaBuilder({
 
   const unscheduled = useMemo(
     () =>
-      unscheduledSessionFixture.filter(
-        (session) =>
-          !placedIds.includes(session.id) &&
-          `${session.title} ${session.speakers.join(" ")} ${session.track}`
-            .toLowerCase()
-            .includes(search.toLowerCase()),
+      unscheduledSessions.filter((session) =>
+        `${session.title} ${session.speakers.join(" ")} ${session.track}`
+          .toLowerCase()
+          .includes(search.toLowerCase()),
       ),
-    [placedIds, search],
+    [search, unscheduledSessions],
   );
   const filteredScheduled = useMemo(
     () =>
@@ -312,8 +345,7 @@ export function AgendaBuilder({
   const hardConflictCount = scheduled.filter(
     (session) => session.status === "conflict",
   ).length;
-  const missingPlacementCount =
-    unscheduledSessionFixture.length - placedIds.length;
+  const missingPlacementCount = unscheduledSessions.length;
   const publishable =
     hardConflictCount === 0 &&
     missingPlacementCount === 0 &&
@@ -387,7 +419,7 @@ export function AgendaBuilder({
     const draggedId = event.dataTransfer.getData("text/plain");
     return (
       draggedSession ??
-      unscheduledSessionFixture.find((session) => session.id === draggedId) ??
+      unscheduledSessions.find((session) => session.id === draggedId) ??
       null
     );
   }
@@ -434,6 +466,12 @@ export function AgendaBuilder({
 
   function openSchedule(session: AgendaSessionView) {
     setSelectedSession(session);
+    if (!agendaRooms.some((candidate) => candidate.id === room)) {
+      setRoom(agendaRooms[0]?.id ?? "");
+    }
+    if (!activeTimes.includes(start)) {
+      setStart(activeTimes[0] ?? "9:00 AM");
+    }
     setDuration(String(session.durationMinutes));
     setPlacementError("");
     setScheduleOpen(true);
@@ -475,7 +513,7 @@ export function AgendaBuilder({
     };
     const existingPlacement = Boolean(previousPlacement);
     const previousScheduled = scheduled;
-    const previousPlacedIds = placedIds;
+    const previousUnscheduled = unscheduledSessions;
     setPlacementError("");
     setScheduled((current) =>
       existingPlacement
@@ -484,10 +522,8 @@ export function AgendaBuilder({
           )
         : [...current, next],
     );
-    setPlacedIds((current) =>
-      current.includes(selectedSession.id)
-        ? current
-        : [...current, selectedSession.id],
+    setUnscheduledSessions((current) =>
+      current.filter((session) => session.id !== selectedSession.id),
     );
     if (published) {
       setHasUnpublishedChanges(true);
@@ -501,10 +537,9 @@ export function AgendaBuilder({
     setScheduleOpen(false);
     setToasts([
       {
-        id: "agenda-saved",
-        title: existingPlacement ? "Placement updated" : "Session scheduled",
-        message: `${selectedSession.title} is placed at ${start} in ${agendaRooms.find((item) => item.id === room)?.name}. Conflict checks are pending.${published ? " Public version remains unchanged until you republish." : ""}`,
-        tone: "success",
+        id: "agenda-saving",
+        title: "Saving placement",
+        message: `${selectedSession.title} is pending authoritative confirmation for ${start} in ${agendaRooms.find((item) => item.id === room)?.name}.`,
       },
     ]);
     try {
@@ -517,6 +552,7 @@ export function AgendaBuilder({
       if (commandPort) {
         const result = await commandPort.execute({
           commandId: crypto.randomUUID(),
+          durationMinutes: Number(duration),
           eventId: agendaScheduleView.eventId,
           expectedVersion: scheduleVersion,
           roomId: room,
@@ -531,28 +567,29 @@ export function AgendaBuilder({
           result.snapshot,
           conflictIds,
         );
+        setAgendaScheduleView(authoritative);
         setScheduled(authoritative.scheduled);
-        setPlacedIds(
-          authoritative.scheduled
-            .filter((session) =>
-              unscheduledSessionFixture.some(
-                (candidate) => candidate.id === session.id,
-              ),
-            )
-            .map((session) => session.id),
-        );
+        setUnscheduledSessions(authoritative.unscheduled);
         setPublishedVersion(authoritative.publicationVersion);
         setScheduleVersion(authoritative.version);
       } else {
         setScheduleVersion((current) => current + 1);
       }
+      setToasts([
+        {
+          id: "agenda-saved",
+          title: existingPlacement ? "Placement updated" : "Session scheduled",
+          message: `${selectedSession.title} is placed at ${start} in ${agendaRooms.find((item) => item.id === room)?.name}. Conflict checks are pending.${published ? " Public version remains unchanged until you republish." : ""}`,
+          tone: "success",
+        },
+      ]);
       setSavingPlacementIds((current) =>
         current.filter((sessionId) => sessionId !== next.id),
       );
       setConflictValidationPending(false);
     } catch {
       setScheduled(previousScheduled);
-      setPlacedIds(previousPlacedIds);
+      setUnscheduledSessions(previousUnscheduled);
       setSavingPlacementIds((current) =>
         current.filter((sessionId) => sessionId !== next.id),
       );
@@ -578,7 +615,7 @@ export function AgendaBuilder({
 
   function changeDay(nextDay: AgendaDay) {
     setDay(nextDay);
-    const nextTimes = agendaDay(nextDay)?.times ?? agendaTimes;
+    const nextTimes = agendaDay(agendaDays, nextDay)?.times ?? agendaTimes;
     if (!nextTimes.includes(start)) {
       setStart(nextTimes[0] ?? "9:00 AM");
     }
@@ -604,7 +641,9 @@ export function AgendaBuilder({
     changeDay(selectedScheduled.day);
     setRoom(selectedScheduled.roomId);
     setStart(
-      agendaDay(selectedScheduled.day)?.times[selectedScheduled.slot - 1] ??
+      agendaDay(agendaDays, selectedScheduled.day)?.times[
+        selectedScheduled.slot - 1
+      ] ??
         agendaTimes[0] ??
         "9:00 AM",
     );
@@ -695,7 +734,7 @@ export function AgendaBuilder({
               ? "Controls are hidden while stakeholders inspect this snapshot."
               : "Organizer edits remain private until every blocker is resolved."}
         </span>
-        <a href="/e/ai-engineer-summit">Open public program</a>
+        <a href={`/e/${agendaScheduleView.slug}`}>Open public program</a>
       </div>
 
       {emptyFixture ? (
@@ -721,7 +760,9 @@ export function AgendaBuilder({
             <AgendaViewSwitcher onChange={changeView} value={view} />
             <AgendaViewContext
               day={day}
+              days={agendaDays}
               room={roomFilter}
+              rooms={agendaRooms}
               track={trackFilter}
               view={view}
             />
@@ -884,8 +925,7 @@ export function AgendaBuilder({
                     <h2 id="agenda-grid-title">Room schedule</h2>
                   </div>
                   <span>
-                    {visibleScheduled.length} placed ·{" "}
-                    {unscheduledSessionFixture.length - placedIds.length}{" "}
+                    {visibleScheduled.length} placed · {missingPlacementCount}{" "}
                     unscheduled
                   </span>
                 </div>
@@ -964,6 +1004,7 @@ export function AgendaBuilder({
                           .filter((session) => session.roomId === agendaRoom.id)
                           .map((session) => (
                             <ScheduledCard
+                              days={agendaDays}
                               key={session.id}
                               onSelect={() => selectScheduled(session)}
                               saving={savingPlacementIds.includes(session.id)}
@@ -996,8 +1037,11 @@ export function AgendaBuilder({
                 </div>
                 <AgendaPresentation
                   day={day}
+                  days={agendaDays}
                   onSelect={selectScheduled}
+                  rooms={agendaRooms}
                   scheduled={filteredScheduled}
+                  tracks={agendaTracks}
                   view={view}
                 />
               </section>
@@ -1173,11 +1217,11 @@ export function AgendaBuilder({
                 <div className="agenda-session-detail-meta">
                   <span>
                     <strong>
-                      {agendaDay(selectedScheduled.day)?.fullLabel}
+                      {agendaDay(agendaDays, selectedScheduled.day)?.fullLabel}
                     </strong>
                     <small>
                       {
-                        agendaDay(selectedScheduled.day)?.times[
+                        agendaDay(agendaDays, selectedScheduled.day)?.times[
                           selectedScheduled.slot - 1
                         ]
                       }{" "}
