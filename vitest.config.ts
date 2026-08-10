@@ -29,7 +29,7 @@ export default defineConfig({
         "workers/app/src/demo/{compiler,reset}.ts",
         "workers/app/src/email/{config,delivery,messages,provider,routes,webhook}.ts",
         "workers/app/src/public-schedule/{cache,projection}.ts",
-        "workers/app/src/schedule/{d1-repository,routes,service}.ts",
+        "workers/app/src/schedule/d1-repository.ts",
         "workers/app/src/uploads/{policy,pptx,routes,service}.ts",
         "workers/app/src/{features,observability}.ts",
       ],
