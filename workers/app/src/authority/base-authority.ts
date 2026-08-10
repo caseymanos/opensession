@@ -78,7 +78,7 @@ interface TenantRoster {
   }[];
 }
 
-const authoritySchemaVersion = 4;
+export const authoritySchemaVersion = 4;
 const productionLeaseDurationMilliseconds = 180_000;
 const productionRecoveryDelayMilliseconds = 5_000;
 

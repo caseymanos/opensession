@@ -6,6 +6,7 @@ import { Hono, type Context } from "hono";
 import { routePath } from "hono/route";
 
 import type { AppContext } from "./app-context";
+import { authoritySchemaVersion } from "./authority/base-authority.js";
 import { registerAuthRoutes } from "./auth/routes";
 import { getBaseAuthority } from "./authority/binding.js";
 import { registerPublicCfpRoutes } from "./cfp/routes";
@@ -150,7 +151,7 @@ app.get("/health/ready", async (context) => {
         "SELECT COUNT(*) AS count FROM tenant_registry",
       ).first(),
     ]);
-    if (authority.schemaVersion !== 3) {
+    if (authority.schemaVersion !== authoritySchemaVersion) {
       throw new Error("Unsupported authority schema version.");
     }
   } catch (error) {
