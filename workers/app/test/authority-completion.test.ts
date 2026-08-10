@@ -139,6 +139,86 @@ async function providerMutationCount(): Promise<number> {
   return ((await response.json()) as { mutationCount: number }).mutationCount;
 }
 
+async function providerReadbackCount(): Promise<number> {
+  const response = await fixtureFetch("/provider-readback-count");
+  return ((await response.json()) as { readbackCount: number }).readbackCount;
+}
+
+async function delayNextProviderReadback(): Promise<void> {
+  const environment = await mockWorker.getEnv();
+  await environment.STATE.getByName("singleton").delayNextReadbackForTest();
+}
+
+async function roomState(
+  organizationId: string,
+  id: string,
+): Promise<{
+  id: string;
+  name: string;
+  source_content_hash: string;
+  source_deleted_at: string | null;
+  source_version: number;
+} | null> {
+  const response = await fixtureFetch(
+    `/room-state?organizationId=${encodeURIComponent(organizationId)}&id=${encodeURIComponent(id)}`,
+  );
+  return (await response.json()) as Awaited<ReturnType<typeof roomState>>;
+}
+
+async function projectedEventState(
+  organizationId: string,
+  id: string,
+): Promise<{
+  id: string;
+  name: string;
+  source_content_hash: string;
+  source_version: number;
+} | null> {
+  const response = await fixtureFetch(
+    `/event-state?organizationId=${encodeURIComponent(organizationId)}&id=${encodeURIComponent(id)}`,
+  );
+  return (await response.json()) as Awaited<
+    ReturnType<typeof projectedEventState>
+  >;
+}
+
+async function replaceTenantSource(options: {
+  organizationId: string;
+  preserveReadiness?: boolean;
+  sourceRecordId: string;
+}): Promise<void> {
+  const response = await post("/replace-tenant-source", options);
+  if (response.status !== 204) {
+    throw new Error("Fixture tenant source replacement failed.");
+  }
+}
+
+async function setRosterCheckpoint(armed: boolean): Promise<void> {
+  const response = await post(
+    armed
+      ? "/arm-webhook-roster-checkpoint"
+      : "/release-webhook-roster-checkpoint",
+  );
+  if (response.status !== 204) {
+    throw new Error("Fixture roster checkpoint update failed.");
+  }
+}
+
+async function rosterCheckpointReached(): Promise<boolean> {
+  const response = await fixtureFetch("/webhook-roster-checkpoint");
+  return ((await response.json()) as { reached?: number }).reached === 1;
+}
+
+async function authorityState(): Promise<{
+  committedCursor: number | null;
+  committedRosterHash: string | null;
+  schemaVersion: number;
+  webhookId: string | null;
+}> {
+  const response = await fixtureFetch("/authority-state");
+  return (await response.json()) as Awaited<ReturnType<typeof authorityState>>;
+}
+
 async function waitFor(
   predicate: () => Promise<boolean>,
   timeoutMilliseconds = 10_000,
@@ -197,6 +277,7 @@ async function fileIdentity(id: string): Promise<{
 async function seedManagedRecord(
   table: AirtableTableKey,
   fields: AirtableFields,
+  recordId?: string,
 ): Promise<void> {
   const sourceVersion = 1;
   const sourceContentHash = await hashAirtableContent(
@@ -209,6 +290,7 @@ async function seedManagedRecord(
       "Applied content hash": sourceContentHash,
       "Source version": sourceVersion,
     },
+    ...(recordId ? { recordId } : {}),
     table,
   });
   expect(response.status).toBe(204);
@@ -255,6 +337,16 @@ beforeAll(async () => {
     });
     expect(seeded.status).toBe(204);
   }
+  await seedManagedRecord(
+    "organizations",
+    {
+      "Default timezone": "UTC",
+      ID: "org_fixture",
+      Name: "Authority fixture organization",
+      Slug: "authority-fixture",
+    },
+    "rec_organizations_org_fixture_wrong",
+  );
 }, 60_000);
 
 afterAll(async () => {
@@ -263,6 +355,58 @@ afterAll(async () => {
 
 describe("RAL-34 completed authority data plane", () => {
   it("reconciles every table, fails closed on lifecycle tampering, ingests webhook cursors, and replaces one exact demo snapshot", async () => {
+    expect(
+      (await post("/reconcile", { organizationId: "org_fixture" })).status,
+    ).toBe(500);
+    await expect(
+      (
+        await fixtureFetch("/tenant-readiness?organizationId=org_fixture")
+      ).json(),
+    ).resolves.toMatchObject({ authority_ready_at: null });
+    expect(
+      (
+        await post("/remove-provider", {
+          id: "org_fixture",
+          table: "organizations",
+        })
+      ).status,
+    ).toBe(204);
+    await seedManagedRecord(
+      "organizations",
+      {
+        "Default timezone": "UTC",
+        ID: "org_fixture",
+        Name: "Authority fixture organization",
+        Slug: "authority-fixture",
+      },
+      "rec_org_fixture",
+    );
+    const readbacksBeforeReplacement = await providerReadbackCount();
+    await delayNextProviderReadback();
+    const replacedDuringScan = post("/reconcile", {
+      organizationId: "org_fixture",
+    });
+    await waitFor(
+      async () => (await providerReadbackCount()) > readbacksBeforeReplacement,
+    );
+    await replaceTenantSource({
+      organizationId: "org_fixture",
+      sourceRecordId: "rec_org_fixture_replacement",
+    });
+    expect((await replacedDuringScan).status).toBe(500);
+    await expect(
+      (
+        await fixtureFetch("/tenant-readiness?organizationId=org_fixture")
+      ).json(),
+    ).resolves.toMatchObject({ authority_ready_at: null });
+    await replaceTenantSource({
+      organizationId: "org_fixture",
+      sourceRecordId: "rec_org_fixture",
+    });
+    expect(
+      (await post("/reconcile", { organizationId: "org_fixture" })).status,
+    ).toBe(200);
+
     const scan = await post("/reconcile", {
       organizationId: demoOrganizationId,
     });
@@ -501,10 +645,9 @@ describe("RAL-34 completed authority data plane", () => {
       projected: 4,
       tables: ["rooms"],
     });
-    const secondRoom = await fixtureFetch(
-      `/room-state?organizationId=${secondOrganizationId}&id=${secondRoomId}`,
-    );
-    await expect(secondRoom.json()).resolves.toMatchObject({
+    await expect(
+      roomState(secondOrganizationId, secondRoomId),
+    ).resolves.toMatchObject({
       id: secondRoomId,
       name: "Second tenant webhook edit",
     });
@@ -548,16 +691,35 @@ describe("RAL-34 completed authority data plane", () => {
       `/access-state?organizationId=${demoOrganizationId}` +
       `&eventId=${demoEventId}&userId=usr_speaker_fixture` +
       "&email=speaker-01%40demo.opensession.invalid";
-    expect((await post("/arm-webhook-roster-checkpoint")).status).toBe(204);
+    await setRosterCheckpoint(true);
+    const sourceChangedRoster = post(
+      `/ingest-webhook?${expandedWebhookOrganizations}`,
+    );
+    await waitFor(rosterCheckpointReached);
+    await replaceTenantSource({
+      organizationId: demoOrganizationId,
+      preserveReadiness: true,
+      sourceRecordId: "rec_demo_organization_replacement",
+    });
+    await setRosterCheckpoint(false);
+    expect((await sourceChangedRoster).status).toBe(500);
+    await expect(authorityState()).resolves.toMatchObject({
+      committedCursor: 2,
+    });
+    await replaceTenantSource({
+      organizationId: demoOrganizationId,
+      preserveReadiness: true,
+      sourceRecordId: `rec_organizations_${demoOrganizationId}`,
+    });
+    expect(
+      (await post(`/ingest-webhook?${expandedWebhookOrganizations}`)).status,
+    ).toBe(200);
+
+    await setRosterCheckpoint(true);
     const invalidatedRoster = post(
       `/ingest-webhook?${expandedWebhookOrganizations}`,
     );
-    await waitFor(async () => {
-      const checkpoint = (await (
-        await fixtureFetch("/webhook-roster-checkpoint")
-      ).json()) as { reached?: number };
-      return checkpoint.reached === 1;
-    });
+    await waitFor(rosterCheckpointReached);
     const accessBeforeReactivation = (await (
       await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
@@ -575,20 +737,16 @@ describe("RAL-34 completed authority data plane", () => {
     expect(accessDuringReactivation.permissions).not.toContain(
       "portal:write:self",
     );
-    expect((await post("/release-webhook-roster-checkpoint")).status).toBe(204);
+    await setRosterCheckpoint(false);
     expect((await invalidatedRoster).status).toBe(500);
-    await expect(
-      (await fixtureFetch("/authority-state")).json(),
-    ).resolves.toMatchObject({ committedCursor: 2 });
+    await expect(authorityState()).resolves.toMatchObject({
+      committedCursor: 2,
+    });
     expect(
       (await post(`/ingest-webhook?${expandedWebhookOrganizations}`)).status,
     ).toBe(200);
     await expect(
-      (
-        await fixtureFetch(
-          `/room-state?organizationId=${lateOrganizationId}&id=${lateRoomId}`,
-        )
-      ).json(),
+      roomState(lateOrganizationId, lateRoomId),
     ).resolves.toMatchObject({ id: lateRoomId, name: "Late tenant room" });
     const accessAfterRosterRepair = (await (
       await fixtureFetch(speakerAccessPath)
@@ -707,11 +865,11 @@ describe("RAL-34 completed authority data plane", () => {
       }),
       snapshotId: `snapshot_${interruptedDigest.slice(0, 24)}`,
     };
-    const evictionEventState = (await (
-      await fixtureFetch(
-        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
-      )
-    ).json()) as { source_version: number };
+    const evictionEventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!evictionEventState) throw new Error("Demo event disappeared.");
     const evictionRunId = "req_demo_snapshot_eviction_recovery";
     const evictionSnapshotInput = {
       ...snapshotInput,
@@ -804,11 +962,11 @@ describe("RAL-34 completed authority data plane", () => {
       (await post("/fail-stale-asset-deletion", { id: staleAssetId })).status,
     ).toBe(204);
     const rollbackRunId = "req_demo_snapshot_rollback";
-    const eventState = (await (
-      await fixtureFetch(
-        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
-      )
-    ).json()) as { source_version: number };
+    const eventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!eventState) throw new Error("Demo event disappeared.");
     const failedSnapshot = await post("/snapshot", {
       ...snapshotInput,
       expectedSourceVersion: eventState.source_version,
@@ -876,11 +1034,11 @@ describe("RAL-34 completed authority data plane", () => {
         })
       ).status,
     ).toBe(200);
-    const deleteControlEventState = (await (
-      await fixtureFetch(
-        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
-      )
-    ).json()) as { source_version: number };
+    const deleteControlEventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!deleteControlEventState) throw new Error("Demo event disappeared.");
     expect(
       (
         await post("/snapshot", {
@@ -896,11 +1054,7 @@ describe("RAL-34 completed authority data plane", () => {
       ),
     ).toBe(false);
     await expect(
-      (
-        await fixtureFetch(
-          `/room-state?organizationId=${demoOrganizationId}&id=${inScopeStaleRoomId}`,
-        )
-      ).json(),
+      roomState(demoOrganizationId, inScopeStaleRoomId),
     ).resolves.toMatchObject({ source_deleted_at: expect.any(String) });
 
     const collisionAsset = plan.assets[0];
@@ -918,11 +1072,11 @@ describe("RAL-34 completed authority data plane", () => {
         })
       ).status,
     ).toBe(204);
-    const collisionEventState = (await (
-      await fixtureFetch(
-        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
-      )
-    ).json()) as { source_version: number };
+    const collisionEventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!collisionEventState) throw new Error("Demo event disappeared.");
     expect(
       (
         await post("/snapshot", {
@@ -952,6 +1106,152 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
 
+    const indirectFormId = "form_scope_moved_before_snapshot";
+    const indirectFieldId = "field_scope_moved_before_snapshot";
+    await seedManagedRecord("forms", {
+      "Edit after close": false,
+      Event: [`rec_events_${demoEventId}`],
+      ID: indirectFormId,
+      Name: "Moved form must protect its fields",
+      Status: "published",
+      Version: 1,
+    });
+    await seedManagedRecord("form_fields", {
+      "Block type": "text",
+      Form: [`rec_forms_${indirectFormId}`],
+      ID: indirectFieldId,
+      Label: "Moved form field",
+      Order: 1,
+      Required: true,
+      "Stable key": "moved_form_field",
+    });
+    expect(
+      (
+        await post("/reconcile", {
+          organizationId: demoOrganizationId,
+          tables: ["forms", "form_fields"],
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post("/mutate-provider", {
+          fields: { Event: [`rec_events_${secondEventId}`] },
+          id: indirectFormId,
+          table: "forms",
+        })
+      ).status,
+    ).toBe(204);
+    const indirectScopeEventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!indirectScopeEventState) throw new Error("Demo event disappeared.");
+    const rejectedIndirectDelete = await post("/snapshot", {
+      ...snapshotInput,
+      expectedSourceVersion: indirectScopeEventState.source_version,
+      resetRunId: "req_demo_snapshot_indirect_scope_guard",
+    });
+    expect(rejectedIndirectDelete.status).toBe(409);
+    expect(
+      (await providerRecords("form_fields")).some(
+        ({ fields }) => fields.ID === indirectFieldId,
+      ),
+    ).toBe(true);
+    expect(
+      (await providerRecords("forms")).find(
+        ({ fields }) => fields.ID === indirectFormId,
+      )?.fields.Event,
+    ).toEqual([`rec_events_${secondEventId}`]);
+    expect(
+      (
+        await post("/remove-provider", {
+          id: indirectFieldId,
+          table: "form_fields",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await post("/remove-provider", {
+          id: indirectFormId,
+          table: "forms",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await post("/reconcile", {
+          organizationId: demoOrganizationId,
+          tables: ["forms", "form_fields"],
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post("/mutate-provider", {
+          fields: { ID: "evt_demo_identity_displaced" },
+          id: demoEventId,
+          table: "events",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await post("/mutate-provider", {
+          fields: {
+            ID: demoEventId,
+            "Is demo": true,
+            Organization: [`rec_organizations_${demoOrganizationId}`],
+            "Source version": indirectScopeEventState.source_version,
+          },
+          id: secondEventId,
+          table: "events",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await post("/snapshot", {
+          ...snapshotInput,
+          expectedSourceVersion: indirectScopeEventState.source_version,
+          resetRunId: "req_demo_snapshot_indirect_scope_guard",
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (await providerRecords("events")).find(
+        ({ id }) => id === `rec_events_${demoEventId}`,
+      )?.fields.ID,
+    ).toBe("evt_demo_identity_displaced");
+    expect(
+      (await providerRecords("events")).find(
+        ({ id }) => id === `rec_events_${secondEventId}`,
+      )?.fields.ID,
+    ).toBe(demoEventId);
+    expect(
+      (
+        await post("/mutate-provider", {
+          fields: { ID: demoEventId },
+          id: demoEventId,
+          table: "events",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await post("/mutate-provider", {
+          fields: {
+            ID: secondEventId,
+            "Is demo": false,
+            Organization: [`rec_organizations_${secondOrganizationId}`],
+            "Source version": 1,
+          },
+          id: secondEventId,
+          table: "events",
+        })
+      ).status,
+    ).toBe(204);
     const movedRoomId = "room_scope_moved_before_snapshot";
     await seedManagedRecord("rooms", {
       Capacity: 40,
@@ -977,11 +1277,11 @@ describe("RAL-34 completed authority data plane", () => {
         })
       ).status,
     ).toBe(204);
-    const scopedDeleteEventState = (await (
-      await fixtureFetch(
-        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
-      )
-    ).json()) as { source_version: number };
+    const scopedDeleteEventState = await projectedEventState(
+      demoOrganizationId,
+      demoEventId,
+    );
+    if (!scopedDeleteEventState) throw new Error("Demo event disappeared.");
     const rejectedScopedDelete = await post("/snapshot", {
       ...snapshotInput,
       expectedSourceVersion: scopedDeleteEventState.source_version,
@@ -1218,16 +1518,11 @@ describe("RAL-34 completed authority data plane", () => {
         })
       ).status,
     ).toBe(204);
-    expect((await post("/arm-webhook-roster-checkpoint")).status).toBe(204);
+    await setRosterCheckpoint(true);
     const multiPageRevocation = post(
       `/ingest-webhook?${expandedWebhookOrganizations}`,
     );
-    await waitFor(async () => {
-      const checkpoint = (await (
-        await fixtureFetch("/webhook-roster-checkpoint")
-      ).json()) as { reached?: number };
-      return checkpoint.reached === 1;
-    });
+    await waitFor(rosterCheckpointReached);
     for (const organizationId of [
       demoOrganizationId,
       secondOrganizationId,
@@ -1247,7 +1542,7 @@ describe("RAL-34 completed authority data plane", () => {
     expect(accessBetweenWebhookPages.permissions).not.toContain(
       "portal:write:self",
     );
-    expect((await post("/release-webhook-roster-checkpoint")).status).toBe(204);
+    await setRosterCheckpoint(false);
     const multiPageRevocationResponse = await multiPageRevocation;
     expect(
       multiPageRevocationResponse.status,
@@ -1316,11 +1611,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(500);
     await expect(
-      (
-        await fixtureFetch(
-          `/room-state?organizationId=${demoOrganizationId}&id=${roomOperation.entityId}`,
-        )
-      ).json(),
+      roomState(demoOrganizationId, roomOperation.entityId),
     ).resolves.toMatchObject({
       source_deleted_at: expect.any(String),
     });
@@ -1417,7 +1708,7 @@ describe("RAL-34 completed authority data plane", () => {
       .evictDurableObject("BASE_AUTHORITY", {
         name: "local:appAuthorityFixture",
       });
-    await fixtureFetch("/authority-state");
+    await authorityState();
     await waitFor(async () => {
       const state = (await (await fixtureFetch(invalidationPath)).json()) as {
         attempt_count: number;

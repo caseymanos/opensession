@@ -75,6 +75,7 @@ interface TenantRoster {
   tenants: readonly {
     authorityRosterVersion: number;
     organizationId: string;
+    sourceRecordId: string;
   }[];
 }
 
@@ -429,6 +430,16 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
           );
         }
         await this.onWebhookRosterVerified();
+        const verifiedRoster =
+          await this.loadCompleteTenantRoster(organizationIds);
+        if (
+          !verifiedRoster.ready ||
+          verifiedRoster.fingerprint !== roster.fingerprint
+        ) {
+          throw new Error(
+            "Active tenant roster changed before webhook full-scan commit.",
+          );
+        }
         this.ctx.storage.sql.exec(
           `UPDATE airtable_cursor_state
            SET committed_roster_hash = ?, full_scan_required = 0,
@@ -497,6 +508,16 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
             );
           }
           await this.onWebhookRosterVerified();
+          const verifiedRoster =
+            await this.loadCompleteTenantRoster(organizationIds);
+          if (
+            (!page.mightHaveMore && !verifiedRoster.ready) ||
+            verifiedRoster.fingerprint !== roster.fingerprint
+          ) {
+            throw new Error(
+              "Active tenant roster changed before webhook cursor commit.",
+            );
+          }
           this.ctx.storage.transactionSync(() => {
             this.ctx.storage.sql.exec(
               `UPDATE airtable_cursor_state
@@ -595,7 +616,9 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     input: Parameters<AirtableReconciliationService["fullScan"]>[0],
   ): Promise<ReconciliationResult> {
     try {
-      return await this.reconciliation.fullScan(input);
+      const result = await this.reconciliation.fullScan(input);
+      await this.schedulePendingRecovery();
+      return result;
     } catch (error) {
       await this.schedulePendingRecovery();
       throw error;
@@ -618,7 +641,8 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     organizationIds: readonly string[],
   ): Promise<TenantRoster> {
     const active = await this.env.DB.prepare(
-      `SELECT organization_id, authority_roster_version, authority_ready_at
+      `SELECT organization_id, source_record_id, authority_roster_version,
+              authority_ready_at
        FROM tenant_registry
        WHERE base_key = ? AND status = 'active'
        ORDER BY organization_id`,
@@ -628,6 +652,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         authority_roster_version: number;
         authority_ready_at: string | null;
         organization_id: string;
+        source_record_id: string;
       }>();
     const expected = [...organizationIds].sort();
     const actual = active.results.map(({ organization_id }) => organization_id);
@@ -641,18 +666,26 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     }
     return {
       fingerprint: await hashAirtableValue(
-        active.results.map(({ authority_roster_version, organization_id }) => ({
-          authorityRosterVersion: authority_roster_version,
-          organizationId: organization_id,
-        })),
+        active.results.map(
+          ({
+            authority_roster_version,
+            organization_id,
+            source_record_id,
+          }) => ({
+            authorityRosterVersion: authority_roster_version,
+            organizationId: organization_id,
+            sourceRecordId: source_record_id,
+          }),
+        ),
       ),
       ready: active.results.every(
         ({ authority_ready_at }) => authority_ready_at !== null,
       ),
       tenants: active.results.map(
-        ({ authority_roster_version, organization_id }) => ({
+        ({ authority_roster_version, organization_id, source_record_id }) => ({
           authorityRosterVersion: authority_roster_version,
           organizationId: organization_id,
+          sourceRecordId: source_record_id,
         }),
       ),
     };
@@ -663,13 +696,20 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
   ): Promise<void> {
     const now = new Date().toISOString();
     const invalidated = await this.env.DB.batch(
-      roster.tenants.map(({ authorityRosterVersion, organizationId }) =>
-        this.env.DB.prepare(
-          `UPDATE tenant_registry
+      roster.tenants.map(
+        ({ authorityRosterVersion, organizationId, sourceRecordId }) =>
+          this.env.DB.prepare(
+            `UPDATE tenant_registry
            SET authority_ready_at = NULL, updated_at = ?
            WHERE organization_id = ? AND base_key = ? AND status = 'active'
-             AND authority_roster_version = ?`,
-        ).bind(now, organizationId, this.baseKey(), authorityRosterVersion),
+             AND source_record_id = ? AND authority_roster_version = ?`,
+          ).bind(
+            now,
+            organizationId,
+            this.baseKey(),
+            sourceRecordId,
+            authorityRosterVersion,
+          ),
       ),
     );
     if (invalidated.some(({ meta }) => meta.changes !== 1)) {
@@ -688,19 +728,21 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
   ): Promise<void> {
     const now = new Date().toISOString();
     const restored = await this.env.DB.batch(
-      roster.tenants.map(({ authorityRosterVersion, organizationId }) =>
-        this.env.DB.prepare(
-          `UPDATE tenant_registry
+      roster.tenants.map(
+        ({ authorityRosterVersion, organizationId, sourceRecordId }) =>
+          this.env.DB.prepare(
+            `UPDATE tenant_registry
            SET authority_ready_at = ?, updated_at = ?
            WHERE organization_id = ? AND base_key = ? AND status = 'active'
-             AND authority_roster_version = ?`,
-        ).bind(
-          now,
-          now,
-          organizationId,
-          this.baseKey(),
-          authorityRosterVersion,
-        ),
+             AND source_record_id = ? AND authority_roster_version = ?`,
+          ).bind(
+            now,
+            now,
+            organizationId,
+            this.baseKey(),
+            sourceRecordId,
+            authorityRosterVersion,
+          ),
       ),
     );
     if (restored.some(({ meta }) => meta.changes !== 1)) {
@@ -1323,6 +1365,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         sourceContentHash: row.source_content_hash,
       });
       await this.projector.markRepairComplete(command, row.request_hash);
+      await this.schedulePendingRecovery();
       this.persistResponse(command, "complete", committedResponse, 200);
       return committedResponse;
     } catch (error) {
