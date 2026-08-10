@@ -10,7 +10,11 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
-import { hasEventPermission, loadEventAccess } from "../auth/authorization";
+import {
+  hasEventPermission,
+  loadEventAccess,
+  type EventPermission,
+} from "../auth/authorization";
 import {
   authFailure,
   authService,
@@ -19,6 +23,7 @@ import {
 } from "../auth/http";
 import { getBaseAuthority } from "../authority/binding.js";
 import { isFeatureEnabled } from "../features";
+import { D1ScheduleProjectionRepository } from "./d1-repository.js";
 import {
   AirtableScheduleCommandService,
   ScheduleNotFoundError,
@@ -26,23 +31,70 @@ import {
 
 const scheduleCommandBodyLimitBytes = 8 * 1024;
 
-async function eventOrganizationId(
+interface EventCandidate {
+  id: string;
+  organization_id: string;
+  slug: string;
+}
+
+type EventResolution =
+  | { kind: "ambiguous" | "forbidden" | "not_found" }
+  | { eventId: string; kind: "resolved" };
+
+async function resolveAuthorizedEvent(
   context: Context<AppContext>,
-  eventId: string,
-): Promise<string | null> {
-  const row = await context.env.DB.prepare(
-    `SELECT event.organization_id
+  eventKey: string,
+  user: { email: string; id: string },
+  permission: EventPermission,
+): Promise<EventResolution> {
+  const candidates = await context.env.DB.prepare(
+    `SELECT event.id, event.organization_id, event.slug
      FROM p_events AS event
      JOIN tenant_registry AS tenant
        ON tenant.organization_id = event.organization_id
       AND tenant.status = 'active'
       AND tenant.authority_ready_at IS NOT NULL
-     WHERE event.id = ?1 AND event.source_deleted_at IS NULL
-     LIMIT 1`,
+     WHERE (event.id = ?1 OR event.slug = ?1)
+       AND event.source_deleted_at IS NULL
+     ORDER BY CASE WHEN event.id = ?1 THEN 0 ELSE 1 END,
+              event.organization_id
+     LIMIT 33`,
   )
-    .bind(eventId)
-    .first<{ organization_id: string }>();
-  return row?.organization_id ?? null;
+    .bind(eventKey)
+    .all<EventCandidate>();
+  if (candidates.results.length === 0) return { kind: "not_found" };
+
+  const permitted: EventCandidate[] = [];
+  for (const candidate of candidates.results) {
+    const access = await loadEventAccess(
+      context.env.DB,
+      user,
+      candidate.organization_id,
+      candidate.id,
+    );
+    if (hasEventPermission(access, permission)) permitted.push(candidate);
+  }
+
+  const exactId = candidates.results.find(({ id }) => id === eventKey);
+  if (exactId) {
+    const resolved = permitted.find(({ id }) => id === exactId.id);
+    return resolved
+      ? {
+          eventId: resolved.id,
+          kind: "resolved",
+        }
+      : { kind: "forbidden" };
+  }
+  if (permitted.length === 0) return { kind: "forbidden" };
+  if (permitted.length !== 1 || candidates.results.length > 32) {
+    return { kind: "ambiguous" };
+  }
+  const [resolved] = permitted;
+  if (!resolved) return { kind: "not_found" };
+  return {
+    eventId: resolved.id,
+    kind: "resolved",
+  };
 }
 
 function standardError(
@@ -146,9 +198,41 @@ function commandFailure(context: Context<AppContext>, error: unknown) {
   }
 }
 
+function eventResolutionFailure(
+  context: Context<AppContext>,
+  resolution: Exclude<EventResolution, { kind: "resolved" }>,
+) {
+  if (resolution.kind === "forbidden") {
+    return standardError(
+      context,
+      403,
+      "forbidden",
+      "You do not have access to this event schedule.",
+    );
+  }
+  if (resolution.kind === "ambiguous") {
+    return context.json(
+      {
+        error: {
+          code: "ambiguous_event_slug",
+          message: "This event slug is ambiguous; use the canonical event ID.",
+        },
+        request_id: context.get("requestId"),
+      },
+      409,
+    );
+  }
+  return standardError(
+    context,
+    404,
+    "schedule_not_found",
+    "The requested event schedule does not exist.",
+  );
+}
+
 export function registerScheduleRoutes(app: Hono<AppContext>): void {
   app.use(
-    "/api/events/:eventId/schedule/commands",
+    "/api/events/:eventKey/schedule/commands",
     bodyLimit({
       maxSize: scheduleCommandBodyLimitBytes,
       onError: (context) =>
@@ -161,40 +245,23 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
     }),
   );
 
-  app.get("/api/events/:eventId/schedule", async (context) => {
-    const eventId = context.req.param("eventId");
+  app.get("/api/events/:eventKey/schedule", async (context) => {
+    const eventKey = context.req.param("eventKey");
     try {
-      const organizationId = await eventOrganizationId(context, eventId);
-      if (!organizationId) {
-        return standardError(
-          context,
-          404,
-          "schedule_not_found",
-          "The requested event schedule does not exist.",
-        );
-      }
       const authentication = authService(context);
       const session = await authentication.authenticate(sessionToken(context));
-      const access = await loadEventAccess(
-        context.env.DB,
+      const resolution = await resolveAuthorizedEvent(
+        context,
+        eventKey,
         session.user,
-        organizationId,
-        eventId,
+        "session:read:any",
       );
-      if (!hasEventPermission(access, "session:read:any")) {
-        return standardError(
-          context,
-          403,
-          "forbidden",
-          "You do not have access to this event schedule.",
-        );
+      if (resolution.kind !== "resolved") {
+        return eventResolutionFailure(context, resolution);
       }
-      const snapshot = await new AirtableScheduleCommandService({
-        actorId: session.user.id,
-        authority: getBaseAuthority(context.env),
-        database: context.env.DB,
-        requestId: context.get("requestId"),
-      }).read(eventId);
+      const snapshot = await new D1ScheduleProjectionRepository(
+        context.env.DB,
+      ).read(resolution.eventId);
       if (!snapshot) {
         return standardError(
           context,
@@ -218,7 +285,7 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
     }
   });
 
-  app.post("/api/events/:eventId/schedule/commands", async (context) => {
+  app.post("/api/events/:eventKey/schedule/commands", async (context) => {
     if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
       return standardError(
         context,
@@ -246,37 +313,30 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
         400,
       );
     }
-    const eventId = context.req.param("eventId");
-    if (input.data.eventId !== eventId) {
-      return validationResponse(
-        context,
-        "eventId",
-        "The schedule command must target the event in the route.",
-        422,
-      );
-    }
+    const eventKey = context.req.param("eventKey");
 
     try {
-      const organizationId = await eventOrganizationId(context, eventId);
-      if (!organizationId) throw new ScheduleNotFoundError(eventId);
       const authentication = authService(context);
       const session = await authentication.authenticate(sessionToken(context));
       await authentication.verifyCsrf(
         session,
         context.req.header("X-CSRF-Token") ?? null,
       );
-      const access = await loadEventAccess(
-        context.env.DB,
+      const resolution = await resolveAuthorizedEvent(
+        context,
+        eventKey,
         session.user,
-        organizationId,
-        eventId,
+        "event:manage",
       );
-      if (!hasEventPermission(access, "event:manage")) {
-        return standardError(
+      if (resolution.kind !== "resolved") {
+        return eventResolutionFailure(context, resolution);
+      }
+      if (input.data.eventId !== resolution.eventId) {
+        return validationResponse(
           context,
-          403,
-          "forbidden",
-          "You do not have permission to change this event schedule.",
+          "eventId",
+          "The schedule command must use the canonical event ID returned by the schedule snapshot.",
+          422,
         );
       }
       const result = await new AirtableScheduleCommandService({

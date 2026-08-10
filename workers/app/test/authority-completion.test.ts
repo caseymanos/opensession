@@ -340,11 +340,87 @@ describe("RAL-34 completed authority data plane", () => {
     );
     expect(deliberateOverlap).toHaveLength(2);
     expect(deliberateOverlap[0]?.slot?.startAt).toBe(
-      "2026-08-18T17:00:00.000Z",
+      "2026-10-13T17:00:00.000Z",
     );
     expect(deliberateOverlap[1]?.slot?.startAt).toBe(
-      "2026-08-18T17:15:00.000Z",
+      "2026-10-13T17:15:00.000Z",
     );
+
+    const placeSessionCommand = {
+      commandId: "cmd_schedule_place_session_05",
+      durationMinutes: 60,
+      eventId: demoEventId,
+      expectedVersion: 3,
+      roomId: "room_redwood",
+      sessionId: "session_05",
+      startAt: "2026-10-14T19:00:00.000Z",
+      type: "place_session",
+    } as const;
+    const placedResponse = await post("/schedule-command", placeSessionCommand);
+    expect(placedResponse.status, await placedResponse.clone().text()).toBe(
+      200,
+    );
+    await expect(placedResponse.json()).resolves.toMatchObject({
+      changedSessionIds: ["session_05"],
+      replayed: false,
+      snapshot: {
+        event: { version: 4 },
+        sessions: expect.arrayContaining([
+          expect.objectContaining({
+            durationMinutes: 60,
+            id: "session_05",
+            slot: expect.objectContaining({
+              endAt: "2026-10-14T20:00:00.000Z",
+              roomId: "room_redwood",
+              startAt: "2026-10-14T19:00:00.000Z",
+              version: 4,
+            }),
+            state: "scheduled",
+          }),
+        ]),
+      },
+    });
+    await expect(
+      (await post("/schedule-command", placeSessionCommand)).json(),
+    ).resolves.toMatchObject({ replayed: true });
+    const persistedSchedule = scheduleSnapshotSchema.parse(
+      await (
+        await server.fetch(`/schedule-state?eventId=${demoEventId}`)
+      ).json(),
+    );
+    expect(persistedSchedule.event.version).toBe(4);
+    expect(
+      persistedSchedule.sessions.find(({ id }) => id === "session_05"),
+    ).toMatchObject({
+      durationMinutes: 60,
+      slot: {
+        endAt: "2026-10-14T20:00:00.000Z",
+        roomId: "room_redwood",
+        startAt: "2026-10-14T19:00:00.000Z",
+        version: 4,
+      },
+      state: "scheduled",
+    });
+    expect(
+      (await providerRecords("events")).find(
+        ({ fields }) => fields.ID === demoEventId,
+      )?.fields["Schedule version"],
+    ).toBe(4);
+    expect(
+      (await providerRecords("sessions")).find(
+        ({ fields }) => fields.ID === "session_05",
+      )?.fields,
+    ).toMatchObject({ "Duration minutes": 60, Status: "scheduled" });
+    expect(
+      (await providerRecords("schedule_slots")).some(({ fields }) => {
+        const sessions = fields.Session;
+        return (
+          Array.isArray(sessions) &&
+          sessions[0] === "rec_sessions_session_05" &&
+          fields.Version === 4
+        );
+      }),
+    ).toBe(true);
 
     const roomOperation = plan.operations.find(
       ({ table }) => table === "rooms",
@@ -658,9 +734,14 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const resetRunId = "req_demo_snapshot_workerd";
+    const preSnapshotEventState = (await (
+      await fixtureFetch(
+        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
+      )
+    ).json()) as { source_version: number };
     const snapshotInput = {
       actorId,
-      expectedSourceVersion: 1,
+      expectedSourceVersion: preSnapshotEventState.source_version,
       operation: "demo.snapshot.replace" as const,
       plan,
       requireActiveOwner: true as const,
@@ -682,7 +763,7 @@ describe("RAL-34 completed authority data plane", () => {
       snapshotId: plan.snapshotId,
     });
     expect(await providerMutationCount()).toBe(
-      preSnapshotMutations + plan.operations.length,
+      preSnapshotMutations + plan.operations.length + 1,
     );
     const mutationCount = await providerMutationCount();
     const replay = await post("/snapshot", snapshotInput);

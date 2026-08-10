@@ -160,6 +160,10 @@ const scheduleCommandBaseSchema = z.object({
 
 export const placeSessionCommandSchema = scheduleCommandBaseSchema
   .extend({
+    durationMinutes: z
+      .int()
+      .positive()
+      .max(24 * 60),
     roomId: scheduleIdentifierSchema,
     sessionId: scheduleIdentifierSchema,
     startAt: utcInstantSchema,
@@ -169,6 +173,10 @@ export const placeSessionCommandSchema = scheduleCommandBaseSchema
 
 export const rescheduleSessionCommandSchema = scheduleCommandBaseSchema
   .extend({
+    durationMinutes: z
+      .int()
+      .positive()
+      .max(24 * 60),
     roomId: scheduleIdentifierSchema,
     sessionId: scheduleIdentifierSchema,
     startAt: utcInstantSchema,

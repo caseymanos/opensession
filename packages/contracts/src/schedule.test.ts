@@ -35,6 +35,7 @@ describe("schedule contracts", () => {
     expect(
       placeSessionCommandSchema.parse({
         commandId: "command_place_session",
+        durationMinutes: 45,
         eventId: scheduleSnapshotFixture.event.eventId,
         expectedVersion: scheduleSnapshotFixture.event.version,
         roomId: "room_firehouse",
@@ -42,13 +43,29 @@ describe("schedule contracts", () => {
         startAt: "2026-09-16T16:00:00.000Z",
         type: "place_session",
       }),
-    ).toMatchObject({ expectedVersion: 7, type: "place_session" });
+    ).toMatchObject({
+      durationMinutes: 45,
+      expectedVersion: 7,
+      type: "place_session",
+    });
   });
 
   it("rejects non-UTC commands and non-IANA schedule configuration", () => {
     expect(() =>
       placeSessionCommandSchema.parse({
+        commandId: "command_missing_duration",
+        eventId: scheduleSnapshotFixture.event.eventId,
+        expectedVersion: 7,
+        roomId: "room_firehouse",
+        sessionId: "session_small_models",
+        startAt: "2026-09-16T16:00:00.000Z",
+        type: "place_session",
+      }),
+    ).toThrow();
+    expect(() =>
+      placeSessionCommandSchema.parse({
         commandId: "command_place_session",
+        durationMinutes: 45,
         eventId: scheduleSnapshotFixture.event.eventId,
         expectedVersion: 7,
         roomId: "room_firehouse",
