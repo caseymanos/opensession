@@ -1293,6 +1293,7 @@ describe("RAL-34 completed authority data plane", () => {
       (
         await post("/set-queue-failure", {
           enabled: true,
+          eventId: demoEventId,
         })
       ).status,
     ).toBe(204);

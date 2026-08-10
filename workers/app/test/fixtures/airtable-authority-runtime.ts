@@ -23,10 +23,14 @@ export class FixtureBaseAuthority extends BaseAuthority {
         metrics: () => queue.metrics(),
         send: async (message, options) => {
           const state = await env.DB.prepare(
-            `SELECT fail_queue FROM authority_fixture_queue_controls
+            `SELECT fail_event_id FROM authority_fixture_queue_controls
              WHERE singleton = 1`,
-          ).first<{ fail_queue: number }>();
-          if (state?.fail_queue === 1) {
+          ).first<{ fail_event_id: string | null }>();
+          if (
+            state?.fail_event_id &&
+            "event_id" in message &&
+            message.event_id === state.fail_event_id
+          ) {
             throw new Error("fixture queue unavailable");
           }
           return queue.send(message, options);
@@ -233,11 +237,11 @@ async function initializeD1(
      ) VALUES (1, 0, 0)`,
       `CREATE TABLE IF NOT EXISTS authority_fixture_queue_controls (
        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-       fail_queue INTEGER NOT NULL CHECK (fail_queue IN (0, 1))
+       fail_event_id TEXT
      ) STRICT`,
       `INSERT OR IGNORE INTO authority_fixture_queue_controls (
-       singleton, fail_queue
-     ) VALUES (1, 0)`,
+       singleton, fail_event_id
+     ) VALUES (1, NULL)`,
       `CREATE TRIGGER IF NOT EXISTS authority_fixture_fail_projection
        BEFORE INSERT ON p_events
        WHEN (SELECT fail_projection FROM authority_fixture_controls WHERE singleton = 1) = 1
@@ -800,12 +804,18 @@ const fixtureHandler = {
       });
     }
     if (url.pathname === "/set-queue-failure") {
-      const body = (await request.json()) as { enabled?: unknown };
+      const body = (await request.json()) as {
+        enabled?: unknown;
+        eventId?: unknown;
+      };
+      if (body.enabled === true && typeof body.eventId !== "string") {
+        return Response.json({ error: "invalid_event" }, { status: 400 });
+      }
       await env.DB.prepare(
-        `UPDATE authority_fixture_queue_controls SET fail_queue = ?
+        `UPDATE authority_fixture_queue_controls SET fail_event_id = ?
          WHERE singleton = 1`,
       )
-        .bind(body.enabled === true ? 1 : 0)
+        .bind(body.enabled === true ? body.eventId : null)
         .run();
       return new Response(null, { status: 204 });
     }
