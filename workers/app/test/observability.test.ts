@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { app } from "../src/index";
+import { authoritySchemaVersion } from "../src/authority/base-authority";
 import {
   durableOperationalEventStatement,
   elapsedMilliseconds,
@@ -23,6 +24,49 @@ function createEnvironment(appEnvironment: Env["APP_ENV"] | "invalid") {
       OBSERVABILITY: { writeDataPoint },
     } as unknown as Env,
     writeDataPoint,
+  };
+}
+
+function createReadinessEnvironment(schemaVersion: number) {
+  const ready = vi.fn().mockResolvedValue({ schemaVersion });
+  const writeDataPoint = vi.fn<AnalyticsEngineDataset["writeDataPoint"]>();
+
+  return {
+    environment: {
+      AIRTABLE_BASE_ID: "app12345678",
+      AIRTABLE_PAT: "configured",
+      APP_ENV: "local",
+      AUTH_HASH_PEPPER: "p".repeat(32),
+      BASE_AUTHORITY: {
+        getByName: vi.fn(() => ({ ready })),
+      },
+      DB: {
+        prepare: vi.fn(() => ({
+          first: vi.fn().mockResolvedValue({ count: 0 }),
+        })),
+      },
+      EMAIL_DELIVERY_CONFIG: {
+        allowlist: [],
+        authFrom: "OpenSession <auth@local.opensession.test>",
+        authReplyTo: "hello@local.opensession.test",
+        mode: "sink",
+      },
+      EMAIL_QUEUE: {},
+      FEATURE_FLAGS: {
+        ai: false,
+        embeds: false,
+        email: false,
+        integrations: false,
+        webhooks: false,
+        writes: true,
+      },
+      INTEGRATION_EXPORT_QUEUE: {},
+      OBSERVABILITY: { writeDataPoint },
+      PROJECTION_REPAIR_QUEUE: {},
+      UPLOADS: {},
+      WEBHOOK_DELIVERY_QUEUE: {},
+    } as unknown as Env,
+    ready,
   };
 }
 
@@ -130,6 +174,25 @@ describe("Worker observability", () => {
       },
       request_id: requestId,
     });
+  });
+
+  it("accepts the current authority schema in readiness", async () => {
+    const { environment, ready } = createReadinessEnvironment(
+      authoritySchemaVersion,
+    );
+    const response = await app.request(
+      "https://local.test/health/ready",
+      undefined,
+      environment,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      environment: "local",
+      service: "sessionbox-killer",
+      status: "ready",
+    });
+    expect(ready).toHaveBeenCalledOnce();
   });
 
   it("fails readiness when the auth pepper is below its runtime minimum", async () => {
