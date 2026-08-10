@@ -91,6 +91,14 @@ const updatedAtTables = new Set<AirtableTableKey>([
   "task_assignments",
 ]);
 
+export function shouldInvalidatePublicSchedule(
+  command: Pick<BaseAuthorityCommand, "operation" | "table">,
+): boolean {
+  return (
+    !command.operation.startsWith("schedule.") || command.table === "events"
+  );
+}
+
 function isoTimestamp(milliseconds = Date.now()): string {
   return new Date(milliseconds).toISOString();
 }
@@ -736,12 +744,14 @@ export class D1AuthorityProjector {
     }
     const eventId =
       command.table === "events" ? command.entityId : command.audit.eventId;
-    const invalidatedEventIds = await this.#affectedScheduleEventIds({
-      entityId: command.entityId,
-      eventId,
-      organizationId: command.organizationId,
-      table: command.table,
-    });
+    const invalidatedEventIds = shouldInvalidatePublicSchedule(command)
+      ? await this.#affectedScheduleEventIds({
+          entityId: command.entityId,
+          eventId,
+          organizationId: command.organizationId,
+          table: command.table,
+        })
+      : [];
     if (existing) {
       const invalidation = this.#cacheInvalidationStatement(
         command.organizationId,

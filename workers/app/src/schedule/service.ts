@@ -1,6 +1,7 @@
 import {
   scheduleCommandResultSchema,
   scheduleSnapshotSchema,
+  ScheduleAuthorityPendingError,
   ScheduleIdempotencyConflictError,
   type ScheduleCommand,
   type ScheduleCommandPort,
@@ -14,18 +15,33 @@ import {
   evaluateScheduleConflicts,
 } from "@sessionbox-killer/domain";
 
-import type { BaseAuthority } from "../authority/base-authority.js";
 import {
+  AuthorityOutcomeUnknownError,
   parseBaseAuthorityCommand,
+  type AuthorityCommandInspection,
+  type AuthorityResponse,
   type BaseAuthorityCommand,
 } from "../authority/types.js";
 import { D1ScheduleProjectionRepository } from "./d1-repository.js";
 
 interface ScheduleServiceOptions {
   actorId: string;
-  authority: Pick<BaseAuthority, "execute">;
+  authority: ScheduleAuthority;
   database: D1Database;
+  onCommitted?: ((result: ScheduleCommandResult) => void) | undefined;
   requestId: string;
+}
+
+interface ScheduleAuthority {
+  execute(value: unknown): Promise<AuthorityResponse>;
+  inspect(
+    organizationId: string,
+    operation: string,
+    commandId: string,
+  ):
+    | AuthorityCommandInspection
+    | null
+    | Promise<AuthorityCommandInspection | null>;
 }
 
 interface EventPersistenceRow {
@@ -53,7 +69,9 @@ interface PersistenceContext {
 }
 
 interface CommandReceiptRow {
+  command_id: string;
   command_hash: string;
+  event_id: string;
   operations_json: string;
   result_json: string;
   state: "applying" | "complete";
@@ -114,6 +132,16 @@ function rowsById<T extends EntityPersistenceRow>(
 }
 
 function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "version" in value &&
+    value.version === 1 &&
+    "result" in value
+  ) {
+    return scheduleCommandResultSchema.parse(value.result);
+  }
   const current = scheduleCommandResultSchema.safeParse(value);
   if (current.success) return current.data;
   if (
@@ -135,8 +163,9 @@ function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
 
 export class AirtableScheduleCommandService implements ScheduleCommandPort {
   readonly #actorId: string;
-  readonly #authority: Pick<BaseAuthority, "execute">;
+  readonly #authority: ScheduleAuthority;
   readonly #database: D1Database;
+  readonly #onCommitted: ((result: ScheduleCommandResult) => void) | undefined;
   readonly #projection: D1ScheduleProjectionRepository;
   readonly #requestId: string;
 
@@ -144,6 +173,7 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     this.#actorId = options.actorId;
     this.#authority = options.authority;
     this.#database = options.database;
+    this.#onCommitted = options.onCommitted;
     this.#projection = new D1ScheduleProjectionRepository(options.database);
     this.#requestId = options.requestId;
   }
@@ -163,6 +193,11 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         throw new ScheduleIdempotencyConflictError(command.commandId);
       }
       return this.#resumeReceipt(existing, existing.state === "complete");
+    }
+
+    const applying = await this.#readApplyingReceipt(command.eventId);
+    if (applying) {
+      await this.#resumeReceipt(applying, false);
     }
 
     const snapshot = await this.read(command.eventId);
@@ -191,7 +226,7 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         command.commandId,
         commandHash,
         JSON.stringify(operations),
-        JSON.stringify(result),
+        JSON.stringify({ previousSnapshot: snapshot, result, version: 1 }),
         now,
       )
       .run();
@@ -211,12 +246,34 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
   ): Promise<CommandReceiptRow | null> {
     return this.#database
       .prepare(
-        `SELECT command_hash, state, operations_json, result_json
+        `SELECT event_id, command_id, command_hash, state,
+                operations_json, result_json
          FROM schedule_command_receipts
          WHERE event_id = ?1 AND command_id = ?2`,
       )
       .bind(eventId, commandId)
       .first<CommandReceiptRow>();
+  }
+
+  async #readApplyingReceipt(
+    eventId: string,
+  ): Promise<CommandReceiptRow | null> {
+    return this.#database
+      .prepare(
+        `SELECT event_id, command_id, command_hash, state,
+                operations_json, result_json
+         FROM schedule_command_receipts
+         WHERE event_id = ?1 AND state = 'applying'
+         ORDER BY created_at, command_id
+         LIMIT 1`,
+      )
+      .bind(eventId)
+      .first<CommandReceiptRow>();
+  }
+
+  async resumePending(eventId: string): Promise<ScheduleCommandResult | null> {
+    const receipt = await this.#readApplyingReceipt(eventId);
+    return receipt ? this.#resumeReceipt(receipt, false) : null;
   }
 
   async #resumeReceipt(
@@ -247,17 +304,58 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     replayed: boolean,
   ): Promise<ScheduleCommandResult> {
     for (const operation of operations) {
-      await this.#authority.execute(operation);
+      await this.#executeOperation(operation, result.commandId);
     }
     await this.#database
       .prepare(
         `UPDATE schedule_command_receipts
-         SET state = 'complete', updated_at = ?3
+         SET state = 'complete', result_json = ?4, updated_at = ?3
          WHERE event_id = ?1 AND command_id = ?2`,
       )
-      .bind(eventId, commandId, new Date().toISOString())
+      .bind(
+        eventId,
+        commandId,
+        new Date().toISOString(),
+        JSON.stringify(result),
+      )
       .run();
-    return { ...result, replayed };
+    const committed = { ...result, replayed };
+    this.#onCommitted?.(committed);
+    return committed;
+  }
+
+  async #executeOperation(
+    operation: BaseAuthorityCommand,
+    scheduleCommandId: string,
+  ): Promise<void> {
+    let response: AuthorityResponse;
+    try {
+      response = await this.#authority.execute(operation);
+    } catch (error) {
+      if (
+        error instanceof AuthorityOutcomeUnknownError ||
+        (error instanceof Error &&
+          error.name === "AuthorityOutcomeUnknownError")
+      ) {
+        throw new ScheduleAuthorityPendingError(
+          scheduleCommandId,
+          "outcome_unknown",
+        );
+      }
+      throw error;
+    }
+    if (response.projection === "durable") return;
+    const inspection = await this.#authority.inspect(
+      operation.organizationId,
+      operation.operation,
+      operation.commandId,
+    );
+    if (inspection?.state !== "complete") {
+      throw new ScheduleAuthorityPendingError(
+        scheduleCommandId,
+        "projection_pending",
+      );
+    }
   }
 
   async #loadPersistenceContext(eventId: string): Promise<PersistenceContext> {

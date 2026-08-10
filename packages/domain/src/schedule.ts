@@ -236,6 +236,32 @@ export class ScheduleIdempotencyConflictError extends Error {
   }
 }
 
+export const scheduleAuthorityPendingStates = [
+  "outcome_unknown",
+  "projection_pending",
+] as const;
+
+export type ScheduleAuthorityPendingState =
+  (typeof scheduleAuthorityPendingStates)[number];
+
+export class ScheduleAuthorityPendingError extends Error {
+  readonly code = "schedule_authority_pending";
+  readonly commandId: string;
+  readonly retryable = true;
+  readonly state: ScheduleAuthorityPendingState;
+
+  constructor(commandId: string, state: ScheduleAuthorityPendingState) {
+    super(
+      state === "projection_pending"
+        ? `Schedule command ${commandId} reached Airtable and is waiting for projection repair.`
+        : `Schedule command ${commandId} has an unresolved Airtable outcome.`,
+    );
+    this.name = "ScheduleAuthorityPendingError";
+    this.commandId = commandId;
+    this.state = state;
+  }
+}
+
 const stableIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 const localDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 const localTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;

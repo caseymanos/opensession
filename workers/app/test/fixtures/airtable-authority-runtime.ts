@@ -2,7 +2,12 @@ import { BaseAuthority } from "../../src/authority/base-authority.js";
 import { loadEventAccess } from "../../src/auth/authorization.js";
 import type { BaseAuthorityEnvironment } from "../../src/authority/provider.js";
 import { SnapshotAssetCommitInterruptionError } from "../../src/authority/snapshot.js";
-import { scheduleCommandSchema } from "@sessionbox-killer/contracts";
+import {
+  scheduleCommandSchema,
+  scheduleSnapshotSchema,
+  type ScheduleCommandResult,
+} from "@sessionbox-killer/contracts";
+import { evaluateScheduleConflicts } from "@sessionbox-killer/domain";
 import type {
   CfpSubmissionPlanInput,
   CfpSubmissionPlanItem,
@@ -10,6 +15,10 @@ import type {
 import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
 import { D1ScheduleProjectionRepository } from "../../src/schedule/d1-repository.js";
+import {
+  AgendaCoordinator,
+  type AgendaCoordinatorCommand,
+} from "../../src/schedule/coordinator.js";
 import { AirtableScheduleCommandService } from "../../src/schedule/service.js";
 import {
   D1DemoEventGuardReader,
@@ -22,9 +31,13 @@ import type {
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface FixtureEnvironment extends BaseAuthorityEnvironment {
+  AGENDA_COORDINATOR: DurableObjectNamespace<AgendaCoordinator>;
   AIRTABLE_UPSTREAM: Fetcher;
   BASE_AUTHORITY: DurableObjectNamespace<FixtureBaseAuthority>;
+  FIXTURE_AGENDA_COORDINATOR: DurableObjectNamespace<FixtureAgendaCoordinator>;
 }
+
+export { AgendaCoordinator };
 
 export class FixtureBaseAuthority extends BaseAuthority {
   constructor(ctx: DurableObjectState, env: FixtureEnvironment) {
@@ -186,6 +199,60 @@ export class FixtureBaseAuthority extends BaseAuthority {
   }
 }
 
+export class FixtureAgendaCoordinator extends AgendaCoordinator {
+  protected override async executeSerialized(
+    input: AgendaCoordinatorCommand,
+  ): Promise<ScheduleCommandResult> {
+    const inserted = await this.env.DB.prepare(
+      `INSERT INTO agenda_fixture_invocations (
+         event_id, command_id, started_at, completed_at
+       ) VALUES (?, ?, ?, NULL) RETURNING id`,
+    )
+      .bind(
+        input.command.eventId,
+        input.command.commandId,
+        new Date().toISOString(),
+      )
+      .first<{ id: number }>();
+    if (!inserted) throw new Error("Fixture invocation was not recorded.");
+
+    while (true) {
+      const control = await this.env.DB.prepare(
+        `SELECT blocked FROM agenda_fixture_controls WHERE event_id = ?`,
+      )
+        .bind(input.command.eventId)
+        .first<{ blocked: number }>();
+      if (control?.blocked !== 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const source = await this.env.DB.prepare(
+      `SELECT id FROM p_events WHERE source_deleted_at IS NULL ORDER BY id LIMIT 1`,
+    ).first<{ id: string }>();
+    if (!source) throw new Error("Fixture schedule source is missing.");
+    const current = await new D1ScheduleProjectionRepository(this.env.DB).read(
+      source.id,
+    );
+    if (!current) throw new Error("Fixture schedule projection is missing.");
+    const snapshot = scheduleSnapshotSchema.parse({
+      ...current,
+      event: { ...current.event, eventId: input.command.eventId },
+    });
+    await this.env.DB.prepare(
+      `UPDATE agenda_fixture_invocations SET completed_at = ? WHERE id = ?`,
+    )
+      .bind(new Date().toISOString(), inserted.id)
+      .run();
+    return {
+      analysis: evaluateScheduleConflicts(snapshot),
+      changedSessionIds: [],
+      commandId: input.command.commandId,
+      replayed: false,
+      snapshot,
+    };
+  }
+}
+
 function authority(env: FixtureEnvironment) {
   return env.BASE_AUTHORITY.getByName(`${env.APP_ENV}:${env.AIRTABLE_BASE_ID}`);
 }
@@ -253,6 +320,17 @@ async function initializeD1(
       `INSERT OR IGNORE INTO authority_fixture_queue_controls (
        singleton, fail_event_id
      ) VALUES (1, NULL)`,
+      `CREATE TABLE IF NOT EXISTS agenda_fixture_controls (
+       event_id TEXT PRIMARY KEY,
+       blocked INTEGER NOT NULL CHECK (blocked IN (0, 1))
+     ) STRICT`,
+      `CREATE TABLE IF NOT EXISTS agenda_fixture_invocations (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       event_id TEXT NOT NULL,
+       command_id TEXT NOT NULL UNIQUE,
+       started_at TEXT NOT NULL,
+       completed_at TEXT
+     ) STRICT`,
       `CREATE TRIGGER IF NOT EXISTS authority_fixture_fail_projection
        BEFORE INSERT ON p_events
        WHEN (SELECT fail_projection FROM authority_fixture_controls WHERE singleton = 1) = 1
@@ -270,6 +348,30 @@ async function initializeD1(
 const fixtureHandler = {
   async fetch(request, env, executionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/agenda-command") {
+      const body = (await request.json()) as {
+        command?: { eventId?: unknown };
+      };
+      if (typeof body.command?.eventId !== "string") {
+        return Response.json({ error: "invalid_event" }, { status: 400 });
+      }
+      return Response.json(
+        await env.AGENDA_COORDINATOR.getByName(body.command.eventId).execute(
+          body,
+        ),
+      );
+    }
+    if (url.pathname === "/agenda-stream") {
+      const eventId = url.searchParams.get("eventId");
+      if (!eventId) {
+        return Response.json({ error: "invalid_event" }, { status: 400 });
+      }
+      const target = new URL("https://agenda-coordinator.invalid/stream");
+      target.searchParams.set("eventId", eventId);
+      return env.AGENDA_COORDINATOR.getByName(eventId).fetch(
+        new Request(target, { headers: request.headers }),
+      );
+    }
     if (url.pathname === "/setup") {
       const body = (await request.json()) as { statements?: unknown };
       if (
@@ -453,6 +555,12 @@ const fixtureHandler = {
     if (url.pathname === "/ambiguous-delayed-next") {
       return env.AIRTABLE_UPSTREAM.fetch(
         "https://airtable.test/test/ambiguous-delayed-next",
+        { method: "POST" },
+      );
+    }
+    if (url.pathname === "/ambiguous-hidden-next") {
+      return env.AIRTABLE_UPSTREAM.fetch(
+        "https://airtable.test/test/ambiguous-hidden-next",
         { method: "POST" },
       );
     }

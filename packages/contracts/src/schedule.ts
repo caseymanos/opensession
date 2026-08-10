@@ -3,6 +3,7 @@ import {
   isIanaTimezone,
   participantConflictRoles,
   participantReadinessStates,
+  scheduleAuthorityPendingStates,
   scheduleHardConflictCodes,
   scheduleValidationReasons,
   sessionLifecycleStates,
@@ -32,6 +33,7 @@ import {
   type UnassignSessionCommand,
 } from "@sessionbox-killer/domain";
 export {
+  ScheduleAuthorityPendingError,
   ScheduleHardConflictError,
   ScheduleIdempotencyConflictError,
   ScheduleValidationError,
@@ -50,6 +52,26 @@ const utcInstantSchema = z.iso
   .refine((value) => value.endsWith("Z"), {
     message: "Timestamp must use UTC (Z).",
   });
+
+const scheduleEntityTagPattern = /^"schedule-v(0|[1-9]\d*)"$/;
+
+export function scheduleEntityTag(version: number): string {
+  if (!Number.isSafeInteger(version) || version < 0) {
+    throw new RangeError(
+      "Schedule version must be a non-negative safe integer.",
+    );
+  }
+  return `"schedule-v${version}"`;
+}
+
+export function scheduleVersionFromEntityTag(
+  value: string | null,
+): number | null {
+  const match = value?.trim().match(scheduleEntityTagPattern);
+  if (!match) return null;
+  const version = Number(match[1]);
+  return Number.isSafeInteger(version) ? version : null;
+}
 
 export const participantConflictRoleSchema = z.enum(participantConflictRoles);
 export const participantReadinessStateSchema = z.enum(
@@ -273,6 +295,16 @@ export const scheduleIdempotencyConflictErrorSchema = z
   })
   .strict();
 
+export const scheduleAuthorityPendingErrorSchema = z
+  .object({
+    code: z.literal("schedule_authority_pending"),
+    commandId: scheduleIdentifierSchema,
+    message: z.string().min(1).max(1_000),
+    retryable: z.literal(true),
+    state: z.enum(scheduleAuthorityPendingStates),
+  })
+  .strict();
+
 export const scheduleConflictEntitySchema = z
   .object({
     id: scheduleIdentifierSchema,
@@ -409,7 +441,19 @@ export const scheduleCommandErrorSchema = z.discriminatedUnion("code", [
   scheduleVersionConflictErrorSchema,
   scheduleIdempotencyConflictErrorSchema,
   scheduleHardConflictErrorSchema,
+  scheduleAuthorityPendingErrorSchema,
 ]);
+
+export const scheduleCommittedEventSchema = z
+  .object({
+    commandId: scheduleIdentifierSchema,
+    eventId: scheduleIdentifierSchema,
+    kind: z.literal("schedule.committed"),
+    publicationVersion: z.int().nonnegative(),
+    scheduleVersion: z.int().positive(),
+    version: z.literal(1),
+  })
+  .strict();
 
 export const scheduleCommandResultSchema = z
   .object({
@@ -431,6 +475,9 @@ export const scheduleCommandResponseSchema = z.discriminatedUnion("ok", [
 ]);
 
 export type ScheduleCommandError = z.infer<typeof scheduleCommandErrorSchema>;
+export type ScheduleCommittedEvent = z.infer<
+  typeof scheduleCommittedEventSchema
+>;
 export type ScheduleCommandResponse = z.infer<
   typeof scheduleCommandResponseSchema
 >;
