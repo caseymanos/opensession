@@ -38,6 +38,7 @@
     "format:check": "prettier . --check",
     "lint": "eslint . --max-warnings 0",
     "preview": "pnpm build:web && wrangler dev --env=\"\" --config workers/app/wrangler.jsonc --local --port 8787",
+    "preview:e2e": "pnpm build:web && node scripts/start-e2e-worker.mjs",
     "sbek": "node scripts/sbek.mjs",
     "sbek:prepare": "node scripts/sbek.mjs prepare",
     "sbek:verify": "node scripts/sbek.mjs verify",

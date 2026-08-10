@@ -17,6 +17,7 @@ import {
   demoSeedSource,
 } from "../src/demo/fixture";
 import type { CompiledDemoSeed } from "../src/demo/types";
+import type FixtureAuthorityRuntime from "./fixtures/airtable-authority-runtime";
 import type { FixtureBaseAuthority } from "./fixtures/airtable-authority-runtime";
 import type { FixtureAirtableState } from "./fixtures/airtable-authority-mock";
 
@@ -32,12 +33,35 @@ const server = createTestHarness({
     },
   ],
 });
-const runtimeWorker = server.getWorker<{
-  BASE_AUTHORITY: DurableObjectNamespace<FixtureBaseAuthority>;
-}>("opensession-airtable-authority-completion-runtime");
+const runtimeWorker = server.getWorker<
+  {
+    BASE_AUTHORITY: DurableObjectNamespace<FixtureBaseAuthority>;
+  },
+  { default: typeof FixtureAuthorityRuntime }
+>("opensession-airtable-authority-completion-runtime");
 const mockWorker = server.getWorker<{
   STATE: DurableObjectNamespace<FixtureAirtableState>;
 }>("opensession-airtable-authority-completion-mock");
+let runtimeFixture: Awaited<ReturnType<typeof runtimeWorker.getExport>>;
+
+async function fixtureFetch(
+  path: string,
+  init: {
+    body?: string;
+    headers?: Record<string, string>;
+    method?: string;
+  } = {},
+): Promise<Response> {
+  const response = await runtimeFixture.fetch(
+    new URL(path, "http://fixture.invalid").toString(),
+    init,
+  );
+  const body = await response.arrayBuffer();
+  return new Response(body.byteLength === 0 ? null : body, {
+    headers: response.headers,
+    status: response.status,
+  });
+}
 
 function readMigrationStatements(): string[] {
   const statements: string[] = [];
@@ -87,7 +111,7 @@ async function post(path: string, body?: unknown) {
       await environment.STATE.getByName("singleton").mutateForTest(body);
     return new Response(null, { status: mutated ? 204 : 404 });
   }
-  return runtimeWorker.fetch(path, {
+  return fixtureFetch(path, {
     method: "POST",
     ...(body === undefined
       ? {}
@@ -101,9 +125,7 @@ async function post(path: string, body?: unknown) {
 async function providerRecords(
   table: string,
 ): Promise<{ fields: AirtableFields; id: string; table: string }[]> {
-  const response = await runtimeWorker.fetch(
-    `/provider-records?table=${table}`,
-  );
+  const response = await fixtureFetch(`/provider-records?table=${table}`);
   return (await response.json()) as {
     fields: AirtableFields;
     id: string;
@@ -112,7 +134,7 @@ async function providerRecords(
 }
 
 async function providerMutationCount(): Promise<number> {
-  const response = await runtimeWorker.fetch("/provider-stats");
+  const response = await fixtureFetch("/provider-stats");
   return ((await response.json()) as { mutationCount: number }).mutationCount;
 }
 
@@ -148,7 +170,7 @@ async function assetState(key: string): Promise<{
   size: number;
   version: string;
 }> {
-  const response = await runtimeWorker.fetch(
+  const response = await fixtureFetch(
     `/asset-state?key=${encodeURIComponent(key)}`,
   );
   return (await response.json()) as Awaited<ReturnType<typeof assetState>>;
@@ -165,7 +187,7 @@ async function fileIdentity(id: string): Promise<{
   r2_version: string;
   status: string;
 }> {
-  const response = await runtimeWorker.fetch(
+  const response = await fixtureFetch(
     `/file-identity?id=${encodeURIComponent(id)}`,
   );
   return (await response.json()) as Awaited<ReturnType<typeof fileIdentity>>;
@@ -196,6 +218,7 @@ let plan: CompiledDemoSeed;
 beforeAll(async () => {
   plan = await compileDemoSeed(demoSeedSource);
   await server.listen();
+  runtimeFixture = await runtimeWorker.getExport();
   const setup = await post("/setup", { statements: readMigrationStatements() });
   expect(setup.status).toBe(204);
   expect((await post("/allow-projection")).status).toBe(204);
@@ -248,7 +271,7 @@ describe("RAL-34 completed authority data plane", () => {
       projected: plan.operations.length,
     });
 
-    const sourceResponse = await runtimeWorker.fetch(
+    const sourceResponse = await fixtureFetch(
       `/source-state?organizationId=${demoOrganizationId}`,
     );
     const sourceState = (await sourceResponse.json()) as {
@@ -477,7 +500,7 @@ describe("RAL-34 completed authority data plane", () => {
       projected: 4,
       tables: ["rooms"],
     });
-    const secondRoom = await runtimeWorker.fetch(
+    const secondRoom = await fixtureFetch(
       `/room-state?organizationId=${secondOrganizationId}&id=${secondRoomId}`,
     );
     await expect(secondRoom.json()).resolves.toMatchObject({
@@ -530,12 +553,12 @@ describe("RAL-34 completed authority data plane", () => {
     );
     await waitFor(async () => {
       const checkpoint = (await (
-        await runtimeWorker.fetch("/webhook-roster-checkpoint")
+        await fixtureFetch("/webhook-roster-checkpoint")
       ).json()) as { reached?: number };
       return checkpoint.reached === 1;
     });
     const accessBeforeReactivation = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessBeforeReactivation.permissions).toContain("portal:write:self");
     expect(
@@ -546,7 +569,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const accessDuringReactivation = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessDuringReactivation.permissions).not.toContain(
       "portal:write:self",
@@ -554,20 +577,20 @@ describe("RAL-34 completed authority data plane", () => {
     expect((await post("/release-webhook-roster-checkpoint")).status).toBe(204);
     expect((await invalidatedRoster).status).toBe(500);
     await expect(
-      (await runtimeWorker.fetch("/authority-state")).json(),
+      (await fixtureFetch("/authority-state")).json(),
     ).resolves.toMatchObject({ committedCursor: 2 });
     expect(
       (await post(`/ingest-webhook?${expandedWebhookOrganizations}`)).status,
     ).toBe(200);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/room-state?organizationId=${lateOrganizationId}&id=${lateRoomId}`,
         )
       ).json(),
     ).resolves.toMatchObject({ id: lateRoomId, name: "Late tenant room" });
     const accessAfterRosterRepair = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessAfterRosterRepair.permissions).toContain("portal:write:self");
 
@@ -640,12 +663,10 @@ describe("RAL-34 completed authority data plane", () => {
     expect(conflictingReplay.status).toBe(409);
     expect(await providerMutationCount()).toBe(mutationCount);
 
-    const assets = await runtimeWorker.fetch(
-      `/assets?prefix=demo/${demoEventId}/`,
-    );
+    const assets = await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`);
     await expect(assets.json()).resolves.toHaveLength(plan.assets.length);
     for (const asset of plan.assets) {
-      const download = await runtimeWorker.fetch(
+      const download = await fixtureFetch(
         `/download-asset?id=${asset.assetId}&actorId=${actorId}`,
       );
       expect(download.status).toBe(200);
@@ -686,7 +707,7 @@ describe("RAL-34 completed authority data plane", () => {
       snapshotId: `snapshot_${interruptedDigest.slice(0, 24)}`,
     };
     const evictionEventState = (await (
-      await runtimeWorker.fetch(
+      await fixtureFetch(
         `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
       )
     ).json()) as { source_version: number };
@@ -717,7 +738,7 @@ describe("RAL-34 completed authority data plane", () => {
       name: "local:appAuthorityFixture",
     });
     await expect(
-      (await runtimeWorker.fetch("/snapshot-asset-checkpoint")).json(),
+      (await fixtureFetch("/snapshot-asset-checkpoint")).json(),
     ).resolves.toMatchObject({ armed: 0, reached: 1 });
     expect((await assetState(evictionAsset.objectKey)).checksum).toBe(
       interruptedDigest,
@@ -772,7 +793,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const beforeFailure = (await (
-      await runtimeWorker.fetch(`/assets?prefix=demo/${demoEventId}/`)
+      await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`)
     ).json()) as { key: string }[];
     const rollbackAsset = plan.assets[0];
     if (!rollbackAsset) throw new Error("Demo fixture has no rollback asset.");
@@ -783,7 +804,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(204);
     const rollbackRunId = "req_demo_snapshot_rollback";
     const eventState = (await (
-      await runtimeWorker.fetch(
+      await fixtureFetch(
         `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
       )
     ).json()) as { source_version: number };
@@ -794,7 +815,7 @@ describe("RAL-34 completed authority data plane", () => {
     });
     expect(failedSnapshot.status).toBe(409);
     const afterFailure = (await (
-      await runtimeWorker.fetch(`/assets?prefix=demo/${demoEventId}/`)
+      await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`)
     ).json()) as { key: string }[];
     expect(afterFailure.map(({ key }) => key).sort()).toEqual(
       beforeFailure.map(({ key }) => key).sort(),
@@ -818,7 +839,7 @@ describe("RAL-34 completed authority data plane", () => {
     });
     expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/download-asset?id=${rollbackAsset.assetId}&actorId=${actorId}`,
         )
       ).status,
@@ -834,7 +855,7 @@ describe("RAL-34 completed authority data plane", () => {
       resetRunId: rollbackRunId,
     });
     const recoveredAssets = (await (
-      await runtimeWorker.fetch(`/assets?prefix=demo/${demoEventId}/`)
+      await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`)
     ).json()) as { key: string }[];
     expect(recoveredAssets.map(({ key }) => key)).not.toContain(staleAssetKey);
 
@@ -855,7 +876,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(200);
     const deleteControlEventState = (await (
-      await runtimeWorker.fetch(
+      await fixtureFetch(
         `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
       )
     ).json()) as { source_version: number };
@@ -875,7 +896,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(false);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/room-state?organizationId=${demoOrganizationId}&id=${inScopeStaleRoomId}`,
         )
       ).json(),
@@ -897,7 +918,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const collisionEventState = (await (
-      await runtimeWorker.fetch(
+      await fixtureFetch(
         `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
       )
     ).json()) as { source_version: number };
@@ -956,7 +977,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const scopedDeleteEventState = (await (
-      await runtimeWorker.fetch(
+      await fixtureFetch(
         `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
       )
     ).json()) as { source_version: number };
@@ -1030,27 +1051,27 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(500);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${demoOrganizationId}`,
         )
       ).json(),
     ).resolves.toMatchObject({ authority_ready_at: null });
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${secondOrganizationId}`,
         )
       ).json(),
     ).resolves.toMatchObject({ authority_ready_at: null });
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${lateOrganizationId}`,
         )
       ).json(),
     ).resolves.toMatchObject({ authority_ready_at: null });
     const accessWhilePartialScanFailed = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessWhilePartialScanFailed.permissions).not.toContain(
       "portal:write:self",
@@ -1075,7 +1096,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(200);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${demoOrganizationId}`,
         )
       ).json(),
@@ -1083,7 +1104,7 @@ describe("RAL-34 completed authority data plane", () => {
       authority_ready_at: expect.any(String),
     });
     const revokedAccess = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(revokedAccess.permissions).not.toContain("portal:write:self");
     expect(
@@ -1115,7 +1136,7 @@ describe("RAL-34 completed authority data plane", () => {
     ]) {
       await expect(
         (
-          await runtimeWorker.fetch(
+          await fixtureFetch(
             `/tenant-readiness?organizationId=${organizationId}`,
           )
         ).json(),
@@ -1145,7 +1166,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(200);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${demoOrganizationId}`,
         )
       ).json(),
@@ -1153,7 +1174,7 @@ describe("RAL-34 completed authority data plane", () => {
       authority_ready_at: expect.any(String),
     });
     const revokedAccessAfterUnknownTableRecovery = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(revokedAccessAfterUnknownTableRecovery.permissions).not.toContain(
       "portal:write:self",
@@ -1202,7 +1223,7 @@ describe("RAL-34 completed authority data plane", () => {
     );
     await waitFor(async () => {
       const checkpoint = (await (
-        await runtimeWorker.fetch("/webhook-roster-checkpoint")
+        await fixtureFetch("/webhook-roster-checkpoint")
       ).json()) as { reached?: number };
       return checkpoint.reached === 1;
     });
@@ -1213,14 +1234,14 @@ describe("RAL-34 completed authority data plane", () => {
     ]) {
       await expect(
         (
-          await runtimeWorker.fetch(
+          await fixtureFetch(
             `/tenant-readiness?organizationId=${organizationId}`,
           )
         ).json(),
       ).resolves.toMatchObject({ authority_ready_at: null });
     }
     const accessBetweenWebhookPages = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessBetweenWebhookPages.permissions).not.toContain(
       "portal:write:self",
@@ -1233,7 +1254,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(200);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/tenant-readiness?organizationId=${demoOrganizationId}`,
         )
       ).json(),
@@ -1241,7 +1262,7 @@ describe("RAL-34 completed authority data plane", () => {
       authority_ready_at: expect.any(String),
     });
     const revokedAccessAfterMultiPageRecovery = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(revokedAccessAfterMultiPageRecovery.permissions).not.toContain(
       "portal:write:self",
@@ -1272,6 +1293,7 @@ describe("RAL-34 completed authority data plane", () => {
       (
         await post("/set-queue-failure", {
           enabled: true,
+          eventId: demoEventId,
         })
       ).status,
     ).toBe(204);
@@ -1294,7 +1316,7 @@ describe("RAL-34 completed authority data plane", () => {
     ).toBe(500);
     await expect(
       (
-        await runtimeWorker.fetch(
+        await fixtureFetch(
           `/room-state?organizationId=${demoOrganizationId}&id=${roomOperation.entityId}`,
         )
       ).json(),
@@ -1305,7 +1327,7 @@ describe("RAL-34 completed authority data plane", () => {
       `/cache-invalidation-state?organizationId=${demoOrganizationId}` +
       `&eventId=${demoEventId}`;
     await expect(
-      (await runtimeWorker.fetch(invalidationPath)).json(),
+      (await fixtureFetch(invalidationPath)).json(),
     ).resolves.toMatchObject({
       attempt_count: 1,
       last_error_code: "Error",
@@ -1322,16 +1344,14 @@ describe("RAL-34 completed authority data plane", () => {
       name: "local:appAuthorityFixture",
     });
     await waitFor(async () => {
-      const state = (await (
-        await runtimeWorker.fetch(invalidationPath)
-      ).json()) as {
+      const state = (await (await fixtureFetch(invalidationPath)).json()) as {
         attempt_count: number;
         status: string;
       };
       return state.status === "enqueued" && state.attempt_count >= 2;
     });
     const enqueuedInvalidation = (await (
-      await runtimeWorker.fetch(invalidationPath)
+      await fixtureFetch(invalidationPath)
     ).json()) as {
       attempt_count: number;
       invalidation_version: number;
@@ -1339,9 +1359,7 @@ describe("RAL-34 completed authority data plane", () => {
     };
     expect(enqueuedInvalidation).toMatchObject({ status: "enqueued" });
     await waitFor(async () => {
-      const state = (await (
-        await runtimeWorker.fetch(invalidationPath)
-      ).json()) as {
+      const state = (await (await fixtureFetch(invalidationPath)).json()) as {
         attempt_count: number;
         status: string;
       };
@@ -1362,7 +1380,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     await expect(
-      (await runtimeWorker.fetch(invalidationPath)).json(),
+      (await fixtureFetch(invalidationPath)).json(),
     ).resolves.toMatchObject({ status: "processed" });
     expect(
       (
@@ -1374,7 +1392,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     await expect(
-      (await runtimeWorker.fetch(invalidationPath)).json(),
+      (await fixtureFetch(invalidationPath)).json(),
     ).resolves.toMatchObject({ status: "processed" });
 
     expect((await post("/clear-authority-alarm")).status).toBe(204);
@@ -1387,7 +1405,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(204);
     const legacyInvalidation = (await (
-      await runtimeWorker.fetch(invalidationPath)
+      await fixtureFetch(invalidationPath)
     ).json()) as {
       invalidation_version: number;
       status: string;
@@ -1398,11 +1416,9 @@ describe("RAL-34 completed authority data plane", () => {
       .evictDurableObject("BASE_AUTHORITY", {
         name: "local:appAuthorityFixture",
       });
-    await runtimeWorker.fetch("/authority-state");
+    await fixtureFetch("/authority-state");
     await waitFor(async () => {
-      const state = (await (
-        await runtimeWorker.fetch(invalidationPath)
-      ).json()) as {
+      const state = (await (await fixtureFetch(invalidationPath)).json()) as {
         attempt_count: number;
         status: string;
       };
@@ -1443,7 +1459,7 @@ describe("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(200);
     const scheduledInvalidation = (await (
-      await runtimeWorker.fetch(invalidationPath)
+      await fixtureFetch(invalidationPath)
     ).json()) as {
       attempt_count: number;
       invalidation_version: number;
@@ -1454,9 +1470,7 @@ describe("RAL-34 completed authority data plane", () => {
       status: "enqueued",
     });
     await waitFor(async () => {
-      const state = (await (
-        await runtimeWorker.fetch(invalidationPath)
-      ).json()) as {
+      const state = (await (await fixtureFetch(invalidationPath)).json()) as {
         attempt_count: number;
         status: string;
       };
@@ -1510,7 +1524,7 @@ describe("RAL-34 completed authority data plane", () => {
       await postRecoveryFullScan.clone().text(),
     ).toBe(200);
 
-    const trace = await runtimeWorker.fetch(
+    const trace = await fixtureFetch(
       `/authority-trace?organizationId=${demoOrganizationId}`,
     );
     const traceRows = (await trace.json()) as Record<string, unknown>[];
@@ -1526,7 +1540,7 @@ describe("RAL-34 completed authority data plane", () => {
     expect(JSON.stringify(traceRows)).not.toContain("demo-staging/");
 
     const accessBeforeIdTamper = (await (
-      await runtimeWorker.fetch(speakerAccessPath)
+      await fixtureFetch(speakerAccessPath)
     ).json()) as { permissions: string[] };
     expect(accessBeforeIdTamper.permissions).toContain("portal:write:self");
     expect(
@@ -1551,7 +1565,7 @@ describe("RAL-34 completed authority data plane", () => {
         ).status,
       ).toBe(500);
       const accessAfterIdTamper = (await (
-        await runtimeWorker.fetch(speakerAccessPath)
+        await fixtureFetch(speakerAccessPath)
       ).json()) as { permissions: string[] };
       expect(accessAfterIdTamper.permissions).not.toContain(
         "portal:write:self",

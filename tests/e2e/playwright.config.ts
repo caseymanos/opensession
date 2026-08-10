@@ -15,7 +15,7 @@ export default defineConfig({
     { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: "pnpm preview",
+    command: "pnpm preview:e2e",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     url: "http://127.0.0.1:8787/health/live",
