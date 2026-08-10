@@ -74,6 +74,7 @@ describe("schedule domain", () => {
   it("places, publishes, reschedules, unassigns, and cancels a session", () => {
     const placed = applyScheduleCommand(snapshot(), {
       commandId: "command_place",
+      durationMinutes: 30,
       eventId: "event_demo",
       expectedVersion: 1,
       roomId: "room_main",
@@ -107,6 +108,7 @@ describe("schedule domain", () => {
 
     const rescheduled = applyScheduleCommand(published.snapshot, {
       commandId: "command_reschedule",
+      durationMinutes: 45,
       eventId: "event_demo",
       expectedVersion: 3,
       roomId: "room_main",
@@ -115,7 +117,12 @@ describe("schedule domain", () => {
       type: "reschedule_session",
     });
     expect(rescheduled.snapshot.sessions[0]).toMatchObject({
-      slot: { publicationVersion: 0, version: 4 },
+      durationMinutes: 45,
+      slot: {
+        endAt: "2026-09-16T17:45:00.000Z",
+        publicationVersion: 0,
+        version: 4,
+      },
       state: "scheduled",
     });
 
@@ -231,7 +238,24 @@ describe("schedule domain", () => {
   it("rejects nonexistent rooms and stale schedule versions", () => {
     expect(() =>
       applyScheduleCommand(snapshot(), {
+        commandId: "command_duration",
+        durationMinutes: 32,
+        eventId: "event_demo",
+        expectedVersion: 1,
+        roomId: "room_main",
+        sessionId: "session_one",
+        startAt: "2026-09-15T16:00:00.000Z",
+        type: "place_session",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ScheduleValidationError>>({
+        reason: "invalid_duration",
+      }),
+    );
+    expect(() =>
+      applyScheduleCommand(snapshot(), {
         commandId: "command_room",
+        durationMinutes: 30,
         eventId: "event_demo",
         expectedVersion: 1,
         roomId: "room_missing",
@@ -262,6 +286,7 @@ describe("schedule domain", () => {
     expect(() =>
       applyScheduleCommand(snapshot(), {
         commandId: "command_invalid_time",
+        durationMinutes: 30,
         eventId: "event_demo",
         expectedVersion: 1,
         roomId: "room_main",
