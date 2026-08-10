@@ -324,7 +324,9 @@
 .agenda-grid-body {
   min-width: 48rem;
   display: grid;
-  grid-template-columns: 4.7rem repeat(3, minmax(14rem, 1fr));
+  grid-template-columns:
+    4.7rem
+    repeat(var(--agenda-room-count, 3), minmax(14rem, 1fr));
 }
 
 .agenda-room-headers {
@@ -373,9 +375,9 @@
 
 .agenda-time-axis,
 .agenda-room-track {
-  min-height: 40.5rem;
+  min-height: calc(var(--agenda-slot-count, 9) * 2.25rem);
   display: grid;
-  grid-template-rows: repeat(9, 4.5rem);
+  grid-template-rows: repeat(var(--agenda-slot-count, 9), 2.25rem);
 }
 
 .agenda-time-axis {
@@ -399,8 +401,8 @@
   border-left: 1px solid var(--ink-200);
   background: repeating-linear-gradient(
     to bottom,
-    transparent 0 4.45rem,
-    var(--ink-200) 4.45rem 4.5rem
+    transparent 0 2.2rem,
+    var(--ink-200) 2.2rem 2.25rem
   );
 }
 

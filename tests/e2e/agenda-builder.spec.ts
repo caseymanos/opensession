@@ -1,7 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { mockAgendaApi } from "./agenda-api";
+
 const agendaPath = "/app/ai-engineer-summit/agenda";
+
+test.beforeEach(async ({ page }) => {
+  await mockAgendaApi(page);
+});
 
 test("agenda route exposes searchable rail and room grid", async ({ page }) => {
   await page.goto(agendaPath);
@@ -22,7 +28,7 @@ test("agenda route exposes searchable rail and room grid", async ({ page }) => {
   if (await mobileMenu.isVisible()) {
     await page.getByRole("button", { name: "Close Event navigation" }).click();
   }
-  await expect(page.getByText("Speaker conflict")).toBeVisible();
+  await expect(page.getByText("Speaker conflict")).toHaveCount(0);
 
   const results = await new AxeBuilder({ page })
     .include(".agenda-page")
@@ -62,7 +68,7 @@ test("drag placement exposes room and time feedback before the same save dialog"
     .locator(".agenda-unscheduled-card")
     .filter({ hasText: "Your Eval Suite Is Lying to You" });
   const target = page.locator(
-    '.agenda-drop-slot[data-room="gallery"][data-slot="8"]',
+    '.agenda-drop-slot[data-room="gallery"][data-time="12:30 PM"]',
   );
 
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
@@ -90,7 +96,7 @@ test("Escape cancels an active drag target", async ({ page }) => {
     .locator(".agenda-unscheduled-card")
     .filter({ hasText: "Your Eval Suite Is Lying to You" });
   const target = page.locator(
-    '.agenda-drop-slot[data-room="gallery"][data-slot="8"]',
+    '.agenda-drop-slot[data-room="gallery"][data-time="12:30 PM"]',
   );
 
   await session.evaluate((element, targetSelector) => {
@@ -103,7 +109,7 @@ test("Escape cancels an active drag target", async ({ page }) => {
       ?.dispatchEvent(
         new DragEvent("dragenter", { bubbles: true, dataTransfer }),
       );
-  }, '.agenda-drop-slot[data-room="gallery"][data-slot="8"]');
+  }, '.agenda-drop-slot[data-room="gallery"][data-time="12:30 PM"]');
   await expect(target).toHaveClass(/is-active/);
   await page.keyboard.press("Escape");
   await expect(target).not.toHaveClass(/is-active/);
@@ -122,16 +128,17 @@ test("failed placement restores the attempted values and focus", async ({
   const dialog = page.getByRole("dialog", {
     name: "Schedule “Your Eval Suite Is Lying to You”",
   });
-  await dialog.getByLabel("Day").selectOption("wednesday");
+  await dialog.getByLabel("Day").selectOption("2026-08-19");
   await dialog.getByLabel("Start time").selectOption("12:30 PM");
   await dialog.getByLabel("Room").selectOption("firehouse");
   await dialog.getByRole("button", { name: "Schedule session" }).click();
 
+  await expect(page.locator(".ui-toast")).toContainText("Saving placement");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("alert")).toContainText(
     "Your day, time, room, and duration are preserved",
   );
-  await expect(dialog.getByLabel("Day")).toHaveValue("wednesday");
+  await expect(dialog.getByLabel("Day")).toHaveValue("2026-08-19");
   await expect(dialog.getByLabel("Start time")).toHaveValue("12:30 PM");
   await expect(dialog.getByLabel("Room")).toHaveValue("firehouse");
   await expect(page.locator(".agenda-unscheduled-card")).toHaveCount(4);
@@ -154,7 +161,7 @@ test("selected agenda day controls where a placement appears", async ({
   const dialog = page.getByRole("dialog", {
     name: "Schedule “Your Eval Suite Is Lying to You”",
   });
-  await dialog.getByLabel("Day").selectOption("wednesday");
+  await dialog.getByLabel("Day").selectOption("2026-08-19");
   await dialog.getByRole("button", { name: "Schedule session" }).click();
 
   await expect(
@@ -176,7 +183,7 @@ test("selected agenda day controls where a placement appears", async ({
 });
 
 test("conflict and publish previews explain blockers", async ({ page }) => {
-  await page.goto(agendaPath);
+  await page.goto("/fixtures/agenda/default");
   await page.getByRole("button", { name: "1 hard conflict" }).click();
   const conflicts = page.getByRole("dialog", { name: "Agenda conflicts" });
   await expect(conflicts).toContainText("Ren Ito is scheduled twice");
@@ -190,6 +197,24 @@ test("conflict and publish previews explain blockers", async ({ page }) => {
   await expect(
     publish.getByRole("button", { name: "Publish version 3" }),
   ).toBeDisabled();
+});
+
+test("production agenda keeps publication as an honest preview", async ({
+  page,
+}) => {
+  await page.goto(agendaPath);
+  await page.getByRole("button", { name: "Preview publish" }).click();
+
+  const publish = page.getByRole("dialog", { name: "Publish agenda preview" });
+  await expect(publish).toContainText(
+    "This preview does not create a public schedule snapshot.",
+  );
+  await expect(
+    publish.getByRole("button", { name: "Close preview" }),
+  ).toBeVisible();
+  await expect(
+    publish.getByRole("button", { name: /^Publish version/ }),
+  ).toHaveCount(0);
 });
 
 test("narrow agenda freezes page width while grid scrolls independently", async ({

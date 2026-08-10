@@ -8,65 +8,67 @@ import {
 
 import { StatusPill } from "@sessionbox-killer/ui";
 
-import {
-  agendaRooms,
-  agendaTimes,
-  type AgendaDay,
-  type AgendaSessionView,
-  type AgendaView,
-  type ScheduledSessionView,
+import type {
+  AgendaDay,
+  AgendaDayView,
+  AgendaRoomView,
+  AgendaTrackView,
+  AgendaView,
+  ScheduledSessionView,
 } from "./agendaModel";
 
-const tracks: AgendaSessionView["track"][] = [
-  "AI Engineering",
-  "Evaluation",
-  "Infrastructure",
-  "Product",
-];
-
-const trackTone: Record<AgendaSessionView["track"], string> = {
-  "AI Engineering": "ai",
-  Evaluation: "eval",
-  Infrastructure: "infra",
-  Product: "product",
-};
-
-function dayLabel(day: AgendaDay) {
-  return day === "tuesday" ? "Tuesday, August 18" : "Wednesday, August 19";
+function dayLabel(days: readonly AgendaDayView[], day: AgendaDay) {
+  return days.find((candidate) => candidate.date === day)?.fullLabel ?? day;
 }
 
-function roomName(roomId: string) {
-  return agendaRooms.find((room) => room.id === roomId)?.name ?? "Room pending";
+function roomName(rooms: readonly AgendaRoomView[], roomId: string) {
+  return rooms.find((room) => room.id === roomId)?.name ?? "Room pending";
 }
 
-function timeLabel(session: ScheduledSessionView) {
-  return agendaTimes[session.slot - 1] ?? "Time pending";
+function timeLabel(
+  days: readonly AgendaDayView[],
+  session: ScheduledSessionView,
+) {
+  return (
+    days.find((day) => day.date === session.day)?.times[session.slot - 1] ??
+    "Time pending"
+  );
 }
 
-function sortSessions(sessions: ScheduledSessionView[]) {
+function sortSessions(
+  days: readonly AgendaDayView[],
+  sessions: readonly ScheduledSessionView[],
+) {
   return [...sessions].sort((left, right) => {
     if (left.day !== right.day) {
-      return left.day === "tuesday" ? -1 : 1;
+      return (
+        days.findIndex((day) => day.date === left.day) -
+        days.findIndex((day) => day.date === right.day)
+      );
     }
     return left.slot - right.slot;
   });
 }
 
 function SessionRow({
+  days,
   onSelect,
+  rooms,
   session,
 }: {
+  days: readonly AgendaDayView[];
   onSelect: () => void;
+  rooms: readonly AgendaRoomView[];
   session: ScheduledSessionView;
 }) {
   return (
     <button
-      className={`agenda-view-session is-${trackTone[session.track]}`}
+      className={`agenda-view-session is-${session.tone}`}
       onClick={onSelect}
       type="button"
     >
       <span className="agenda-view-session-time">
-        <strong>{timeLabel(session)}</strong>
+        <strong>{timeLabel(days, session)}</strong>
         <small>{session.durationMinutes} min</small>
       </span>
       <span className="agenda-view-session-main">
@@ -77,7 +79,8 @@ function SessionRow({
         </em>
       </span>
       <span className="agenda-view-session-room">
-        <MapPin aria-hidden="true" size={14} /> {roomName(session.roomId)}
+        <MapPin aria-hidden="true" size={14} />{" "}
+        {roomName(rooms, session.roomId)}
       </span>
       {session.status === "conflict" ? (
         <StatusPill tone="warning">
@@ -101,14 +104,18 @@ function EmptyGroup({ label }: { label: string }) {
 }
 
 function Group({
+  days,
   eyebrow,
   onSelect,
+  rooms,
   sessions,
   title,
 }: {
+  days: readonly AgendaDayView[];
   eyebrow: string;
   onSelect: (session: ScheduledSessionView) => void;
-  sessions: ScheduledSessionView[];
+  rooms: readonly AgendaRoomView[];
+  sessions: readonly ScheduledSessionView[];
   title: string;
 }) {
   return (
@@ -121,10 +128,12 @@ function Group({
         <span>{sessions.length}</span>
       </header>
       <div className="agenda-view-session-list">
-        {sortSessions(sessions).map((session) => (
+        {sortSessions(days, sessions).map((session) => (
           <SessionRow
+            days={days}
             key={session.id}
             onSelect={() => onSelect(session)}
+            rooms={rooms}
             session={session}
           />
         ))}
@@ -136,25 +145,35 @@ function Group({
 
 export function AgendaPresentation({
   day,
+  days,
   onSelect,
+  rooms,
   scheduled,
+  tracks,
   view,
 }: {
   day: AgendaDay;
+  days: readonly AgendaDayView[];
   onSelect: (session: ScheduledSessionView) => void;
-  scheduled: ScheduledSessionView[];
+  rooms: readonly AgendaRoomView[];
+  scheduled: readonly ScheduledSessionView[];
+  tracks: readonly AgendaTrackView[];
   view: Exclude<AgendaView, "day">;
 }) {
   if (view === "list") {
     return (
       <div className="agenda-view-stack" data-view="list">
-        {(["tuesday", "wednesday"] as AgendaDay[]).map((agendaDay) => (
+        {days.map((agendaDay) => (
           <Group
+            days={days}
             eyebrow="Chronological list"
-            key={agendaDay}
+            key={agendaDay.date}
             onSelect={onSelect}
-            sessions={scheduled.filter((session) => session.day === agendaDay)}
-            title={dayLabel(agendaDay)}
+            rooms={rooms}
+            sessions={scheduled.filter(
+              (session) => session.day === agendaDay.date,
+            )}
+            title={agendaDay.fullLabel}
           />
         ))}
       </div>
@@ -164,13 +183,17 @@ export function AgendaPresentation({
   if (view === "week") {
     return (
       <div className="agenda-week-view" data-view="week">
-        {(["tuesday", "wednesday"] as AgendaDay[]).map((agendaDay) => (
+        {days.map((agendaDay) => (
           <Group
+            days={days}
             eyebrow="Week overview"
-            key={agendaDay}
+            key={agendaDay.date}
             onSelect={onSelect}
-            sessions={scheduled.filter((session) => session.day === agendaDay)}
-            title={dayLabel(agendaDay)}
+            rooms={rooms}
+            sessions={scheduled.filter(
+              (session) => session.day === agendaDay.date,
+            )}
+            title={agendaDay.fullLabel}
           />
         ))}
       </div>
@@ -182,13 +205,15 @@ export function AgendaPresentation({
       <div className="agenda-view-stack" data-view="track">
         {tracks.map((track) => (
           <Group
+            days={days}
             eyebrow="Track view"
-            key={track}
+            key={track.id}
             onSelect={onSelect}
+            rooms={rooms}
             sessions={scheduled.filter(
-              (session) => session.day === day && session.track === track,
+              (session) => session.day === day && session.trackId === track.id,
             )}
-            title={track}
+            title={track.name}
           />
         ))}
       </div>
@@ -197,11 +222,13 @@ export function AgendaPresentation({
 
   return (
     <div className="agenda-room-view" data-view="room">
-      {agendaRooms.map((room) => (
+      {rooms.map((room) => (
         <Group
-          eyebrow={`${room.capacity} seats · ${dayLabel(day)}`}
+          days={days}
+          eyebrow={`${room.capacity} seats · ${dayLabel(days, day)}`}
           key={room.id}
           onSelect={onSelect}
+          rooms={rooms}
           sessions={scheduled.filter(
             (session) => session.day === day && session.roomId === room.id,
           )}
@@ -245,12 +272,16 @@ export function AgendaViewSwitcher({
 
 export function AgendaViewContext({
   day,
+  days,
   room,
+  rooms,
   track,
   view,
 }: {
   day: AgendaDay;
+  days: readonly AgendaDayView[];
   room: string;
+  rooms: readonly AgendaRoomView[];
   track: string;
   view: AgendaView;
 }) {
@@ -259,9 +290,11 @@ export function AgendaViewContext({
       <Clock3 aria-hidden="true" size={14} />
       <span>
         <strong>{view.charAt(0).toUpperCase() + view.slice(1)} view</strong>
-        {view === "list" || view === "week" ? "Both event days" : dayLabel(day)}
+        {view === "list" || view === "week"
+          ? "All event days"
+          : dayLabel(days, day)}
         {track !== "all" ? ` · ${track}` : ""}
-        {room !== "all" ? ` · ${roomName(room)}` : ""}
+        {room !== "all" ? ` · ${roomName(rooms, room)}` : ""}
       </span>
     </p>
   );
