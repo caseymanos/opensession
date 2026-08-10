@@ -15,5 +15,5 @@ export function isEnvironment(value: string): value is Environment {
   return environments.some((environment) => environment === value);
 }
 
-export * from "./cfp-rules";
-export * from "./schedule";
+export * from "./cfp-rules.js";
+export * from "./schedule.js";
