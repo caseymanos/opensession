@@ -242,6 +242,7 @@ export function AgendaBuilder({
   const initialUrlState = getAgendaUrlState(initialScheduleView);
   const emptyFixture = fixtureState === "empty";
   const readOnly = fixtureState === "ready-readonly";
+  const publicationPreviewOnly = Boolean(commandPort);
   const placementShouldFail = fixtureState === "placement-failed";
   const [day, setDay] = useState<AgendaDay>(initialUrlState.day);
   const [view, setView] = useState<AgendaView>(initialUrlState.view);
@@ -653,7 +654,7 @@ export function AgendaBuilder({
   }
 
   function publishAgenda() {
-    if (!publishable) {
+    if (!publishable || publicationPreviewOnly) {
       return;
     }
 
@@ -1328,7 +1329,11 @@ export function AgendaBuilder({
           </Drawer>
 
           <Dialog
-            description="Resolve every publishing blocker before making this agenda public."
+            description={
+              publicationPreviewOnly
+                ? "Review publishing readiness here. This preview does not create a public schedule snapshot."
+                : "Resolve every publishing blocker before making this agenda public."
+            }
             onClose={() => setPublishOpen(false)}
             open={publishOpen}
             title="Publish agenda preview"
@@ -1340,7 +1345,9 @@ export function AgendaBuilder({
                 </StatusPill>
                 <strong>
                   {publishable
-                    ? `Version ${publishedVersion + 1} can go public`
+                    ? publicationPreviewOnly
+                      ? `Version ${publishedVersion + 1} is ready for authoritative publication`
+                      : `Version ${publishedVersion + 1} can go public`
                     : `${blockerCategoryCount} blocker categories need attention`}
                 </strong>
               </div>
@@ -1401,7 +1408,8 @@ export function AgendaBuilder({
                     </li>
                     <li>
                       <Check aria-hidden="true" size={15} /> Public schedule,
-                      gallery, feed, and calendar invalidation are queued
+                      gallery, feed, and calendar invalidation are ready for the
+                      authoritative publication command
                     </li>
                   </>
                 ) : null}
@@ -1413,9 +1421,15 @@ export function AgendaBuilder({
                 >
                   Keep scheduling
                 </Button>
-                <Button disabled={!publishable} onClick={publishAgenda}>
-                  Publish version {publishedVersion + 1}
-                </Button>
+                {publicationPreviewOnly ? (
+                  <Button onClick={() => setPublishOpen(false)}>
+                    Close preview
+                  </Button>
+                ) : (
+                  <Button disabled={!publishable} onClick={publishAgenda}>
+                    Publish version {publishedVersion + 1}
+                  </Button>
+                )}
               </div>
             </div>
           </Dialog>
