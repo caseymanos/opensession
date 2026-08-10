@@ -43,6 +43,9 @@ describe("TurnstileVerifier", () => {
       "https://challenges.cloudflare.com/turnstile/v0/siteverify",
     );
     expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual({
+      "Content-Type": "application/x-www-form-urlencoded",
+    });
     const body = init?.body;
     expect(body).toBeInstanceOf(URLSearchParams);
     expect((body as URLSearchParams).get("response")).toBe("valid-token");

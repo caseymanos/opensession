@@ -108,6 +108,7 @@ export class TurnstileVerifier {
     try {
       response = await this.#fetcher(siteverifyEndpoint, {
         body,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
         method: "POST",
         signal: AbortSignal.timeout(10_000),
       });
