@@ -154,7 +154,7 @@
         "EMAIL_DELIVERY_CONFIG": {
           "mode": "allowlist",
           "allowlist": [],
-          "authFrom": "OpenSession <auth@preview.opensessionboard.com>",
+          "authFrom": "OpenSession <auth@updates.opensessionboard.com>",
           "authReplyTo": "hello@opensessionboard.com",
         },
         "FEATURE_FLAGS": {
