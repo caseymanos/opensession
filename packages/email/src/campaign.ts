@@ -186,13 +186,17 @@ export function createCampaignPlan(options: {
   readonly filter: CampaignAudienceFilter;
   readonly schedule: CampaignSchedule;
   readonly template: EmailTemplate;
+  readonly templateVersions: readonly EmailTemplate[];
 }): CampaignPlan {
   assertStableId(options.eventId, "Event ID");
   assertTimestamp(options.createdAt);
   if (options.template.eventId !== options.eventId) {
     throw new CampaignPlanError("Template belongs to another event.");
   }
-  const template = snapshotEmailTemplate(options.template);
+  const template = snapshotEmailTemplate(
+    options.template,
+    options.templateVersions,
+  );
   const filter = normalizeFilter(options.filter);
   const schedule = normalizeSchedule(options.schedule, options.createdAt);
   const excluded: CampaignAudienceExclusion[] = [];

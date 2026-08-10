@@ -12,6 +12,8 @@ import { AgendaWorkspace } from "./agenda/AgendaWorkspace";
 import { CfpBuilder } from "./cfp/CfpBuilder";
 import { Dashboard } from "./Dashboard";
 import { DecisionWorkspace } from "./decisions/DecisionWorkspace";
+import { EmailTemplateWorkspace } from "./email-templates/EmailTemplateWorkspace";
+import { emailTemplateEventKey } from "./email-templates/emailTemplateRoute";
 import {
   ReadinessDashboard,
   type ReadinessFixtureState,
@@ -75,6 +77,7 @@ export function WorkspaceApp({
     currentPath.startsWith("/fixtures/agenda/");
   const isAgendaFixtureRoute = currentPath.startsWith("/fixtures/agenda/");
   const agendaEventSlug = workspaceEventSlug(currentPath);
+  const emailTemplateEvent = emailTemplateEventKey(currentPath);
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
@@ -109,6 +112,12 @@ export function WorkspaceApp({
     )
   ) : currentPath.endsWith("/people/mina-okafor/tasks/final-slides") ? (
     <OrganizerTaskReviewWorkspace key={resetVersion} />
+  ) : emailTemplateEvent ? (
+    <EmailTemplateWorkspace
+      eventKey={emailTemplateEvent}
+      fixture={currentPath.startsWith("/fixtures/email-templates/")}
+      key={`${emailTemplateEvent}:${resetVersion}`}
+    />
   ) : isReadinessRoute ? (
     <ReadinessDashboard
       fixtureState={readinessFixtureState}

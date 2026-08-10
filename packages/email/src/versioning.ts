@@ -1,11 +1,17 @@
 import { EmailTemplateValidationError, analyzeEmailTemplate } from "./merge.js";
 import { freezeDeep } from "./freeze.js";
+import {
+  emailTemplateFamilyId,
+  emailTemplateHead,
+  emailTemplateVersionId,
+} from "./identity.js";
 import type {
   EmailAddress,
   EmailDocument,
   EmailMergeFieldName,
   EmailTemplate,
   EmailTemplateAudience,
+  EmailTemplateDraft,
 } from "./types.js";
 
 export interface EmailTemplateRevisionChanges {
@@ -33,8 +39,25 @@ function assertTemplate(template: EmailTemplate): void {
   if (!analysis.valid) throw new EmailTemplateValidationError(analysis.issues);
 }
 
-function assertCampaignSnapshotSource(template: EmailTemplate): void {
+function assertCampaignSnapshotSource(
+  template: EmailTemplate,
+  familyVersions: readonly EmailTemplate[],
+): void {
   assertTemplate(template);
+  const head = emailTemplateHead(
+    familyVersions,
+    emailTemplateFamilyId(template.id),
+  );
+  if (!head || head.id !== template.id) {
+    throw new EmailTemplateValidationError([
+      {
+        code: "invalid_template",
+        location: "id",
+        message:
+          "Only the current template-family head can become a campaign snapshot.",
+      },
+    ]);
+  }
   if (template.status !== "active") {
     throw new EmailTemplateValidationError([
       {
@@ -44,6 +67,20 @@ function assertCampaignSnapshotSource(template: EmailTemplate): void {
       },
     ]);
   }
+}
+
+export function emailTemplateDraft(
+  template: EmailTemplate,
+): EmailTemplateDraft {
+  return {
+    allowedMergeFields: [...template.allowedMergeFields],
+    audience: template.audience,
+    body: structuredClone(template.body),
+    internalName: template.internalName,
+    replyTo: template.replyTo,
+    sender: { ...template.sender },
+    subject: template.subject,
+  };
 }
 
 export function createEmailTemplateRevision(
@@ -58,6 +95,7 @@ export function createEmailTemplateRevision(
     allowedMergeFields:
       changes.allowedMergeFields ?? current.allowedMergeFields,
     body: changes.body ?? current.body,
+    id: emailTemplateVersionId(current.id, current.version + 1),
     sender: changes.sender ?? current.sender,
     status: "draft",
     updatedAt,
@@ -70,10 +108,26 @@ export function createEmailTemplateRevision(
 export function activateEmailTemplate(
   current: EmailTemplate,
   updatedAt: string,
+  changes: EmailTemplateRevisionChanges = {},
 ): EmailTemplate {
+  if (current.status !== "draft") {
+    throw new EmailTemplateValidationError([
+      {
+        code: "invalid_template",
+        location: "status",
+        message: "Only a draft template version can be activated.",
+      },
+    ]);
+  }
   assertLaterTimestamp(current.updatedAt, updatedAt);
   const active: EmailTemplate = {
     ...current,
+    ...changes,
+    allowedMergeFields:
+      changes.allowedMergeFields ?? current.allowedMergeFields,
+    body: changes.body ?? current.body,
+    id: emailTemplateVersionId(current.id, current.version + 1),
+    sender: changes.sender ?? current.sender,
     status: "active",
     updatedAt,
     version: current.version + 1,
@@ -82,15 +136,42 @@ export function activateEmailTemplate(
   return active;
 }
 
+export function archiveEmailTemplate(
+  current: EmailTemplate,
+  updatedAt: string,
+): EmailTemplate {
+  if (current.status === "archived") {
+    throw new EmailTemplateValidationError([
+      {
+        code: "invalid_template",
+        location: "status",
+        message: "This template version is already archived.",
+      },
+    ]);
+  }
+  assertLaterTimestamp(current.updatedAt, updatedAt);
+  const archived: EmailTemplate = {
+    ...current,
+    id: emailTemplateVersionId(current.id, current.version + 1),
+    status: "archived",
+    updatedAt,
+    version: current.version + 1,
+  };
+  assertTemplate(archived);
+  return archived;
+}
+
 export function snapshotEmailTemplate(
   template: EmailTemplate,
+  familyVersions: readonly EmailTemplate[],
 ): Readonly<EmailTemplate> {
-  assertCampaignSnapshotSource(template);
+  assertCampaignSnapshotSource(template, familyVersions);
   return freezeDeep(structuredClone(template));
 }
 
 export function serializeEmailTemplateSnapshot(
   template: EmailTemplate,
+  familyVersions: readonly EmailTemplate[],
 ): string {
-  return JSON.stringify(snapshotEmailTemplate(template));
+  return JSON.stringify(snapshotEmailTemplate(template, familyVersions));
 }

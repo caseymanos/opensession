@@ -8,6 +8,7 @@ import {
   type EmailTemplateAnalysis,
   type EmailTemplateIssue,
 } from "./types.js";
+import { emailTemplateIdentityIssue } from "./identity.js";
 
 interface Segment {
   readonly field?: EmailMergeFieldName;
@@ -39,6 +40,16 @@ function hasAsciiControl(value: string): boolean {
   return [...value].some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
     return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
+function hasUnsafeBodyControl(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      (codePoint <= 0x1f && codePoint !== 0x09 && codePoint !== 0x0a) ||
+      codePoint === 0x7f
+    );
   });
 }
 
@@ -174,8 +185,12 @@ function validateTemplateShape(
   template: EmailTemplate,
   issues: EmailTemplateIssue[],
 ): void {
-  if (!stableIdentifierPattern.test(template.id)) {
-    issue(issues, "invalid_template", "id", "Template ID is invalid.");
+  const identityIssue = emailTemplateIdentityIssue(
+    template.id,
+    template.version,
+  );
+  if (identityIssue) {
+    issue(issues, "invalid_template", "id", identityIssue);
   }
   if (!stableIdentifierPattern.test(template.eventId)) {
     issue(issues, "invalid_template", "eventId", "Event ID is invalid.");
@@ -183,7 +198,7 @@ function validateTemplateShape(
   if (
     template.internalName.trim().length === 0 ||
     template.internalName.length > 120 ||
-    /[\r\n\0]/.test(template.internalName)
+    hasAsciiControl(template.internalName)
   ) {
     issue(
       issues,
@@ -230,13 +245,13 @@ function validateTemplateShape(
   if (
     template.subject.trim().length === 0 ||
     template.subject.length > 200 ||
-    /[\r\n\0]/.test(template.subject)
+    hasAsciiControl(template.subject)
   ) {
     issue(issues, "invalid_template", "subject", "Subject is invalid.");
   }
   if (
     template.body.previewText.length > 180 ||
-    /[\r\n\0]/.test(template.body.previewText)
+    hasAsciiControl(template.body.previewText)
   ) {
     issue(
       issues,
@@ -257,7 +272,12 @@ function validateTemplateShape(
     const location = `body.blocks[${index}]`;
     if (block.type === "divider") return;
     if (block.type === "button") {
-      if (block.label.trim().length === 0 || block.label.length > 120) {
+      if (
+        block.label.trim().length === 0 ||
+        block.label.length > 120 ||
+        hasUnsafeBodyControl(block.label) ||
+        block.label.includes("\n")
+      ) {
         issue(
           issues,
           "invalid_template",
@@ -275,7 +295,11 @@ function validateTemplateShape(
       }
       return;
     }
-    if (block.text.trim().length === 0 || block.text.length > 8_000) {
+    if (
+      block.text.trim().length === 0 ||
+      block.text.length > 8_000 ||
+      hasUnsafeBodyControl(block.text)
+    ) {
       issue(
         issues,
         "invalid_template",
@@ -406,7 +430,7 @@ function validateMergeValue(
       !Number.isFinite(Date.parse(value.value)) ||
       value.display.trim().length === 0 ||
       value.display.length > 200 ||
-      /[\r\n\0]/.test(value.display)
+      hasAsciiControl(value.display)
     ) {
       issue(
         issues,
@@ -421,7 +445,7 @@ function validateMergeValue(
     validateAddress(value.value, location, issues);
     return;
   }
-  if (value.value.length > 2_000 || /[\0\r]/.test(value.value)) {
+  if (value.value.length > 2_000 || hasUnsafeBodyControl(value.value)) {
     issue(
       issues,
       "invalid_field_value",

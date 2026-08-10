@@ -19,6 +19,7 @@ import {
 } from "./email/delivery.js";
 import { ResendEmailDeliveryProvider } from "./email/provider.js";
 import { registerEmailWebhookRoutes } from "./email/routes.js";
+import { registerEmailTemplateRoutes } from "./email-templates/routes.js";
 import {
   elapsedMilliseconds,
   emitOperationalLog,
@@ -296,6 +297,7 @@ registerAuthRoutes(app);
 registerUploadRoutes(app);
 registerScheduleRoutes(app);
 registerDemoRoutes(app);
+registerEmailTemplateRoutes(app);
 registerEmailWebhookRoutes(app);
 
 app.notFound((context) => {

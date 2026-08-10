@@ -3,12 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   activateEmailTemplate,
   analyzeEmailTemplate,
+  archiveEmailTemplate,
   createCampaignMessageKey,
   createCampaignPlan,
+  createDeterministicEmailPreviewValues,
   createEmailTemplateRevision,
   createSeedEmailTemplates,
+  emailTemplateCommandSchema,
+  emailTemplateFamilyId,
+  emailTemplatePreviewRequestSchema,
+  emailTemplateVersionId,
   EmailTemplateValidationError,
   renderEmailTemplate,
+  renderSanitizedEmailTemplateBody,
   serializeCampaignPlan,
   serializeEmailTemplateSnapshot,
   snapshotEmailTemplate,
@@ -211,6 +218,26 @@ describe("typed email templates", () => {
         location: "sender.name",
       }),
     );
+    expect(
+      analyzeEmailTemplate({ ...receipt, subject: "Receipt\u001bhidden" })
+        .issues,
+    ).toContainEqual(
+      expect.objectContaining({
+        code: "invalid_template",
+        location: "subject",
+      }),
+    );
+    expect(
+      analyzeEmailTemplate({
+        ...receipt,
+        body: { ...receipt.body, previewText: "Preview\u0007bell" },
+      }).issues,
+    ).toContainEqual(
+      expect.objectContaining({
+        code: "invalid_template",
+        location: "body.previewText",
+      }),
+    );
     expect(() =>
       renderEmailTemplate(subjectWithRecipient, {
         ...values,
@@ -226,6 +253,32 @@ describe("typed email templates", () => {
         values,
       ).from,
     ).toBe('"Open \\"Session\\" \\\\ Team" <notifications@example.test>');
+  });
+
+  it("rejects unsafe controls from merge values in headers and rich output", () => {
+    const accepted = template("template_submission_accepted");
+    const task = template("template_task_reminder");
+
+    expect(() =>
+      renderEmailTemplate(accepted, {
+        ...values,
+        "recipient.first_name": { type: "text", value: "Mina\u001bhidden" },
+      }),
+    ).toThrowError(EmailTemplateValidationError);
+    expect(
+      validateEmailMergeValues(task, {
+        ...values,
+        "task.due_at": {
+          ...values["task.due_at"],
+          display: "September 2\u0007bell",
+        },
+      }).issues,
+    ).toContainEqual(
+      expect.objectContaining({
+        code: "invalid_field_value",
+        location: "subject",
+      }),
+    );
   });
 
   it("escapes recipient values instead of executing them in previews", () => {
@@ -247,6 +300,46 @@ describe("typed email templates", () => {
     expect(rendered.text).toContain("<script>alert('recipient')</script>");
   });
 
+  it("stores a sanitized token-preserving body instead of recipient data", () => {
+    const receipt = template("template_submission_receipt");
+    const source = renderSanitizedEmailTemplateBody({
+      ...receipt,
+      body: {
+        ...receipt.body,
+        blocks: [
+          {
+            text: "<script>unsafe()</script> {{recipient.first_name}}",
+            type: "paragraph",
+          },
+        ],
+      },
+    });
+
+    expect(source.html).not.toContain("<script>");
+    expect(source.html).toContain("&lt;script&gt;unsafe()&lt;/script&gt;");
+    expect(source.html).toContain("{{recipient.first_name}}");
+    expect(source.text).toContain("{{recipient.first_name}}");
+    expect(source.html).not.toContain("Mina");
+  });
+
+  it("rejects control characters in rich-body source at the exact location", () => {
+    const receipt = template("template_submission_receipt");
+    const invalid = {
+      ...receipt,
+      body: {
+        ...receipt.body,
+        blocks: [{ text: "Hello\u0007speaker", type: "paragraph" as const }],
+      },
+    };
+
+    expect(analyzeEmailTemplate(invalid).issues).toContainEqual(
+      expect.objectContaining({
+        code: "invalid_template",
+        location: "body.blocks[0].text",
+      }),
+    );
+  });
+
   it("creates immutable, exact snapshots and versions every change", () => {
     const receipt = template("template_submission_receipt");
     const revision = createEmailTemplateRevision(
@@ -254,15 +347,37 @@ describe("typed email templates", () => {
       { subject: "Updated: {{submission.friendly_id}}" },
       "2026-08-09T20:01:00.000Z",
     );
-    const active = activateEmailTemplate(revision, "2026-08-09T20:02:00.000Z");
-    const snapshot = snapshotEmailTemplate(active);
-    const serialized = serializeEmailTemplateSnapshot(active);
+    const active = activateEmailTemplate(revision, "2026-08-09T20:02:00.000Z", {
+      internalName: "Receipt approved",
+    });
+    const archived = archiveEmailTemplate(active, "2026-08-09T20:03:00.000Z");
+    const activeHistory = [receipt, revision, active];
+    const snapshot = snapshotEmailTemplate(active, activeHistory);
+    const serialized = serializeEmailTemplateSnapshot(active, activeHistory);
 
-    expect(revision).toMatchObject({ status: "draft", version: 2 });
-    expect(active).toMatchObject({ status: "active", version: 3 });
+    expect(revision).toMatchObject({
+      id: emailTemplateVersionId(receipt.id, 2),
+      status: "draft",
+      version: 2,
+    });
+    expect(active).toMatchObject({
+      id: emailTemplateVersionId(receipt.id, 3),
+      internalName: "Receipt approved",
+      status: "active",
+      version: 3,
+    });
+    expect(archived).toMatchObject({
+      id: emailTemplateVersionId(receipt.id, 4),
+      status: "archived",
+      version: 4,
+    });
+    expect(receipt.id).toBe("template_submission_receipt");
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.body.blocks)).toBe(true);
     expect(JSON.parse(serialized)).toEqual(active);
+    expect(() =>
+      snapshotEmailTemplate(active, [...activeHistory, archived]),
+    ).toThrow("Only the current template-family head");
     expect(() =>
       createEmailTemplateRevision(
         active,
@@ -270,6 +385,68 @@ describe("typed email templates", () => {
         "2026-08-09T20:01:00.000Z",
       ),
     ).toThrow("timestamp must advance");
+  });
+
+  it("keeps version identifiers collision-free instead of truncating families", () => {
+    const independent = "template_receipt__v2";
+    const generated = emailTemplateVersionId("template_receipt", 2);
+
+    expect(generated).not.toBe(independent);
+    expect(emailTemplateFamilyId(generated)).toBe("template_receipt");
+    expect(emailTemplateVersionId(generated, 999_999)).toHaveLength(
+      emailTemplateVersionId("template_receipt", 999_999).length,
+    );
+    expect(() => emailTemplateVersionId("x".repeat(127), 2)).toThrow(
+      "Template family ID is too long",
+    );
+    expect(
+      analyzeEmailTemplate({
+        ...template("template_submission_receipt"),
+        id: generated,
+      }).issues,
+    ).toContainEqual(
+      expect.objectContaining({ code: "invalid_template", location: "id" }),
+    );
+  });
+
+  it("parses strict API contracts and deterministic preview values", () => {
+    const accepted = template("template_submission_accepted");
+    const request = emailTemplatePreviewRequestSchema.parse({
+      baseTemplateId: accepted.id,
+      source: { kind: "recipient", recipientId: "contact_mina_okafor" },
+      template: {
+        allowedMergeFields: accepted.allowedMergeFields,
+        audience: accepted.audience,
+        body: accepted.body,
+        internalName: accepted.internalName,
+        replyTo: accepted.replyTo,
+        sender: accepted.sender,
+        subject: accepted.subject,
+      },
+    });
+    const preview = renderEmailTemplate(
+      accepted,
+      createDeterministicEmailPreviewValues({
+        recipientFirstName: "Mina",
+        recipientFullName: "Mina Okafor",
+      }),
+    );
+
+    expect(request.source).toEqual({
+      kind: "recipient",
+      recipientId: "contact_mina_okafor",
+    });
+    expect(preview.subject).toContain("Agents that recover in production");
+    expect(preview.html).toContain("Mina");
+    expect(
+      emailTemplateCommandSchema.safeParse({
+        baseTemplateId: accepted.id,
+        commandId: "email_template_demo",
+        expectedSourceVersion: 1,
+        extra: "not allowed",
+        type: "activate_version",
+      }).success,
+    ).toBe(false);
   });
 
   it("permits campaign snapshots only from active templates", () => {
@@ -280,14 +457,16 @@ describe("typed email templates", () => {
     ];
 
     for (const inactive of inactiveTemplates) {
-      expect(() => snapshotEmailTemplate(inactive)).toThrowError(
+      expect(() => snapshotEmailTemplate(inactive, [inactive])).toThrowError(
         EmailTemplateValidationError,
       );
-      expect(() => serializeEmailTemplateSnapshot(inactive)).toThrow(
+      expect(() =>
+        serializeEmailTemplateSnapshot(inactive, [inactive]),
+      ).toThrow(
         "status: Only an active template can become a campaign snapshot.",
       );
     }
-    expect(snapshotEmailTemplate(receipt)).toEqual(receipt);
+    expect(snapshotEmailTemplate(receipt, [receipt])).toEqual(receipt);
   });
 
   it("enforces the provider-friendly rendered body budget", () => {
@@ -363,6 +542,7 @@ describe("campaign plans", () => {
         scheduledAt: "2026-08-09T22:00:00.000Z",
       },
       template: template("template_submission_receipt"),
+      templateVersions: [template("template_submission_receipt")],
     });
 
     expect(plan.audience).toMatchObject({
@@ -419,6 +599,23 @@ describe("campaign plans", () => {
     ).resolves.not.toBe(original);
   });
 
+  it("cannot start a campaign from an active version superseded by archive", () => {
+    const receipt = template("template_submission_receipt");
+    const archived = archiveEmailTemplate(receipt, "2026-08-09T20:01:00.000Z");
+
+    expect(() =>
+      createCampaignPlan({
+        candidates: [],
+        createdAt: "2026-08-09T21:00:00.000Z",
+        eventId: "evt_demo",
+        filter: { portalStates: [], readiness: "all", roles: ["submitter"] },
+        schedule: { mode: "now" },
+        template: receipt,
+        templateVersions: [receipt, archived],
+      }),
+    ).toThrow("Only the current template-family head");
+  });
+
   it("excludes every contact sharing a suppressed normalized address", () => {
     const plan = createCampaignPlan({
       candidates: [
@@ -438,6 +635,7 @@ describe("campaign plans", () => {
       filter: { portalStates: [], readiness: "all", roles: ["speaker"] },
       schedule: { mode: "now" },
       template: template("template_submission_receipt"),
+      templateVersions: [template("template_submission_receipt")],
     });
 
     expect(plan.audience.includedCount).toBe(0);
@@ -458,6 +656,7 @@ describe("campaign plans", () => {
         filter: { portalStates: [], readiness: "all", roles: ["speaker"] },
         schedule: { mode: "now" },
         template: template("template_submission_receipt"),
+        templateVersions: [template("template_submission_receipt")],
       }),
     ).toThrow("Template belongs to another event");
   });
@@ -474,6 +673,7 @@ describe("campaign plans", () => {
           scheduledAt: "2026-08-09T20:59:59.000Z",
         },
         template: template("template_submission_receipt"),
+        templateVersions: [template("template_submission_receipt")],
       }),
     ).toThrow("Scheduled delivery must be after confirmation");
   });

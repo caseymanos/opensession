@@ -8,6 +8,7 @@ import {
   createEmailTemplateRevision,
   createSeedEmailTemplates,
   emailMergeFieldDefinitions,
+  emailTemplateVersionId,
   EmailTemplateValidationError,
   renderEmailTemplate,
   serializeEmailTemplateSnapshot,
@@ -122,6 +123,10 @@ describe("email domain properties", () => {
         (version, internalName) => {
           const current: EmailTemplate = {
             ...baseTemplate(),
+            id:
+              version === 1
+                ? baseTemplate().id
+                : emailTemplateVersionId(baseTemplate().id, version),
             version,
           };
           const revision = createEmailTemplateRevision(
@@ -130,7 +135,8 @@ describe("email domain properties", () => {
             revisionAt,
           );
           const active = activateEmailTemplate(revision, activationAt);
-          const snapshot = snapshotEmailTemplate(active);
+          const history = [current, revision, active];
+          const snapshot = snapshotEmailTemplate(active, history);
 
           expect(current.version).toBe(version);
           expect(revision).toMatchObject({
@@ -150,9 +156,9 @@ describe("email domain properties", () => {
           ).toBe(true);
           expect(Object.isFrozen(snapshot.sender)).toBe(true);
           expect(Object.isFrozen(snapshot.allowedMergeFields)).toBe(true);
-          expect(JSON.parse(serializeEmailTemplateSnapshot(active))).toEqual(
-            active,
-          );
+          expect(
+            JSON.parse(serializeEmailTemplateSnapshot(active, history)),
+          ).toEqual(active);
         },
       ),
       { numRuns: 200, seed: 0x56455253 },

@@ -9,6 +9,7 @@
   "dependencies": {
     "@sessionbox-killer/contracts": "workspace:*",
     "@sessionbox-killer/domain": "workspace:*",
+    "@sessionbox-killer/email": "workspace:*",
     "@sessionbox-killer/ui": "workspace:*",
     "lucide-react": "^0.563.0",
     "react": "^19.2.8",
