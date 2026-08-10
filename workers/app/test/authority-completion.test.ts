@@ -5,6 +5,7 @@ import {
   type AirtableFields,
   type AirtableTableKey,
 } from "@sessionbox-killer/data/airtable/internal";
+import { scheduleSnapshotSchema } from "@sessionbox-killer/contracts";
 import { createTestHarness } from "wrangler";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -79,6 +80,7 @@ function readMigrationStatements(): string[] {
     "0010_cache_invalidation_delivery.sql",
     "0011_cfp_authoritative_routing.sql",
     "0012_cfp_submission_reservations.sql",
+    "0013_schedule_domain.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -303,6 +305,46 @@ describe("RAL-34 completed authority data plane", () => {
         .length,
       tracks: 4,
     });
+
+    const eventRecord = (await providerRecords("events")).find(
+      ({ fields }) => fields.ID === demoEventId,
+    );
+    expect(eventRecord?.fields).toMatchObject({
+      "Schedule snap minutes": 15,
+      "Schedule version": 3,
+    });
+    const scheduleResponse = await server.fetch(
+      `/schedule-state?eventId=${demoEventId}`,
+    );
+    expect(scheduleResponse.status).toBe(200);
+    const schedule = scheduleSnapshotSchema.parse(
+      await scheduleResponse.json(),
+    );
+    expect(schedule.event.days).toHaveLength(2);
+    expect(schedule.rooms).toHaveLength(3);
+    expect(
+      schedule.sessions.filter(({ state }) => state === "accepted_unscheduled"),
+    ).toHaveLength(2);
+    expect(
+      new Set(
+        schedule.sessions.flatMap(({ participants }) =>
+          participants.map(({ role }) => role),
+        ),
+      ),
+    ).toEqual(new Set(["speaker", "moderator", "chair"]));
+    const deliberateOverlap = schedule.sessions.filter(
+      (session) =>
+        session.participants.some(
+          ({ personId }) => personId === "contact_speaker_01",
+        ) && session.slot !== null,
+    );
+    expect(deliberateOverlap).toHaveLength(2);
+    expect(deliberateOverlap[0]?.slot?.startAt).toBe(
+      "2026-08-18T17:00:00.000Z",
+    );
+    expect(deliberateOverlap[1]?.slot?.startAt).toBe(
+      "2026-08-18T17:15:00.000Z",
+    );
 
     const roomOperation = plan.operations.find(
       ({ table }) => table === "rooms",

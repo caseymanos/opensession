@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 3;
+export const AIRTABLE_SCHEMA_VERSION = 4;
 
 export type AirtableTableKey =
   | "organizations"
@@ -250,6 +250,9 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       dateTime("CFP closes"),
       select("Status", statuses.event),
       longText("Brand JSON"),
+      longText("Schedule days JSON"),
+      number("Schedule snap minutes"),
+      number("Schedule version"),
       number("Published version"),
       checkbox("Is demo"),
     ]),

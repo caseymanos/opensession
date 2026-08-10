@@ -8,6 +8,7 @@ import type {
 } from "../../src/cfp/submission-authority.js";
 import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
+import { D1ScheduleProjectionRepository } from "../../src/schedule/d1-repository.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface FixtureEnvironment extends BaseAuthorityEnvironment {
@@ -993,6 +994,14 @@ const fixtureHandler = {
         )
         .first();
       return Response.json(result);
+    }
+    if (url.pathname === "/schedule-state") {
+      const schedule = await new D1ScheduleProjectionRepository(env.DB).read(
+        url.searchParams.get("eventId") ?? "",
+      );
+      return schedule
+        ? Response.json(schedule)
+        : Response.json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/access-state") {
       return Response.json(

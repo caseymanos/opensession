@@ -190,6 +190,34 @@ describe("schedule domain", () => {
       },
       reason: "invalid_command",
     },
+    {
+      mutate(value: ScheduleSnapshot) {
+        value.sessions = [
+          {
+            ...required(value.sessions[0]),
+            state: "invented" as "scheduled",
+          },
+        ];
+      },
+      reason: "invalid_session_state",
+    },
+    {
+      mutate(value: ScheduleSnapshot) {
+        const session = required(value.sessions[0]);
+        value.sessions = [
+          {
+            ...session,
+            participants: [
+              {
+                ...required(session.participants[0]),
+                role: "host" as "speaker",
+              },
+            ],
+          },
+        ];
+      },
+      reason: "invalid_participant",
+    },
   ])("rejects $reason snapshots", ({ mutate, reason }) => {
     const value = snapshot();
     mutate(value);
