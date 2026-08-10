@@ -433,6 +433,92 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--command",
+        `INSERT INTO provider_messages (
+           id, organization_id, event_id, campaign_id, contact_id, kind,
+           provider, idempotency_key, recipient_hash, payload_hash,
+           template_id, template_version, delivery_mode, status, created_at,
+           updated_at
+         ) VALUES
+         (
+           'msg_upgrade_queued', 'org_cache_upgrade', 'evt_cache_upgrade',
+           'campaign_upgrade_queued', 'contact_cache_upgrade', 'campaign',
+           'resend', 'msg_upgrade_queued', '${hash}', '${hash}',
+           'template_submission_receipt', 1, 'sink', 'queued', '${timestamp}',
+           '${timestamp}'
+         ),
+         (
+           'msg_upgrade_sent', 'org_cache_upgrade', 'evt_cache_upgrade',
+           'campaign_upgrade_sent', 'contact_cache_upgrade', 'campaign',
+           'resend', 'msg_upgrade_sent', '${hash}', '${hash}',
+           'template_submission_receipt', 1, 'sink', 'sent', '${timestamp}',
+           '${timestamp}'
+         );`,
+        "--config",
+        config,
+      ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0013_email_queue_handoff.sql"),
+        "--config",
+        config,
+      ]);
+      const handoffOutput = executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--command",
+        `SELECT id, status, queue_handoff_lease_expires_at,
+                queue_handed_off_at, queue_payload_json
+         FROM provider_messages
+         WHERE id IN ('msg_upgrade_queued', 'msg_upgrade_sent')
+         ORDER BY id;
+         SELECT name FROM pragma_index_list('provider_messages')
+         WHERE name IN (
+           'idx_provider_messages_cfp_receipt_identity',
+           'idx_provider_messages_queue_handoff'
+         ) ORDER BY name;`,
+        "--config",
+        config,
+        "--json",
+      ]);
+      const handoffResults = JSON.parse(handoffOutput) as D1Execution[];
+      expect(handoffResults.at(-2)?.results).toEqual([
+        {
+          id: "msg_upgrade_queued",
+          queue_handed_off_at: null,
+          queue_handoff_lease_expires_at: null,
+          queue_payload_json: null,
+          status: "queued",
+        },
+        {
+          id: "msg_upgrade_sent",
+          queue_handed_off_at: null,
+          queue_handoff_lease_expires_at: null,
+          queue_payload_json: null,
+          status: "sent",
+        },
+      ]);
+      expect(handoffResults.at(-1)?.results).toEqual([
+        { name: "idx_provider_messages_cfp_receipt_identity" },
+        { name: "idx_provider_messages_queue_handoff" },
+      ]);
       const output = executeMigration([
         "d1",
         "execute",

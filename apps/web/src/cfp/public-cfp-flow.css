@@ -416,6 +416,36 @@
   color: #775716;
 }
 
+.public-cfp-ownership-warning,
+.public-cfp-inline-notice {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  width: min(790px, calc(100% - 40px));
+  margin: 24px auto -26px;
+  padding: 14px 16px;
+  border: 1px solid #dac78f;
+  border-radius: 12px;
+  background: #fff9e7;
+  color: #5f4918;
+}
+
+.public-cfp-ownership-warning > div {
+  display: grid;
+  gap: 3px;
+}
+
+.public-cfp-ownership-warning span {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.public-cfp-inline-notice {
+  width: auto;
+  margin: 18px 0 26px;
+}
+
 .public-cfp-card {
   width: min(650px, 100%);
   margin: 60px auto 110px;
@@ -934,6 +964,16 @@
 
   .public-cfp-save {
     margin-bottom: -17px;
+  }
+
+  .public-cfp-ownership-warning,
+  .public-cfp-inline-notice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .public-cfp-ownership-warning {
+    width: min(100% - 28px, 790px);
   }
 
   .public-cfp-card {

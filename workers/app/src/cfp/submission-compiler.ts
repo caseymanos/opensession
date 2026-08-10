@@ -1,4 +1,10 @@
-import type { ProtectedPublicCfpSubmissionRequest } from "@sessionbox-killer/contracts";
+import {
+  publicCfpDraftContentSchema,
+  type ProtectedPublicCfpSubmissionRequest,
+  type ProtectedPublicCfpSubmissionUpdateRequest,
+  type PublicCfpOwnedDraft,
+  type PublicCfpOwnedSubmission,
+} from "@sessionbox-killer/contracts";
 import {
   evaluateCfpRules,
   resolveCfpTrackRoute,
@@ -17,9 +23,12 @@ import type { PublicCfpPolicy } from "./policy.js";
 const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{15,127}$/;
 
 interface ContactRow {
+  display_name: string;
   email_normalized: string;
   id: string;
   source_record_id: string;
+  source_version: number;
+  title: string | null;
 }
 
 interface ReservationRow {
@@ -27,6 +36,25 @@ interface ReservationRow {
   request_hash: string;
   user_id: string;
 }
+
+interface OwnedDraftRow {
+  draft_json: string;
+  form_version: number;
+  friendly_id: string;
+  source_version: number;
+  status: string;
+  submission_id: string;
+  updated_at: string;
+}
+
+export interface OwnedCfpSubmission {
+  readonly draft: PublicCfpOwnedDraft;
+  readonly status: PublicCfpOwnedSubmission["status"];
+}
+
+type CfpSubmissionWriteRequest =
+  | ProtectedPublicCfpSubmissionRequest
+  | ProtectedPublicCfpSubmissionUpdateRequest;
 
 export type CfpSubmissionErrorCode =
   | "cfp_closed"
@@ -36,6 +64,7 @@ export type CfpSubmissionErrorCode =
   | "invalid_answer"
   | "invalid_idempotency_key"
   | "invalid_participant"
+  | "source_version_conflict"
   | "submission_limit_reached";
 
 export class CfpSubmissionError extends Error {
@@ -84,14 +113,52 @@ function canonicalJson(value: unknown): string {
   throw new TypeError("The CFP submission contains an unsupported value.");
 }
 
-function semanticRequest(
-  request: ProtectedPublicCfpSubmissionRequest,
-): Record<string, unknown> {
+export function cfpSubmissionTitle(
+  answers: Readonly<Record<string, unknown>>,
+): string {
+  return typeof answers.title === "string" && answers.title.trim()
+    ? answers.title.trim()
+    : "Untitled proposal";
+}
+
+function semanticRequest(request: CfpSubmissionWriteRequest) {
   return {
     answers: request.answers,
+    ...(Object.hasOwn(request, "expected_source_version")
+      ? {
+          expected_source_version: (
+            request as ProtectedPublicCfpSubmissionUpdateRequest
+          ).expected_source_version,
+        }
+      : {}),
     form_version: request.form_version,
     mode: request.mode,
+    ...(request.mode === "submit"
+      ? { participant_consent: request.participant_consent }
+      : {}),
     participants: request.participants,
+  };
+}
+
+async function requestCoordinates(
+  policy: PublicCfpPolicy,
+  session: AuthenticatedSession,
+  idempotencyKey: string,
+  request: CfpSubmissionWriteRequest,
+) {
+  if (!idempotencyKeyPattern.test(idempotencyKey)) {
+    throw new CfpSubmissionError(
+      "invalid_idempotency_key",
+      "Provide a valid Idempotency-Key for this save.",
+      400,
+    );
+  }
+  const identityHash = await sha256Hex(
+    `${policy.organizationId}\u0000${policy.eventId}\u0000${session.user.id}\u0000${idempotencyKey}`,
+  );
+  return {
+    identityHash,
+    requestHash: await sha256Hex(canonicalJson(semanticRequest(request))),
   };
 }
 
@@ -101,16 +168,11 @@ export async function cfpSubmissionCoordinates(
   idempotencyKey: string,
   request: ProtectedPublicCfpSubmissionRequest,
 ): Promise<CfpSubmissionCoordinates> {
-  if (!idempotencyKeyPattern.test(idempotencyKey)) {
-    throw new CfpSubmissionError(
-      "invalid_idempotency_key",
-      "Provide a valid Idempotency-Key for this save.",
-      400,
-    );
-  }
-  const requestHash = await sha256Hex(canonicalJson(semanticRequest(request)));
-  const identityHash = await sha256Hex(
-    `${policy.organizationId}\u0000${policy.eventId}\u0000${session.user.id}\u0000${idempotencyKey}`,
+  const { identityHash, requestHash } = await requestCoordinates(
+    policy,
+    session,
+    idempotencyKey,
+    request,
   );
   return {
     friendlyId: `OS-${identityHash.slice(0, 12).toUpperCase()}`,
@@ -118,6 +180,171 @@ export async function cfpSubmissionCoordinates(
     requestHash,
     submissionId: `submission_${identityHash.slice(0, 32)}`,
   };
+}
+
+export async function cfpSubmissionUpdateCoordinates(
+  policy: PublicCfpPolicy,
+  session: AuthenticatedSession,
+  idempotencyKey: string,
+  request: ProtectedPublicCfpSubmissionUpdateRequest,
+  draft: PublicCfpOwnedDraft,
+): Promise<CfpSubmissionCoordinates> {
+  const coordinates = await requestCoordinates(
+    policy,
+    session,
+    idempotencyKey,
+    request,
+  );
+  const requestHash = await sha256Hex(
+    canonicalJson({
+      request: semanticRequest(request),
+      submission_id: draft.submission_id,
+    }),
+  );
+  return {
+    friendlyId: draft.friendly_id,
+    planId: `cfp_plan_${coordinates.identityHash.slice(0, 32)}`,
+    requestHash,
+    submissionId: draft.submission_id,
+  };
+}
+
+function ownedDraft(row: OwnedDraftRow): PublicCfpOwnedDraft {
+  let content: unknown;
+  try {
+    content = JSON.parse(row.draft_json);
+  } catch {
+    throw new Error("The projected CFP draft JSON is invalid.");
+  }
+  return {
+    content: publicCfpDraftContentSchema.parse(content),
+    form_version: row.form_version,
+    friendly_id: row.friendly_id,
+    source_version: row.source_version,
+    submission_id: row.submission_id,
+    updated_at: row.updated_at,
+  };
+}
+
+function ownedSubmission(row: OwnedDraftRow): PublicCfpOwnedSubmission {
+  const statuses = new Set<PublicCfpOwnedSubmission["status"]>([
+    "accepted",
+    "declined",
+    "draft",
+    "in_review",
+    "submitted",
+    "waitlisted",
+    "withdrawn",
+  ]);
+  if (!statuses.has(row.status as PublicCfpOwnedSubmission["status"])) {
+    throw new Error("The projected CFP submission status is invalid.");
+  }
+  return {
+    ...ownedDraft(row),
+    status: row.status as PublicCfpOwnedSubmission["status"],
+  };
+}
+
+export class D1OwnedCfpDraftReader {
+  readonly #database: D1Database;
+
+  constructor(database: D1Database) {
+    this.#database = database;
+  }
+
+  async list(
+    policy: PublicCfpPolicy,
+    session: AuthenticatedSession,
+  ): Promise<PublicCfpOwnedSubmission[]> {
+    const rows = await this.#database
+      .prepare(
+        `SELECT submission.id AS submission_id, submission.friendly_id,
+                submission.form_version, submission.draft_json,
+                submission.source_version, submission.status,
+                submission.updated_at
+         FROM cfp_submission_reservations AS reservation
+         JOIN p_submissions AS submission
+           ON submission.organization_id = reservation.organization_id
+          AND submission.event_id = reservation.event_id
+          AND submission.id = reservation.submission_id
+         WHERE reservation.organization_id = ?1
+           AND reservation.event_id = ?2
+           AND reservation.user_id = ?3
+           AND submission.source_deleted_at IS NULL
+         ORDER BY submission.updated_at DESC, submission.id DESC
+         LIMIT 32`,
+      )
+      .bind(policy.organizationId, policy.eventId, session.user.id)
+      .all<OwnedDraftRow>();
+    return rows.results.map(ownedSubmission);
+  }
+
+  async read(
+    policy: PublicCfpPolicy,
+    session: AuthenticatedSession,
+    submissionId: string,
+  ): Promise<PublicCfpOwnedDraft | null> {
+    const row = await this.#database
+      .prepare(
+        `SELECT submission.id AS submission_id, submission.friendly_id,
+                submission.form_version, submission.draft_json,
+                submission.source_version, submission.status,
+                submission.updated_at
+         FROM cfp_submission_reservations AS reservation
+         JOIN p_submissions AS submission
+           ON submission.organization_id = reservation.organization_id
+          AND submission.event_id = reservation.event_id
+          AND submission.id = reservation.submission_id
+         WHERE reservation.organization_id = ?1
+           AND reservation.event_id = ?2
+           AND reservation.user_id = ?3
+           AND reservation.submission_id = ?4
+           AND submission.status = 'draft'
+           AND submission.source_deleted_at IS NULL`,
+      )
+      .bind(
+        policy.organizationId,
+        policy.eventId,
+        session.user.id,
+        submissionId,
+      )
+      .first<OwnedDraftRow>();
+    return row ? ownedDraft(row) : null;
+  }
+
+  async readForWrite(
+    policy: PublicCfpPolicy,
+    session: AuthenticatedSession,
+    submissionId: string,
+  ): Promise<OwnedCfpSubmission | null> {
+    const row = await this.#database
+      .prepare(
+        `SELECT submission.id AS submission_id, submission.friendly_id,
+                submission.form_version, submission.draft_json,
+                submission.source_version, submission.status,
+                submission.updated_at
+         FROM cfp_submission_reservations AS reservation
+         JOIN p_submissions AS submission
+           ON submission.organization_id = reservation.organization_id
+          AND submission.event_id = reservation.event_id
+          AND submission.id = reservation.submission_id
+         WHERE reservation.organization_id = ?1
+           AND reservation.event_id = ?2
+           AND reservation.user_id = ?3
+           AND reservation.submission_id = ?4
+           AND submission.source_deleted_at IS NULL`,
+      )
+      .bind(
+        policy.organizationId,
+        policy.eventId,
+        session.user.id,
+        submissionId,
+      )
+      .first<OwnedDraftRow>();
+    if (!row) return null;
+    const submission = ownedSubmission(row);
+    return { draft: submission, status: submission.status };
+  }
 }
 
 function emptyAnswer(value: unknown): boolean {
@@ -193,7 +420,7 @@ function validateAnswer(
 
 function validatedAnswers(
   policy: PublicCfpPolicy,
-  request: ProtectedPublicCfpSubmissionRequest,
+  request: CfpSubmissionWriteRequest,
 ): Record<string, unknown> {
   const fields = policy.publicConfiguration.form.fields;
   const knownKeys = new Set(fields.map((field) => field.key));
@@ -234,7 +461,7 @@ function validatedAnswers(
 
 function normalizedParticipants(
   session: AuthenticatedSession,
-  request: ProtectedPublicCfpSubmissionRequest,
+  request: CfpSubmissionWriteRequest,
 ) {
   const participants = request.participants.map((participant) => ({
     ...participant,
@@ -268,7 +495,8 @@ async function contactRows(
   const placeholders = emails.map((_, index) => `?${index + 2}`).join(", ");
   const result = await database
     .prepare(
-      `SELECT id, email_normalized, source_record_id
+      `SELECT id, email_normalized, display_name, title, source_record_id,
+              source_version
        FROM p_contacts
        WHERE organization_id = ?1 AND source_deleted_at IS NULL
          AND email_normalized IN (${placeholders})
@@ -294,6 +522,21 @@ async function contactRows(
 
 async function derivedId(prefix: string, value: string): Promise<string> {
   return `${prefix}_${(await sha256Hex(value)).slice(0, 32)}`;
+}
+
+export async function cfpContactIdForEmail(
+  database: D1Database,
+  organizationId: string,
+  email: string,
+): Promise<string> {
+  const normalizedEmail = email.toLocaleLowerCase("en-US");
+  const existing = (
+    await contactRows(database, organizationId, [normalizedEmail])
+  ).get(normalizedEmail);
+  return (
+    existing?.id ??
+    derivedId("contact", `${organizationId}\u0000${normalizedEmail}`)
+  );
 }
 
 function providerReference(recordId: string): CfpSubmissionPlanFieldValue {
@@ -410,17 +653,89 @@ export class D1CfpSubmissionCompiler {
     coordinates: CfpSubmissionCoordinates,
     at = new Date(),
   ): Promise<CfpSubmissionPlanInput> {
-    if (request.form_version !== policy.formVersion) {
-      throw new CfpSubmissionError(
-        "form_version_conflict",
-        "The CFP form changed. Refresh before saving this proposal.",
-        409,
-      );
-    }
     if (!policy.acceptingSubmissions) {
       throw new CfpSubmissionError(
         "cfp_closed",
         "This call for proposals is not accepting new submissions.",
+        409,
+      );
+    }
+    return this.#compilePlan(
+      policy,
+      session,
+      request,
+      coordinates,
+      0,
+      true,
+      null,
+      at,
+    );
+  }
+
+  async compileUpdate(
+    policy: PublicCfpPolicy,
+    session: AuthenticatedSession,
+    request: ProtectedPublicCfpSubmissionUpdateRequest,
+    coordinates: CfpSubmissionCoordinates,
+    draft: PublicCfpOwnedDraft,
+    at = new Date(),
+  ): Promise<CfpSubmissionPlanInput> {
+    if (
+      coordinates.submissionId !== draft.submission_id ||
+      coordinates.friendlyId !== draft.friendly_id
+    ) {
+      throw new CfpSubmissionError(
+        "idempotency_conflict",
+        "This save key does not belong to this proposal.",
+        409,
+      );
+    }
+    if (request.expected_source_version !== draft.source_version) {
+      throw new CfpSubmissionError(
+        "source_version_conflict",
+        "This proposal changed elsewhere. Refresh before saving again.",
+        409,
+      );
+    }
+    if (
+      !policy.acceptingSubmissions &&
+      (request.mode === "submit" ||
+        !policy.publicConfiguration.form.editAfterClose)
+    ) {
+      throw new CfpSubmissionError(
+        "cfp_closed",
+        request.mode === "submit"
+          ? "This call for proposals is no longer accepting submissions."
+          : "This call for proposals no longer allows draft edits.",
+        409,
+      );
+    }
+    return this.#compilePlan(
+      policy,
+      session,
+      request,
+      coordinates,
+      draft.source_version,
+      false,
+      draft,
+      at,
+    );
+  }
+
+  async #compilePlan(
+    policy: PublicCfpPolicy,
+    session: AuthenticatedSession,
+    request: CfpSubmissionWriteRequest,
+    coordinates: CfpSubmissionCoordinates,
+    submissionExpectedVersion: number,
+    creating: boolean,
+    previousDraft: PublicCfpOwnedDraft | null,
+    at: Date,
+  ): Promise<CfpSubmissionPlanInput> {
+    if (request.form_version !== policy.formVersion) {
+      throw new CfpSubmissionError(
+        "form_version_conflict",
+        "The CFP form changed. Refresh before saving this proposal.",
         409,
       );
     }
@@ -433,6 +748,12 @@ export class D1CfpSubmissionCompiler {
         "A primary participant is required.",
       );
     }
+    if (request.mode === "submit" && !primaryParticipant.name.trim()) {
+      throw new CfpSubmissionError(
+        "invalid_participant",
+        "Add the primary participant name before saving securely.",
+      );
+    }
     const draftJson = canonicalJson({ answers, participants });
     if (draftJson.length > 100_000) {
       throw new CfpSubmissionError(
@@ -440,18 +761,56 @@ export class D1CfpSubmissionCompiler {
         "This proposal exceeds the maximum saved draft size.",
       );
     }
+    const authorityParticipants =
+      request.mode === "submit" ? participants : [primaryParticipant];
     const existingContacts = await contactRows(
       this.#database,
       policy.organizationId,
-      participants.map((participant) => participant.email),
+      authorityParticipants.map((participant) => participant.email),
     );
-    await this.#reserve(policy, session, coordinates, at);
+    if (creating) {
+      await this.#reserve(policy, session, coordinates, at);
+    }
 
     const contactItems: CfpSubmissionPlanItem[] = [];
     const contactReferences = new Map<string, CfpSubmissionPlanFieldValue>();
-    for (const participant of participants) {
+    for (const [
+      participantIndex,
+      participant,
+    ] of authorityParticipants.entries()) {
       const existing = existingContacts.get(participant.email);
       if (existing) {
+        const participantName = participant.name.trim();
+        const participantRole = participant.role.trim();
+        const previousParticipant = previousDraft?.content.participants.find(
+          (candidate) =>
+            candidate.email.toLocaleLowerCase("en-US") === participant.email,
+        );
+        const roleWasEdited = participantRole
+          ? true
+          : !creating && Boolean(previousParticipant?.role.trim());
+        const roleChanged =
+          roleWasEdited && participantRole !== (existing.title ?? "");
+        if (
+          participantIndex === 0 &&
+          participantName &&
+          (participantName !== existing.display_name || roleChanged)
+        ) {
+          contactItems.push({
+            entityId: existing.id,
+            expectedVersion: existing.source_version,
+            fields: {
+              "Display name": participantName,
+              "Email normalized": participant.email,
+              Organization: providerReference(
+                policy.authority.organizationRecordId,
+              ),
+              ...(roleChanged ? { Title: participantRole || null } : {}),
+            },
+            itemKey: `contact_${contactItems.length + 1}`,
+            table: "contacts",
+          });
+        }
         contactReferences.set(
           participant.email,
           providerReference(existing.source_record_id),
@@ -467,7 +826,10 @@ export class D1CfpSubmissionCompiler {
         entityId,
         expectedVersion: 0,
         fields: {
-          "Display name": participant.name,
+          "Display name":
+            participant.name.trim() ||
+            session.user.displayName?.trim() ||
+            participant.email,
           "Email normalized": participant.email,
           Organization: providerReference(
             policy.authority.organizationRecordId,
@@ -497,10 +859,7 @@ export class D1CfpSubmissionCompiler {
       throw new Error("The canonical CFP track has no authority reference.");
     }
 
-    const title =
-      typeof answers.title === "string" && answers.title.trim()
-        ? answers.title.trim()
-        : "Untitled proposal";
+    const title = cfpSubmissionTitle(answers);
     const submissionFields: Record<string, CfpSubmissionPlanFieldValue> = {
       "Draft JSON": draftJson,
       Event: providerReference(policy.authority.eventRecordId),
@@ -515,70 +874,87 @@ export class D1CfpSubmissionCompiler {
       Title: title,
       ...(authorityTrack
         ? { Track: providerReference(authorityTrack.providerRecordId) }
-        : {}),
+        : creating
+          ? {}
+          : { Track: null }),
       ...(route
         ? {
             "Default reviewer group ID": route.defaultReviewerGroupId,
             "Route key": route.routeKey,
           }
-        : {}),
+        : creating
+          ? {}
+          : {
+              "Default reviewer group ID": null,
+              "Route key": null,
+            }),
       ...(request.mode === "submit"
         ? { "Submitted at": at.toISOString() }
-        : {}),
+        : creating
+          ? {}
+          : { "Submitted at": null }),
     };
     const submissionItem: CfpSubmissionPlanItem = {
       entityId: coordinates.submissionId,
-      expectedVersion: 0,
+      expectedVersion: submissionExpectedVersion,
       fields: submissionFields,
       itemKey: "submission",
       table: "submissions",
     };
 
     const answerItems: CfpSubmissionPlanItem[] = [];
-    for (const [
-      index,
-      field,
-    ] of policy.publicConfiguration.form.fields.entries()) {
-      if (field.type === "participant" || !Object.hasOwn(answers, field.key)) {
-        continue;
+    const participantItems: CfpSubmissionPlanItem[] = [];
+    if (request.mode === "submit") {
+      for (const [
+        index,
+        field,
+      ] of policy.publicConfiguration.form.fields.entries()) {
+        if (
+          field.type === "participant" ||
+          !Object.hasOwn(answers, field.key)
+        ) {
+          continue;
+        }
+        answerItems.push({
+          entityId: await derivedId(
+            "answer",
+            `${coordinates.submissionId}\u0000${field.key}`,
+          ),
+          expectedVersion: 0,
+          fields: {
+            "Field label snapshot": field.label,
+            "Field stable key": field.key,
+            Order: index + 1,
+            Submission: itemReference("submission"),
+            Type: field.type,
+            "Value JSON": canonicalJson(answers[field.key]),
+          },
+          itemKey: `answer_${answerItems.length + 1}`,
+          table: "submission_answers",
+        });
       }
-      answerItems.push({
-        entityId: await derivedId(
-          "answer",
-          `${coordinates.submissionId}\u0000${field.key}`,
-        ),
-        expectedVersion: 0,
-        fields: {
-          "Field label snapshot": field.label,
-          "Field stable key": field.key,
-          Order: index + 1,
-          Submission: itemReference("submission"),
-          Type: field.type,
-          "Value JSON": canonicalJson(answers[field.key]),
-        },
-        itemKey: `answer_${answerItems.length + 1}`,
-        table: "submission_answers",
-      });
-    }
 
-    const participantItems = await Promise.all(
-      participants.map(async (participant, index) => ({
-        entityId: await derivedId(
-          "participant",
-          `${coordinates.submissionId}\u0000${participant.email}`,
-        ),
-        expectedVersion: 0,
-        fields: {
-          Contact: contactReference(contactReferences, participant.email),
-          "Is primary": index === 0,
-          Order: index + 1,
-          Role: "speaker",
-          Submission: itemReference("submission"),
-        },
-        itemKey: `participant_${index + 1}`,
-        table: "submission_participants" as const,
-      })),
-    );
+      participantItems.push(
+        ...(await Promise.all(
+          participants.map(async (participant, index) => ({
+            entityId: await derivedId(
+              "participant",
+              `${coordinates.submissionId}\u0000${participant.email}`,
+            ),
+            expectedVersion: 0,
+            fields: {
+              Contact: contactReference(contactReferences, participant.email),
+              "Is primary": index === 0,
+              Order: index + 1,
+              Role: "speaker",
+              Submission: itemReference("submission"),
+            },
+            itemKey: `participant_${index + 1}`,
+            table: "submission_participants" as const,
+          })),
+        )),
+      );
+    }
 
     return {
       actorId: session.user.id,

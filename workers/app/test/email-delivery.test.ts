@@ -8,6 +8,7 @@ import type { EmailDeliveryConfig } from "../src/email/config";
 import {
   CampaignEmailCoordinator,
   EmailQueueDeliveryService,
+  pruneExpiredEmailQueuePayloads,
 } from "../src/email/delivery";
 import type {
   CampaignEmailQueueMessage,
@@ -226,7 +227,87 @@ afterAll(async () => {
 });
 
 describe("campaign email delivery", () => {
-  it("dedupes queueing and delivers exactly once to the local sink", async () => {
+  it("leases one queue handoff across concurrent exact replays", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const message = await campaignMessage("concurrent_handoff");
+    const sent: EmailQueueMessage[] = [];
+    let releaseSend: (() => void) | undefined;
+    let markSendStarted: (() => void) | undefined;
+    const sendStarted = new Promise<void>((resolve) => {
+      markSendStarted = resolve;
+    });
+    const sendReleased = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const queue = {
+      async send(queuedMessage: EmailQueueMessage) {
+        sent.push(structuredClone(queuedMessage));
+        markSendStarted?.();
+        await sendReleased;
+      },
+    } as unknown as Queue<EmailQueueMessage>;
+    const coordinator = new CampaignEmailCoordinator({
+      config: sinkConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      queue,
+    });
+
+    const first = coordinator.enqueue(message);
+    await sendStarted;
+    await expect(coordinator.enqueue(message)).resolves.toEqual({
+      outcome: "handoff_pending",
+      status: "queued",
+    });
+    expect(sent).toHaveLength(1);
+
+    releaseSend?.();
+    await expect(first).resolves.toEqual({ outcome: "queued" });
+    expect(sent).toEqual([message]);
+  });
+
+  it("accepts consumer proof that races producer handoff confirmation", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const message = await campaignMessage("consumer_confirmation_race");
+    const queue = {
+      async send() {
+        await env.DB.prepare(
+          `UPDATE provider_messages
+           SET queue_handed_off_at = ?1,
+               queue_handoff_lease_expires_at = NULL,
+               queue_payload_json = NULL
+           WHERE organization_id = ?2 AND id = ?3`,
+        )
+          .bind(timestamp, message.organization_id, message.message_id)
+          .run();
+      },
+    } as unknown as Queue<EmailQueueMessage>;
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue,
+      }).enqueue(message),
+    ).resolves.toEqual({ outcome: "queued" });
+    const state = await env.DB.prepare(
+      `SELECT queue_handed_off_at, queue_payload_json, status
+       FROM provider_messages WHERE id = ?1`,
+    )
+      .bind(message.message_id)
+      .first<{
+        queue_handed_off_at: string | null;
+        queue_payload_json: string | null;
+        status: string;
+      }>();
+    expect(state).toEqual({
+      queue_handed_off_at: timestamp,
+      queue_payload_json: null,
+      status: "queued",
+    });
+  });
+
+  it("dedupes durable state and delivers exactly once across repeated queue handoffs", async () => {
     const env = await server.getWorker<Env>().getEnv();
     const message = await campaignMessage("sink");
     const { queue, sent } = createQueue();
@@ -252,7 +333,6 @@ describe("campaign email delivery", () => {
       now: () => new Date(timestamp),
     });
     await expect(service.process(sent[0])).resolves.toEqual({ action: "ack" });
-    await expect(service.process(sent[0])).resolves.toEqual({ action: "ack" });
     await expect(
       messageState(env.DB, message.message_id),
     ).resolves.toMatchObject({
@@ -266,6 +346,12 @@ describe("campaign email delivery", () => {
       .bind(message.message_id)
       .first<{ count: number }>();
     expect(attempts?.count).toBe(1);
+    const minimized = await env.DB.prepare(
+      "SELECT queue_payload_json FROM provider_messages WHERE id = ?1",
+    )
+      .bind(message.message_id)
+      .first<{ queue_payload_json: string | null }>();
+    expect(minimized?.queue_payload_json).toBeNull();
     await expect(coordinator.replay(message)).resolves.toEqual({
       outcome: "not_replayable",
       status: "delivered",
@@ -449,7 +535,7 @@ describe("campaign email delivery", () => {
     expect(calls).toBe(1);
   });
 
-  it("fails closed on suppressions, allowlist misses, and queue rejection", async () => {
+  it("fails closed on suppressions and allowlist misses, then recovers a lost queue handoff", async () => {
     const env = await server.getWorker<Env>().getEnv();
     const suppressed = await campaignMessage(
       "suppression",
@@ -512,7 +598,242 @@ describe("campaign email delivery", () => {
     await expect(
       messageState(env.DB, rejected.message_id),
     ).resolves.toMatchObject({
-      error_code: "queue_rejected",
+      error_code: null,
+      status: "queued",
+    });
+    const recoveredQueue = createQueue();
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: recoveredQueue.queue,
+      }).enqueue(rejected),
+    ).resolves.toEqual({ outcome: "already_queued", status: "queued" });
+    expect(recoveredQueue.sent).toEqual([rejected]);
+    await expect(
+      new EmailQueueDeliveryService({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+      }).process(recoveredQueue.sent[0]),
+    ).resolves.toEqual({ action: "ack" });
+    await expect(
+      messageState(env.DB, rejected.message_id),
+    ).resolves.toMatchObject({ attempt_count: 1, status: "delivered" });
+  });
+
+  it("keeps an accepted original envelope valid when a drifted recovery send rejects", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const original = await campaignMessage("accepted_before_confirmation");
+    const accepted: EmailQueueMessage[] = [];
+    const confirmationLostQueue = {
+      async send(message: EmailQueueMessage) {
+        accepted.push(structuredClone(message));
+        await env.DB.prepare(
+          `UPDATE provider_messages
+           SET queue_handoff_lease_expires_at = '2000-01-01T00:00:00.000Z'
+           WHERE id = ?1`,
+        )
+          .bind(original.message_id)
+          .run();
+      },
+    } as unknown as Queue<EmailQueueMessage>;
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: confirmationLostQueue,
+      }).enqueue(original),
+    ).rejects.toThrow("Campaign queue handoff confirmation was lost.");
+    expect(accepted).toEqual([original]);
+
+    const drifted = {
+      ...original,
+      email: { ...original.email, subject: "A newly rendered subject" },
+    } satisfies CampaignEmailQueueMessage;
+    let replacementAttempt: EmailQueueMessage | null = null;
+    const rejectedReplacementQueue = {
+      async send(message: EmailQueueMessage) {
+        replacementAttempt = structuredClone(message);
+        throw new Error("Queue unavailable");
+      },
+    } as unknown as Queue<EmailQueueMessage>;
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: rejectedReplacementQueue,
+      }).enqueue(drifted),
+    ).rejects.toThrow("Queue unavailable");
+    expect(replacementAttempt).toEqual(original);
+
+    await expect(
+      new EmailQueueDeliveryService({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+      }).process(accepted[0]),
+    ).resolves.toEqual({ action: "ack" });
+    await expect(
+      messageState(env.DB, original.message_id),
+    ).resolves.toMatchObject({ attempt_count: 1, status: "delivered" });
+  });
+
+  it("enforces one CFP receipt identity and expires abandoned envelopes", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const campaignId = "cfp_receipt_submission_database_unique";
+    const scopedMessage = async (contactId: string) => {
+      const base = await campaignMessage(`receipt_identity_${contactId}`);
+      return {
+        ...base,
+        campaign_id: campaignId,
+        contact_id: contactId,
+        message_id: await createCampaignMessageKey({
+          campaignId,
+          contactId,
+          templateId: base.template_id,
+          templateVersion: base.template_version,
+        }),
+      } satisfies CampaignEmailQueueMessage;
+    };
+    const acceptedQueue = createQueue();
+    await new CampaignEmailCoordinator({
+      config: sinkConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      queue: acceptedQueue.queue,
+    }).enqueue(await scopedMessage("contact_receipt_identity_a"));
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: acceptedQueue.queue,
+      }).enqueue(await scopedMessage("contact_receipt_identity_b")),
+    ).rejects.toThrow();
+    const identityCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM provider_messages
+       WHERE organization_id = 'org_email' AND campaign_id = ?1`,
+    )
+      .bind(campaignId)
+      .first<{ count: number }>();
+    expect(identityCount?.count).toBe(1);
+
+    const abandoned = await campaignMessage("abandoned_envelope");
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: createQueue({ fail: true }).queue,
+      }).enqueue(abandoned),
+    ).rejects.toThrow("Queue unavailable");
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date("2026-09-08T22:00:00.000Z"),
+        queue: createQueue({ fail: true }).queue,
+      }).drainPendingHandoffs(),
+    ).rejects.toThrow("Queue unavailable");
+    await expect(
+      pruneExpiredEmailQueuePayloads(
+        env.DB,
+        new Date("2026-09-10T22:00:00.000Z"),
+      ),
+    ).resolves.toBe(1);
+    const expired = await env.DB.prepare(
+      `SELECT error_code, queue_payload_json, status
+       FROM provider_messages WHERE id = ?1`,
+    )
+      .bind(abandoned.message_id)
+      .first<{
+        error_code: string | null;
+        queue_payload_json: string | null;
+        status: string;
+      }>();
+    expect(expired).toEqual({
+      error_code: "queue_handoff_expired",
+      queue_payload_json: null,
+      status: "failed",
+    });
+  });
+
+  it("isolates oversized poison envelopes while draining later rows", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const oversizedBase = await campaignMessage("oversized_rejected");
+    const oversized = {
+      ...oversizedBase,
+      email: {
+        ...oversizedBase.email,
+        html: "h".repeat(70 * 1_024),
+        text: "t".repeat(70 * 1_024),
+      },
+    } satisfies CampaignEmailQueueMessage;
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: createQueue().queue,
+      }).enqueue(oversized),
+    ).rejects.toThrow("Campaign queue payload exceeds 120 KiB.");
+    const rejectedCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM provider_messages WHERE id = ?1",
+    )
+      .bind(oversized.message_id)
+      .first<{ count: number }>();
+    expect(rejectedCount?.count).toBe(0);
+
+    const poison = await campaignMessage("oversized_poison");
+    const following = await campaignMessage("after_oversized_poison");
+    const unavailable = createQueue({ fail: true });
+    const coordinator = new CampaignEmailCoordinator({
+      config: sinkConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      queue: unavailable.queue,
+    });
+    await expect(coordinator.enqueue(poison)).rejects.toThrow(
+      "Queue unavailable",
+    );
+    await expect(coordinator.enqueue(following)).rejects.toThrow(
+      "Queue unavailable",
+    );
+    await env.DB.prepare(
+      "UPDATE provider_messages SET queue_payload_json = ?1 WHERE id = ?2",
+    )
+      .bind(
+        JSON.stringify({ ...oversized, message_id: poison.message_id }),
+        poison.message_id,
+      )
+      .run();
+    const recovered = createQueue();
+    await expect(
+      new CampaignEmailCoordinator({
+        config: sinkConfig,
+        database: env.DB,
+        now: () => new Date(timestamp),
+        queue: recovered.queue,
+      }).drainPendingHandoffs(),
+    ).resolves.toBe(1);
+    expect(recovered.sent).toEqual([following]);
+    const poisonState = await env.DB.prepare(
+      `SELECT error_code, queue_payload_json, status
+       FROM provider_messages WHERE id = ?1`,
+    )
+      .bind(poison.message_id)
+      .first<{
+        error_code: string | null;
+        queue_payload_json: string | null;
+        status: string;
+      }>();
+    expect(poisonState).toEqual({
+      error_code: "invalid_queue_payload",
+      queue_payload_json: null,
       status: "failed",
     });
   });

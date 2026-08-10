@@ -195,6 +195,11 @@ export class EmailProviderEventService {
             `UPDATE provider_messages
              SET status = ?1, updated_at = ?2, last_provider_event_id = ?3,
                  last_provider_event_at = ?4,
+                 queue_payload_json = CASE
+                   WHEN ?1 IN ('sent', 'delivered', 'suppressed', 'bounced', 'complained')
+                     THEN NULL
+                   ELSE queue_payload_json
+                 END,
                  sent_at = CASE WHEN ?1 IN ('sent', 'delivered') THEN COALESCE(sent_at, ?4) ELSE sent_at END,
                  delivered_at = CASE WHEN ?1 = 'delivered' THEN COALESCE(delivered_at, ?4) ELSE delivered_at END,
                  error_code = CASE WHEN ?1 IN ('failed', 'bounced', 'complained', 'suppressed') THEN ?1 ELSE NULL END

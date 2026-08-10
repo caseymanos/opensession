@@ -261,40 +261,94 @@ const publicCfpSubmissionAnswersSchema = z
     message: "A submission cannot contain more than 128 answers.",
   });
 
-const publicCfpSubmissionParticipantSchema = z
+export const publicCfpParticipantEmailSchema = z.email().trim().max(320);
+
+const publicCfpDraftParticipantSchema = z
   .object({
-    email: z.email().trim().max(320),
+    email: publicCfpParticipantEmailSchema,
     id: publicIdentifierSchema,
-    name: z.string().trim().min(1).max(160),
+    name: z.string().trim().max(160),
     role: z.string().trim().max(160),
   })
   .strict();
 
+function uniquePublicCfpParticipants<
+  T extends typeof publicCfpDraftParticipantSchema,
+>(participantSchema: T) {
+  return z
+    .array(participantSchema)
+    .min(1)
+    .max(8)
+    .refine(
+      (participants) =>
+        new Set(participants.map((participant) => participant.id)).size ===
+          participants.length &&
+        new Set(
+          participants.map((participant) =>
+            participant.email.toLocaleLowerCase("en-US"),
+          ),
+        ).size === participants.length,
+      "Participant IDs and email addresses must be unique.",
+    );
+}
+
 const publicCfpSubmissionBase = {
   answers: publicCfpSubmissionAnswersSchema,
   form_version: z.int().positive(),
-  participants: z.array(publicCfpSubmissionParticipantSchema).min(1).max(8),
+} as const;
+
+export const publicCfpDraftContentSchema = z
+  .object({
+    answers: publicCfpSubmissionAnswersSchema,
+    participants: uniquePublicCfpParticipants(publicCfpDraftParticipantSchema),
+  })
+  .strict();
+
+const publicCfpFinalParticipantSchema = publicCfpDraftParticipantSchema.extend({
+  name: z.string().trim().min(1).max(160),
+});
+const publicCfpFinalParticipantsSchema = uniquePublicCfpParticipants(
+  publicCfpFinalParticipantSchema,
+);
+
+const draftSubmissionRequestShape = {
+  ...publicCfpSubmissionBase,
+  mode: z.literal("draft"),
+  participants: uniquePublicCfpParticipants(publicCfpDraftParticipantSchema),
+} as const;
+
+const finalSubmissionRequestShape = {
+  ...publicCfpSubmissionBase,
+  mode: z.literal("submit"),
+  participant_consent: z.literal(true),
+  participants: publicCfpFinalParticipantsSchema,
+  turnstile_action: z.literal("cfp_submit"),
+  turnstile_token: turnstileTokenSchema,
 } as const;
 
 export const protectedPublicCfpSubmissionRequestSchema = z.discriminatedUnion(
   "mode",
   [
-    z
-      .object({
-        ...publicCfpSubmissionBase,
-        mode: z.literal("draft"),
-      })
-      .strict(),
-    z
-      .object({
-        ...publicCfpSubmissionBase,
-        mode: z.literal("submit"),
-        turnstile_action: z.literal("cfp_submit"),
-        turnstile_token: turnstileTokenSchema,
-      })
-      .strict(),
+    z.object(draftSubmissionRequestShape).strict(),
+    z.object(finalSubmissionRequestShape).strict(),
   ],
 );
+
+export const protectedPublicCfpSubmissionUpdateRequestSchema =
+  z.discriminatedUnion("mode", [
+    z
+      .object({
+        ...draftSubmissionRequestShape,
+        expected_source_version: z.int().positive(),
+      })
+      .strict(),
+    z
+      .object({
+        ...finalSubmissionRequestShape,
+        expected_source_version: z.int().positive(),
+      })
+      .strict(),
+  ]);
 
 export const publicCfpSubmissionResponseSchema = z
   .object({
@@ -303,6 +357,35 @@ export const publicCfpSubmissionResponseSchema = z
     source_version: z.int().positive(),
     status: z.enum(["draft", "submitted"]),
     submission_id: publicIdentifierSchema,
+  })
+  .strict();
+
+export const publicCfpOwnedDraftSchema = z
+  .object({
+    content: publicCfpDraftContentSchema,
+    form_version: z.int().positive(),
+    friendly_id: z.string().trim().min(1).max(64),
+    source_version: z.int().positive(),
+    submission_id: publicIdentifierSchema,
+    updated_at: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
+export const publicCfpOwnedSubmissionSchema = publicCfpOwnedDraftSchema.extend({
+  status: z.enum([
+    "draft",
+    "submitted",
+    "in_review",
+    "accepted",
+    "waitlisted",
+    "declined",
+    "withdrawn",
+  ]),
+});
+
+export const publicCfpOwnedSubmissionsResponseSchema = z
+  .object({
+    submissions: z.array(publicCfpOwnedSubmissionSchema).max(32),
   })
   .strict();
 
@@ -345,6 +428,17 @@ export type PublicCfpConfigurationResponse = z.infer<
 >;
 export type ProtectedPublicCfpSubmissionRequest = z.infer<
   typeof protectedPublicCfpSubmissionRequestSchema
+>;
+export type ProtectedPublicCfpSubmissionUpdateRequest = z.infer<
+  typeof protectedPublicCfpSubmissionUpdateRequestSchema
+>;
+export type PublicCfpDraftContent = z.infer<typeof publicCfpDraftContentSchema>;
+export type PublicCfpOwnedDraft = z.infer<typeof publicCfpOwnedDraftSchema>;
+export type PublicCfpOwnedSubmission = z.infer<
+  typeof publicCfpOwnedSubmissionSchema
+>;
+export type PublicCfpOwnedSubmissionsResponse = z.infer<
+  typeof publicCfpOwnedSubmissionsResponseSchema
 >;
 export type PublicCfpSubmissionResponse = z.infer<
   typeof publicCfpSubmissionResponseSchema

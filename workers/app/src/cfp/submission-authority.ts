@@ -192,6 +192,19 @@ const linkTargets: Readonly<
 
 const numericFields = new Set(["Form version", "Order"]);
 const booleanFields = new Set(["Is primary"]);
+const nullableFields: Readonly<
+  Record<CfpSubmissionPlanTable, ReadonlySet<string>>
+> = {
+  contacts: new Set(["Title"]),
+  submissions: new Set([
+    "Default reviewer group ID",
+    "Route key",
+    "Submitted at",
+    "Track",
+  ]),
+  submission_answers: new Set(),
+  submission_participants: new Set(),
+};
 
 export class CfpSubmissionPlanIdempotencyConflictError extends Error {
   constructor(planId: string) {
@@ -257,7 +270,12 @@ function isProviderReference(
   );
 }
 
-function parseScalarField(value: unknown, field: string): AirtableCellValue {
+function parseScalarField(
+  value: unknown,
+  table: CfpSubmissionPlanTable,
+  field: string,
+): AirtableCellValue {
+  if (value === null && nullableFields[table].has(field)) return null;
   if (numericFields.has(field)) {
     if (
       !Number.isInteger(value) ||
@@ -324,19 +342,29 @@ function parseItem(value: unknown, index: number): CfpSubmissionPlanItem {
       throw new TypeError(`${field} is not writable on ${value.table}.`);
     }
     if (Object.hasOwn(linkTargets[value.table], field)) {
-      if (!isItemReference(fieldValue) && !isProviderReference(fieldValue)) {
+      if (
+        fieldValue !== null &&
+        !isItemReference(fieldValue) &&
+        !isProviderReference(fieldValue)
+      ) {
         throw new TypeError(`${field} must use a typed record reference.`);
+      }
+      if (fieldValue === null && !nullableFields[value.table].has(field)) {
+        throw new TypeError(`${field} cannot be cleared.`);
       }
       fields[field] = fieldValue;
     } else {
-      fields[field] = parseScalarField(fieldValue, field);
+      fields[field] = parseScalarField(fieldValue, value.table, field);
     }
   }
   for (const field of requiredFields[value.table]) {
     if (!Object.hasOwn(fields, field)) {
       throw new TypeError(`${field} is required on ${value.table}.`);
     }
-    if (typeof fields[field] === "string" && fields[field].length === 0) {
+    if (
+      fields[field] === null ||
+      (typeof fields[field] === "string" && fields[field].length === 0)
+    ) {
       throw new TypeError(`${field} cannot be empty on ${value.table}.`);
     }
   }
@@ -469,9 +497,10 @@ export function parseCfpSubmissionPlanInput(
   }
   if (
     value.mode === "submit" &&
-    ["Track", "Route key", "Default reviewer group ID", "Submitted at"].some(
+    (["Track", "Route key", "Default reviewer group ID", "Submitted at"].some(
       (field) => !Object.hasOwn(submissionFields, field),
-    )
+    ) ||
+      submissionFields.Track === null)
   ) {
     throw new TypeError("Final CFP submission routing is incomplete.");
   }

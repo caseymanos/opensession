@@ -1,10 +1,15 @@
 import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { sha256Hex } from "../src/auth/crypto";
+import { getBaseAuthority } from "../src/authority/binding";
 import { D1PublicCfpPolicyReader } from "../src/cfp/policy";
+import { parseCfpSubmissionPlanInput } from "../src/cfp/submission-authority";
 import {
   cfpSubmissionCoordinates,
+  cfpSubmissionUpdateCoordinates,
   D1CfpSubmissionCompiler,
+  D1OwnedCfpDraftReader,
 } from "../src/cfp/submission-compiler";
 import type { AuthenticatedSession } from "../src/auth/service";
 
@@ -24,7 +29,10 @@ const server = createTestHarness({
     {
       configPath: "workers/app/wrangler.jsonc",
       secrets: { AUTH_HASH_PEPPER: pepper },
-      vars: { FEATURE_FLAGS: featureFlags },
+      vars: {
+        AIRTABLE_BASE_ID: "appCfpPolicyTest01",
+        FEATURE_FLAGS: featureFlags,
+      },
     },
   ],
 });
@@ -251,6 +259,25 @@ function requestAccount(
   });
 }
 
+async function seedAuthenticatedSession(userId: string, label: string) {
+  const environment = await server.getWorker<Env>().getEnv();
+  const token = `session-${label}-${"s".repeat(40)}`;
+  const csrf = `csrf-${label}-${"c".repeat(40)}`;
+  await environment.DB.batch([
+    environment.DB.prepare(
+      `INSERT INTO auth_sessions
+        (id, user_id, token_hash, created_at, expires_at, last_seen_at)
+       VALUES (?1, ?2, ?3, ?4, '2099-01-01T00:00:00.000Z', ?4)`,
+    ).bind(`auth_${label}`, userId, await sha256Hex(token), projectedAt),
+    environment.DB.prepare(
+      `INSERT INTO auth_session_secrets
+        (session_id, csrf_token_hash, created_at)
+       VALUES (?1, ?2, ?3)`,
+    ).bind(`auth_${label}`, await sha256Hex(csrf), projectedAt),
+  ]);
+  return { cookie: `__Host-opensession-session=${token}`, csrf };
+}
+
 beforeAll(async () => {
   const listening = await server.listen();
   origin = listening.url.origin;
@@ -372,6 +399,7 @@ describe("authoritative public CFP policy", () => {
       },
       form_version: 2,
       mode: "submit" as const,
+      participant_consent: true as const,
       participants: [
         {
           email: "primary@example.test",
@@ -584,6 +612,374 @@ describe("authoritative public CFP policy", () => {
         .bind(policy.organizationId, policy.eventId, session.user.id)
         .first(),
     ).toEqual({ count: 3 });
+  });
+
+  it("lists only owned drafts and compiles versioned draft updates before one final materialization", async () => {
+    const environment = await server.getWorker<Env>().getEnv();
+    const policy = await new D1PublicCfpPolicyReader(environment.DB).readBySlug(
+      "open-cfp",
+    );
+    if (!policy) throw new Error("The owned draft fixture policy is missing.");
+    const session: AuthenticatedSession = {
+      csrfTokenHash: "f".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      id: "session_owned_draft",
+      tokenHash: "a".repeat(64),
+      user: {
+        displayName: "Owned Speaker",
+        email: "owned@example.test",
+        id: "user_owned_draft",
+      },
+    };
+    const submissionId = "submission_owned_draft";
+    const draftContent = {
+      answers: { format: "30-minute talk" },
+      participants: [
+        {
+          email: session.user.email,
+          id: "owned-primary",
+          name: "Owned Speaker",
+          role: "Engineer",
+        },
+      ],
+    };
+    await environment.DB.batch([
+      environment.DB.prepare(
+        `INSERT INTO users
+          (id, email_normalized, display_name, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'active', ?4, ?4)`,
+      ).bind(
+        session.user.id,
+        session.user.email,
+        session.user.displayName,
+        projectedAt,
+      ),
+      environment.DB.prepare(
+        `INSERT INTO p_contacts
+          (id, organization_id, email_normalized, display_name, social_json,
+           source_record_id, source_version, source_content_hash, projected_at)
+         VALUES ('contact_owned_draft', ?1, ?2, ?3, '{}',
+                 'rec_contact_owned_draft', 2, ?4, ?5)`,
+      ).bind(
+        policy.organizationId,
+        session.user.email,
+        session.user.displayName,
+        hash,
+        projectedAt,
+      ),
+      environment.DB.prepare(
+        `INSERT INTO p_submissions
+          (id, organization_id, event_id, form_id, form_version, friendly_id,
+           submitter_contact_id, title, status, draft_json, updated_at,
+           source_record_id, source_version, source_content_hash, projected_at)
+         VALUES (?1, ?2, ?3, ?4, 2, 'OS-OWNEDDRAFT',
+                 'contact_owned_draft', 'Saved draft', 'draft', ?5, ?6,
+                 'rec_submission_owned_draft', 4, ?7, ?6)`,
+      ).bind(
+        submissionId,
+        policy.organizationId,
+        policy.eventId,
+        policy.formId,
+        JSON.stringify(draftContent),
+        projectedAt,
+        hash,
+      ),
+      environment.DB.prepare(
+        `INSERT INTO cfp_submission_reservations
+          (organization_id, event_id, submission_id, user_id, plan_id,
+           request_hash, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'cfp_plan_owned_seed', ?5, ?6, ?6)`,
+      ).bind(
+        policy.organizationId,
+        policy.eventId,
+        submissionId,
+        session.user.id,
+        "d".repeat(64),
+        projectedAt,
+      ),
+    ]);
+
+    const reader = new D1OwnedCfpDraftReader(environment.DB);
+    await expect(reader.list(policy, session)).resolves.toEqual([
+      expect.objectContaining({
+        content: draftContent,
+        friendly_id: "OS-OWNEDDRAFT",
+        source_version: 4,
+        status: "draft",
+        submission_id: submissionId,
+      }),
+    ]);
+    await expect(
+      reader.read(
+        policy,
+        {
+          ...session,
+          user: { ...session.user, id: "another_user" },
+        },
+        submissionId,
+      ),
+    ).resolves.toBeNull();
+    const draft = await reader.read(policy, session, submissionId);
+    if (!draft) throw new Error("The owned draft could not be read.");
+
+    const draftRequest = {
+      answers: { format: "30-minute talk" },
+      expected_source_version: 4,
+      form_version: 2,
+      mode: "draft" as const,
+      participants: draftContent.participants,
+    };
+    const draftCoordinates = await cfpSubmissionUpdateCoordinates(
+      policy,
+      session,
+      "request-key-owned-update-0001",
+      draftRequest,
+      draft,
+    );
+    const draftPlan = await new D1CfpSubmissionCompiler(
+      environment.DB,
+    ).compileUpdate(policy, session, draftRequest, draftCoordinates, draft);
+    expect(draftPlan.items).toHaveLength(2);
+    expect(draftPlan.items[0]).toMatchObject({
+      entityId: "contact_owned_draft",
+      expectedVersion: 2,
+      fields: { "Display name": "Owned Speaker", Title: "Engineer" },
+      table: "contacts",
+    });
+    expect(draftPlan.items[1]).toMatchObject({
+      entityId: submissionId,
+      expectedVersion: 4,
+      fields: {
+        "Default reviewer group ID": null,
+        "Route key": null,
+        "Submitted at": null,
+        Track: null,
+      },
+      table: "submissions",
+    });
+    expect(parseCfpSubmissionPlanInput(draftPlan)).toEqual(draftPlan);
+
+    const finalRequest = {
+      answers: { format: "30-minute talk", track: "Product" },
+      expected_source_version: 4,
+      form_version: 2,
+      mode: "submit" as const,
+      participant_consent: true as const,
+      participants: [
+        ...draftContent.participants,
+        {
+          email: "owned-co@example.test",
+          id: "owned-co",
+          name: "Owned Co-speaker",
+          role: "Staff Engineer",
+        },
+      ],
+      turnstile_action: "cfp_submit" as const,
+      turnstile_token: "XXXX.DUMMY.TOKEN.XXXX",
+    };
+    const finalCoordinates = await cfpSubmissionUpdateCoordinates(
+      policy,
+      session,
+      "request-key-owned-final-0001",
+      finalRequest,
+      draft,
+    );
+    const finalPlan = await new D1CfpSubmissionCompiler(
+      environment.DB,
+    ).compileUpdate(
+      policy,
+      session,
+      finalRequest,
+      finalCoordinates,
+      draft,
+      new Date("2026-08-10T12:30:00.000Z"),
+    );
+    expect(finalPlan.items.filter((item) => item.table === "contacts")).toEqual(
+      [
+        expect.objectContaining({
+          entityId: "contact_owned_draft",
+          expectedVersion: 2,
+        }),
+        expect.objectContaining({
+          expectedVersion: 0,
+          fields: expect.objectContaining({
+            "Email normalized": "owned-co@example.test",
+          }),
+        }),
+      ],
+    );
+    expect(
+      finalPlan.items.filter((item) => item.table === "submission_answers"),
+    ).toHaveLength(2);
+    expect(
+      finalPlan.items.filter(
+        (item) => item.table === "submission_participants",
+      ),
+    ).toHaveLength(2);
+    expect(
+      finalPlan.items.find((item) => item.table === "submissions"),
+    ).toMatchObject({ expectedVersion: 4, fields: { Status: "submitted" } });
+
+    await environment.DB.prepare(
+      `UPDATE p_contacts SET title = 'Engineer'
+       WHERE organization_id = ?1 AND id = 'contact_owned_draft'`,
+    )
+      .bind(policy.organizationId)
+      .run();
+    const clearRoleRequest = {
+      ...draftRequest,
+      participants: draftContent.participants.map((participant) => ({
+        ...participant,
+        role: "",
+      })),
+    };
+    const clearRoleCoordinates = await cfpSubmissionUpdateCoordinates(
+      policy,
+      session,
+      "request-key-owned-clear-role-0001",
+      clearRoleRequest,
+      draft,
+    );
+    const clearRolePlan = await new D1CfpSubmissionCompiler(
+      environment.DB,
+    ).compileUpdate(
+      policy,
+      session,
+      clearRoleRequest,
+      clearRoleCoordinates,
+      draft,
+    );
+    expect(
+      clearRolePlan.items.find(
+        (item) =>
+          item.table === "contacts" && item.entityId === "contact_owned_draft",
+      ),
+    ).toMatchObject({ fields: { Title: null } });
+
+    const newProposalRequest = {
+      answers: { format: "30-minute talk" },
+      form_version: 2,
+      mode: "draft" as const,
+      participants: draftContent.participants.map((participant) => ({
+        ...participant,
+        role: "",
+      })),
+    };
+    const newProposalCoordinates = await cfpSubmissionCoordinates(
+      policy,
+      session,
+      "request-key-new-blank-role-0001",
+      newProposalRequest,
+    );
+    const newProposalPlan = await new D1CfpSubmissionCompiler(
+      environment.DB,
+    ).compile(policy, session, newProposalRequest, newProposalCoordinates);
+    expect(
+      newProposalPlan.items.find(
+        (item) =>
+          item.table === "contacts" && item.entityId === "contact_owned_draft",
+      ),
+    ).toBeUndefined();
+
+    await expect(
+      new D1CfpSubmissionCompiler(environment.DB).compileUpdate(
+        policy,
+        session,
+        { ...draftRequest, expected_source_version: 3 },
+        draftCoordinates,
+        draft,
+      ),
+    ).rejects.toMatchObject({ code: "source_version_conflict" });
+
+    const authentication = await seedAuthenticatedSession(
+      session.user.id,
+      "owned_draft",
+    );
+    const draftResponse = await server.fetch(
+      "/api/v1/public/events/open-cfp/submissions",
+      { headers: { Cookie: authentication.cookie } },
+    );
+    expect(draftResponse.status).toBe(200);
+    await expect(draftResponse.json()).resolves.toMatchObject({
+      submissions: [
+        {
+          content: draftContent,
+          source_version: 4,
+          status: "draft",
+          submission_id: submissionId,
+        },
+      ],
+    });
+    const staleCoordinates = await cfpSubmissionUpdateCoordinates(
+      policy,
+      session,
+      "request-key-route-update-0001",
+      { ...draftRequest, expected_source_version: 3 },
+      draft,
+    );
+    await expect(
+      getBaseAuthority(environment).resumeCfpSubmissionPlan(
+        policy.organizationId,
+        staleCoordinates.planId,
+        staleCoordinates.requestHash,
+      ),
+    ).resolves.toBeNull();
+    const staleUpdate = await server.fetch(
+      `/api/v1/public/events/open-cfp/submissions/${submissionId}`,
+      {
+        body: JSON.stringify({ ...draftRequest, expected_source_version: 3 }),
+        headers: {
+          ...authHeaders("203.0.113.108"),
+          Cookie: authentication.cookie,
+          "Idempotency-Key": "request-key-route-update-0001",
+          "X-CSRF-Token": authentication.csrf,
+        },
+        method: "PUT",
+      },
+    );
+    const staleBody = await staleUpdate.json();
+    expect(
+      staleUpdate.status,
+      JSON.stringify({ body: staleBody, logs: server.getLogs() }),
+    ).toBe(409);
+    expect(staleBody).toMatchObject({
+      error: { code: "source_version_conflict" },
+    });
+
+    await environment.DB.prepare(
+      `UPDATE p_submissions SET status = 'accepted' WHERE id = ?1`,
+    )
+      .bind(submissionId)
+      .run();
+    await expect(reader.list(policy, session)).resolves.toEqual([
+      expect.objectContaining({
+        status: "accepted",
+        submission_id: submissionId,
+      }),
+    ]);
+    await expect(
+      reader.readForWrite(policy, session, submissionId),
+    ).resolves.toMatchObject({
+      draft: { submission_id: submissionId },
+      status: "accepted",
+    });
+    const lockedUpdate = await server.fetch(
+      `/api/v1/public/events/open-cfp/submissions/${submissionId}`,
+      {
+        body: JSON.stringify(draftRequest),
+        headers: {
+          ...authHeaders("203.0.113.108"),
+          Cookie: authentication.cookie,
+          "Idempotency-Key": "request-key-route-locked-0001",
+          "X-CSRF-Token": authentication.csrf,
+        },
+        method: "PUT",
+      },
+    );
+    expect(lockedUpdate.status).toBe(409);
+    await expect(lockedUpdate.json()).resolves.toMatchObject({
+      error: { code: "submission_locked" },
+    });
   });
 
   it("registers an unprivileged identity only for an open valid CFP", async () => {

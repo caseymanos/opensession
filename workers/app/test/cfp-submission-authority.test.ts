@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { CfpSubmissionPlanInput } from "../src/cfp/submission-authority";
+import { resumeOwnedCfpSubmission } from "../src/cfp/routes";
 import type { FixtureBaseAuthority } from "./fixtures/airtable-authority-runtime";
 
 const organizationId = "org_cfp_saga";
@@ -323,6 +324,23 @@ describe("CFP submission authority plan", () => {
     await expect(resumedReplay.json()).resolves.toMatchObject({
       outcome: "replayed",
     });
+    const environment = await runtimeWorker.getEnv();
+    const acceptedReplay = await resumeOwnedCfpSubmission(
+      environment.BASE_AUTHORITY.getByName("local:appAuthorityFixture"),
+      organizationId,
+      {
+        friendlyId: "CFP-0042",
+        planId: "plan_cfp_saga_submit",
+        requestHash: "a".repeat(64),
+        submissionId,
+      },
+      "accepted",
+    );
+    expect(acceptedReplay).toMatchObject({
+      kind: "replay",
+      receipt: { outcome: "replayed", submissionId },
+    });
+    expect(await providerMutationCount()).toBe(4);
     const mismatchedReplay = await post("/resume-cfp-plan", {
       organizationId,
       planId: "plan_cfp_saga_submit",
@@ -356,6 +374,24 @@ describe("CFP submission authority plan", () => {
       Contact: [contact?.id],
       Submission: [submission?.id],
     });
+
+    const clearTitlePlan = {
+      ...submissionPlan(),
+      items: submissionPlan().items.map((item) => ({
+        ...item,
+        expectedVersion: 1,
+        fields:
+          item.table === "contacts"
+            ? { ...item.fields, Title: null }
+            : item.fields,
+      })),
+      planId: "plan_cfp_saga_clear_title",
+      requestHash: "c".repeat(64),
+    } satisfies CfpSubmissionPlanInput;
+    const cleared = await post("/execute-cfp-plan", clearTitlePlan);
+    expect(cleared.status, await cleared.clone().text()).toBe(200);
+    expect(await providerMutationCount()).toBe(8);
+    expect((await providerRecords("contacts"))[0]?.fields.Title).toBeNull();
   });
 
   it("fails closed on plan reuse, unsafe fields, and incomplete final routing", async () => {
@@ -424,6 +460,6 @@ describe("CFP submission authority plan", () => {
     await expect(detachedAnswer.json()).resolves.toMatchObject({
       error: "TypeError",
     });
-    expect(await providerMutationCount()).toBe(4);
+    expect(await providerMutationCount()).toBe(8);
   });
 });
