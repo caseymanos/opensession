@@ -139,7 +139,7 @@ Supply the base, runtime PAT, and owner address only to the process. The raw own
 AIRTABLE_PREVIEW_BASE_ID=app_REPLACE_ME \
 AIRTABLE_PAT=pat_REPLACE_ME \
 DEMO_OWNER_EMAIL=owner@example.test \
-pnpm cloudflare:demo:bootstrap -- --environment preview
+pnpm cloudflare:demo:bootstrap --environment preview
 ```
 
 An interrupted run reuses the same durable operation and private token. The CLI renews only an exact expired pending/leased authorization, verifies that D1 changed one matching row, and accepts a completed operation only as a zero-mutation stored-result replay. A permanent fail-closed conflict requires the operator to correct the authoritative cause and explicitly pass `--restart-failed`; it never chooses a new tenant, base, root, or snapshot. Production additionally requires `--confirm-production` and `DEMO_PRODUCTION_CONFIRM=production`.

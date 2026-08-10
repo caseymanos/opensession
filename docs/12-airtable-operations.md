@@ -60,7 +60,7 @@ pnpm --filter @sessionbox-killer/data airtable probe --environment preview --app
 
 Production bootstrap or probe additionally requires both `--confirm-production` and `AIRTABLE_PRODUCTION_CONFIRM=production`. Preview and production base IDs are rejected when equal.
 
-The release demo bootstrap is intentionally narrower than the generic probe. After D1 migration `0015` and the matching Worker deploy, `pnpm cloudflare:demo:bootstrap -- --environment preview` accepts only an empty base or the exact command-store-managed demo roots. The deterministic root command ID is tied to the shared seed version; Source version, last-command hash, applied-content hash, and organization link must all replay exactly. The Worker then reconciles those source record IDs before the guarded snapshot may create any child record.
+The release demo bootstrap is intentionally narrower than the generic probe. After D1 migration `0015` and the matching Worker deploy, `pnpm cloudflare:demo:bootstrap --environment preview` accepts only an empty base or the exact command-store-managed demo roots. The deterministic root command ID is tied to the shared seed version; Source version, last-command hash, applied-content hash, and organization link must all replay exactly. The Worker then reconciles those source record IDs before the guarded snapshot may create any child record.
 
 Operator commands require the environment-specific base variable. They never fall back to the Worker's generic `AIRTABLE_BASE_ID`, so a production mutation cannot silently target an unverified base.
 
