@@ -95,12 +95,13 @@ export class AirtableReconciliationService {
       `UPDATE tenant_registry
        SET authority_ready_at = NULL, updated_at = ?
        WHERE organization_id = ? AND base_key = ? AND status = 'active'
-         AND authority_roster_version = ?`,
+         AND source_record_id = ? AND authority_roster_version = ?`,
     )
       .bind(
         now,
         options.organizationId,
         this.baseKey(),
+        tenant.sourceRecordId,
         tenant.authorityRosterVersion,
       )
       .run();
@@ -132,6 +133,12 @@ export class AirtableReconciliationService {
         const records = await this.#provider.listTableRecords(table);
         let seen = 0;
         for (const record of records) {
+          if (
+            table === "organizations" &&
+            record.id !== tenant.sourceRecordId
+          ) {
+            continue;
+          }
           if (
             !(await this.belongsToOrganization(
               options.organizationId,
@@ -193,6 +200,11 @@ export class AirtableReconciliationService {
           table,
           tableScanId,
         );
+        if (table === "organizations" && seen !== 1) {
+          throw new Error(
+            "Airtable authority requires exactly one organization record per tenant.",
+          );
+        }
         deleted += removed;
         projected += seen;
         const completedAt = new Date().toISOString();
@@ -248,13 +260,14 @@ export class AirtableReconciliationService {
       const ready = await this.#env.DB.prepare(
         `UPDATE tenant_registry SET authority_ready_at = ?, updated_at = ?
          WHERE organization_id = ? AND base_key = ? AND status = 'active'
-           AND authority_roster_version = ?`,
+           AND source_record_id = ? AND authority_roster_version = ?`,
       )
         .bind(
           new Date().toISOString(),
           new Date().toISOString(),
           options.organizationId,
           this.baseKey(),
+          tenant.sourceRecordId,
           tenant.authorityRosterVersion,
         )
         .run();
@@ -273,21 +286,25 @@ export class AirtableReconciliationService {
 
   private async assertActiveTenant(organizationId: string): Promise<{
     authorityRosterVersion: number;
+    sourceRecordId: string;
     wasReady: boolean;
   }> {
     const tenant = await this.#env.DB.prepare(
-      `SELECT authority_roster_version, authority_ready_at FROM tenant_registry
+      `SELECT authority_roster_version, authority_ready_at, source_record_id
+       FROM tenant_registry
        WHERE organization_id = ? AND base_key = ? AND status = 'active'`,
     )
       .bind(organizationId, this.baseKey())
       .first<{
         authority_ready_at: string | null;
         authority_roster_version: number;
+        source_record_id: string;
       }>();
     if (!tenant)
       throw new Error("Reconciliation tenant is not active for this base.");
     return {
       authorityRosterVersion: tenant.authority_roster_version,
+      sourceRecordId: tenant.source_record_id,
       wasReady: tenant.authority_ready_at !== null,
     };
   }

@@ -4,7 +4,7 @@ import {
   type AirtableFields,
 } from "@sessionbox-killer/data/airtable/internal";
 
-interface MockRecord {
+export interface FixtureAirtableRecord {
   createdTime: string;
   fields: AirtableFields;
   id: string;
@@ -19,7 +19,7 @@ interface MockState {
   hideRecords: boolean;
   mutationCount: number;
   readbackCount: number;
-  records: Record<string, MockRecord>;
+  records: Record<string, FixtureAirtableRecord>;
   webhookPages: Record<string, unknown>;
 }
 
@@ -239,6 +239,26 @@ export class FixtureAirtableState extends DurableObject<StateEnvironment> {
     return true;
   }
 
+  delayNextReadbackForTest(): void {
+    const state = this.readState();
+    state.delayNextReadback = true;
+    this.writeState(state);
+  }
+
+  mutationCountForTest(): number {
+    return this.readState().mutationCount;
+  }
+
+  readbackCountForTest(): number {
+    return this.readState().readbackCount;
+  }
+
+  recordsForTest(table?: string): readonly FixtureAirtableRecord[] {
+    return Object.values(this.readState().records).filter(
+      (record) => table === undefined || record.table === table,
+    );
+  }
+
   private readState(): MockState {
     const row = this.ctx.storage.sql
       .exec<StoredState>(
@@ -275,7 +295,7 @@ export class FixtureAirtableState extends DurableObject<StateEnvironment> {
         existingEntry?.[1] ?? state.records[recordKey(table, entityId)];
       const stableId = String(entry.fields.ID ?? existing?.fields.ID ?? "");
       const key = recordKey(table, stableId);
-      const record: MockRecord = {
+      const record: FixtureAirtableRecord = {
         createdTime: existing?.createdTime ?? new Date().toISOString(),
         fields: { ...existing?.fields, ...entry.fields },
         id: existing?.id ?? `rec_${table}_${stableId}`,

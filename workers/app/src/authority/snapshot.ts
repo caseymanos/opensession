@@ -1,6 +1,7 @@
 import {
   hashAirtableValue,
   type AirtableFields,
+  type AirtableRecord,
   type AirtableTableKey,
 } from "@sessionbox-killer/data/airtable/internal";
 
@@ -117,6 +118,16 @@ interface WrittenAsset {
 
 export class SnapshotAssetCommitInterruptionError extends Error {}
 
+interface AuthoritativeRecordScope {
+  eventIds: Set<string>;
+  organizationIds: Set<string>;
+}
+
+type ProviderTableCache = Map<
+  AirtableTableKey,
+  Promise<ReadonlyMap<string, AirtableRecord>>
+>;
+
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 
 function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
@@ -133,22 +144,6 @@ async function sha256(value: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function parseReceipt(value: string): DemoSeedAuthorityReceipt {
   return JSON.parse(value) as DemoSeedAuthorityReceipt;
-}
-
-function linkedRecordIds(
-  fields: AirtableFields,
-  table: AirtableTableKey,
-): readonly string[] {
-  return [
-    ...projectionSpecs[table].fields,
-    ...(projectionSpecs[table].scopeLinks ?? []),
-  ].flatMap((field) => {
-    if (field.kind !== "link") return [];
-    const value = fields[field.field];
-    return Array.isArray(value)
-      ? value.filter((entry): entry is string => typeof entry === "string")
-      : [];
-  });
 }
 
 export class DemoSnapshotAuthority {
@@ -393,11 +388,18 @@ export class DemoSnapshotAuthority {
     requireExpectedVersion: boolean,
   ): Promise<void> {
     const guard = await this.#env.DB.prepare(
-      `SELECT event.source_version
+      `SELECT event.source_record_id, event.source_version
        FROM p_events event
        JOIN tenant_registry tenant
          ON tenant.organization_id = event.organization_id
         AND tenant.status = 'active' AND tenant.authority_ready_at IS NOT NULL
+       JOIN authority_source_records source
+         ON source.base_key = tenant.base_key
+        AND source.organization_id = event.organization_id
+        AND source.provider_table_key = 'events'
+        AND source.provider_record_id = event.source_record_id
+        AND source.entity_id = event.id
+        AND source.source_deleted_at IS NULL
        JOIN organization_memberships membership
          ON membership.organization_id = event.organization_id
         AND membership.user_id = ? AND membership.role = 'owner'
@@ -406,7 +408,7 @@ export class DemoSnapshotAuthority {
          AND event.is_demo = 1 AND event.source_deleted_at IS NULL`,
     )
       .bind(input.actorId, input.plan.organizationId, input.plan.eventId)
-      .first<{ source_version: number }>();
+      .first<{ source_record_id: string; source_version: number }>();
     if (
       !guard ||
       (requireExpectedVersion
@@ -421,6 +423,7 @@ export class DemoSnapshotAuthority {
     );
     if (
       !authoritative ||
+      authoritative.id !== guard.source_record_id ||
       authoritative.fields["Is demo"] !== true ||
       (requireExpectedVersion
         ? this.sourceVersion(
@@ -1116,46 +1119,115 @@ export class DemoSnapshotAuthority {
     ) {
       throw new Error("Authoritative Airtable record identity changed.");
     }
-    const links = [
-      ...new Set(linkedRecordIds(authoritative.fields, row.provider_table_key)),
-    ];
-    if (links.length === 0) {
-      throw new Error("Authoritative Airtable record scope is unresolved.");
-    }
-    const linked = await this.#env.DB.prepare(
-      `SELECT provider_record_id, organization_id, event_id
-       FROM authority_source_records
-       WHERE base_key = ? AND provider_record_id IN (
-         SELECT value FROM json_each(?)
-       ) AND source_deleted_at IS NULL`,
-    )
-      .bind(this.baseKey(), JSON.stringify(links))
-      .all<{
-        event_id: string | null;
-        organization_id: string;
-        provider_record_id: string;
-      }>();
+    const scope = await this.resolveAuthoritativeScope(
+      input.plan.organizationId,
+      row.provider_table_key,
+      authoritative,
+      new Map(),
+      new Set(),
+    );
     if (
-      new Set(
-        linked.results.map(({ provider_record_id }) => provider_record_id),
-      ).size !== links.length
-    ) {
-      throw new Error("Authoritative Airtable record scope is unresolved.");
-    }
-    if (
-      linked.results.some(
-        ({ organization_id }) => organization_id !== input.plan.organizationId,
-      )
+      scope.organizationIds.size !== 1 ||
+      !scope.organizationIds.has(input.plan.organizationId)
     ) {
       throw new Error("Authoritative Airtable record crossed an organization.");
     }
-    const eventIds = new Set(
-      linked.results.flatMap(({ event_id }) => (event_id ? [event_id] : [])),
-    );
-    if (eventIds.size !== 1 || !eventIds.has(input.plan.eventId)) {
+    if (scope.eventIds.size !== 1 || !scope.eventIds.has(input.plan.eventId)) {
       throw new Error("Authoritative Airtable record crossed an event.");
     }
     return authoritative;
+  }
+
+  private async resolveAuthoritativeScope(
+    expectedOrganizationId: string,
+    table: AirtableTableKey,
+    record: AirtableRecord,
+    cache: ProviderTableCache,
+    ancestors: ReadonlySet<string>,
+  ): Promise<AuthoritativeRecordScope> {
+    const stableId = record.fields.ID;
+    if (typeof stableId !== "string" || !stableIdPattern.test(stableId)) {
+      throw new Error("Authoritative Airtable record identity is invalid.");
+    }
+    const identity = await this.#env.DB.prepare(
+      `SELECT organization_id FROM authority_source_records
+       WHERE base_key = ? AND organization_id = ? AND provider_table_key = ?
+         AND provider_record_id = ? AND entity_id = ?
+         AND source_deleted_at IS NULL`,
+    )
+      .bind(this.baseKey(), expectedOrganizationId, table, record.id, stableId)
+      .first<{ organization_id: string }>();
+    if (!identity) {
+      throw new Error("Authoritative Airtable record identity is not active.");
+    }
+    const node = `${table}:${record.id}`;
+    if (ancestors.has(node)) {
+      throw new Error("Authoritative Airtable record scope contains a cycle.");
+    }
+    const nextAncestors = new Set(ancestors).add(node);
+    const scope: AuthoritativeRecordScope = {
+      eventIds: new Set(table === "events" ? [stableId] : []),
+      organizationIds: new Set(table === "organizations" ? [stableId] : []),
+    };
+    const links = [
+      ...projectionSpecs[table].fields,
+      ...(projectionSpecs[table].scopeLinks ?? []),
+    ].filter(
+      (field): field is typeof field & { linkedTable: AirtableTableKey } =>
+        field.kind === "link" && field.linkedTable !== undefined,
+    );
+    for (const link of links) {
+      const value = record.fields[link.field];
+      const recordIds = Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      if (
+        (link.required && recordIds.length === 0) ||
+        (Array.isArray(value) && recordIds.length !== value.length)
+      ) {
+        throw new Error("Authoritative Airtable record scope is unresolved.");
+      }
+      const linkedRecords = await this.providerRecords(link.linkedTable, cache);
+      for (const recordId of recordIds) {
+        const linkedRecord = linkedRecords.get(recordId);
+        if (!linkedRecord) {
+          throw new Error("Authoritative Airtable record scope is unresolved.");
+        }
+        const linkedScope = await this.resolveAuthoritativeScope(
+          expectedOrganizationId,
+          link.linkedTable,
+          linkedRecord,
+          cache,
+          nextAncestors,
+        );
+        for (const eventId of linkedScope.eventIds) {
+          scope.eventIds.add(eventId);
+        }
+        for (const organizationId of linkedScope.organizationIds) {
+          scope.organizationIds.add(organizationId);
+        }
+      }
+    }
+    if (
+      scope.organizationIds.size !== 1 ||
+      (projectionSpecs[table].scope === "event" && scope.eventIds.size !== 1)
+    ) {
+      throw new Error("Authoritative Airtable record scope is unresolved.");
+    }
+    return scope;
+  }
+
+  private providerRecords(
+    table: AirtableTableKey,
+    cache: ProviderTableCache,
+  ): Promise<ReadonlyMap<string, AirtableRecord>> {
+    const existing = cache.get(table);
+    if (existing) return existing;
+    const records = this.#provider
+      .listTableRecords(table)
+      .then((rows) => new Map(rows.map((record) => [record.id, record])));
+    cache.set(table, records);
+    return records;
   }
 
   private insertRun(input: SnapshotReplaceInput, requestHash: string): void {
