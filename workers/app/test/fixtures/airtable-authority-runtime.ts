@@ -2,12 +2,15 @@ import { BaseAuthority } from "../../src/authority/base-authority.js";
 import { loadEventAccess } from "../../src/auth/authorization.js";
 import type { BaseAuthorityEnvironment } from "../../src/authority/provider.js";
 import { SnapshotAssetCommitInterruptionError } from "../../src/authority/snapshot.js";
+import { scheduleCommandSchema } from "@sessionbox-killer/contracts";
 import type {
   CfpSubmissionPlanInput,
   CfpSubmissionPlanItem,
 } from "../../src/cfp/submission-authority.js";
 import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
+import { D1ScheduleProjectionRepository } from "../../src/schedule/d1-repository.js";
+import { AirtableScheduleCommandService } from "../../src/schedule/service.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface FixtureEnvironment extends BaseAuthorityEnvironment {
@@ -1031,6 +1034,24 @@ const fixtureHandler = {
           url.searchParams.get("id"),
         )
         .first();
+      return Response.json(result);
+    }
+    if (url.pathname === "/schedule-state") {
+      const schedule = await new D1ScheduleProjectionRepository(env.DB).read(
+        url.searchParams.get("eventId") ?? "",
+      );
+      return schedule
+        ? Response.json(schedule)
+        : Response.json({ error: "not_found" }, { status: 404 });
+    }
+    if (url.pathname === "/schedule-command") {
+      const command = scheduleCommandSchema.parse(await request.json());
+      const result = await new AirtableScheduleCommandService({
+        actorId: "usr_demo_owner",
+        authority: authority(env),
+        database: env.DB,
+        requestId: "req_schedule_fixture",
+      }).execute(command);
       return Response.json(result);
     }
     if (url.pathname === "/access-state") {

@@ -441,6 +441,41 @@ function assertAcceptanceCoverage(source: DemoSeedSource): void {
       "Demo seed requires two unscheduled accepted sessions.",
     );
   }
+  const participantRoles = new Set(
+    (byTable.get("session_participants") ?? []).map((entity) =>
+      fieldString(entity, "Role"),
+    ),
+  );
+  if (
+    ["speaker", "moderator", "chair"].some(
+      (role) => !participantRoles.has(role),
+    )
+  ) {
+    throw new TypeError(
+      "Demo session participants must cover every conflict-bearing role.",
+    );
+  }
+  const event = (byTable.get("events") ?? [])[0];
+  if (!event) {
+    throw new TypeError("Demo seed requires one event.");
+  }
+  const scheduleDays = fieldString(event, "Schedule days JSON");
+  let parsedScheduleDays: unknown;
+  try {
+    parsedScheduleDays = scheduleDays ? JSON.parse(scheduleDays) : null;
+  } catch {
+    parsedScheduleDays = null;
+  }
+  if (
+    !Array.isArray(parsedScheduleDays) ||
+    parsedScheduleDays.length !== 2 ||
+    event.fields["Schedule snap minutes"] !== 15 ||
+    event.fields["Schedule version"] !== 3
+  ) {
+    throw new TypeError(
+      "Demo event requires two configured schedule days and versioned snap settings.",
+    );
+  }
   const templateNames = new Set(
     (byTable.get("email_templates") ?? []).map((entity) =>
       fieldString(entity, "Name"),

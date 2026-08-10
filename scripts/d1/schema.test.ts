@@ -476,6 +476,18 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0014_schedule_domain.sql"),
+        "--config",
+        config,
+      ]);
       const handoffOutput = executeMigration([
         "d1",
         "execute",
@@ -649,6 +661,7 @@ describe("D1 operational foundation", () => {
       "projection_scan_runs",
       "projection_watermarks",
       "provider_messages",
+      "schedule_command_receipts",
       "tenant_registry",
       "users",
       "webhook_deliveries",
@@ -669,6 +682,16 @@ describe("D1 operational foundation", () => {
         .filter(({ name }) => requiredTables.includes(name))
         .every(({ strict }) => strict === 1),
     ).toBe(true);
+    const eventColumns = query<{ name: string }>(
+      "PRAGMA table_info(p_events);",
+    ).results.map(({ name }) => name);
+    expect(eventColumns).toEqual(
+      expect.arrayContaining([
+        "schedule_days_json",
+        "schedule_snap_minutes",
+        "schedule_version",
+      ]),
+    );
   });
 
   it("enforces canonical CFP routes and durable draft JSON", () => {
@@ -742,6 +765,23 @@ describe("D1 operational foundation", () => {
   });
 
   it("enforces tenant-scoped foreign keys, JSON shapes, hashes, and cursor state", () => {
+    query(`
+      INSERT INTO schedule_command_receipts
+        (event_id, command_id, command_hash, state, operations_json,
+         result_json, created_at, updated_at)
+      VALUES
+        ('evt_one', 'command_one', '${hash}', 'applying', '[]', '{}',
+         '${timestamp}', '${timestamp}');
+    `);
+    expectSqlFailure(
+      "UPDATE p_events SET schedule_snap_minutes = 7 WHERE id = 'evt_one';",
+    );
+    expectSqlFailure(
+      "UPDATE p_events SET schedule_days_json = '{}' WHERE id = 'evt_one';",
+    );
+    expectSqlFailure(
+      "UPDATE schedule_command_receipts SET operations_json = '{}' WHERE event_id = 'evt_one' AND command_id = 'command_one';",
+    );
     expectSqlFailure(`
       INSERT INTO organization_memberships
         (id, organization_id, user_id, role, created_at, updated_at)
