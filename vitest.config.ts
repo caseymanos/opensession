@@ -19,8 +19,9 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: [
-        "packages/contracts/src/index.ts",
+        "packages/contracts/src/{index,schedule}.ts",
         "packages/data/src/airtable/{client,command-store,config,errors,rate-limiter,schema-definition,schema-manager}.ts",
+        "packages/domain/src/schedule.ts",
         "packages/email/src/{campaign,merge,render,versioning}.ts",
         "scripts/cloudflare/{provision,public-performance,release}.ts",
         "workers/app/src/auth/{authorization,crypto,http,routes,service}.ts",
@@ -28,6 +29,7 @@ export default defineConfig({
         "workers/app/src/demo/{compiler,reset}.ts",
         "workers/app/src/email/{config,delivery,messages,provider,routes,webhook}.ts",
         "workers/app/src/public-schedule/{cache,projection}.ts",
+        "workers/app/src/schedule/d1-repository.ts",
         "workers/app/src/uploads/{policy,pptx,routes,service}.ts",
         "workers/app/src/{features,observability}.ts",
       ],

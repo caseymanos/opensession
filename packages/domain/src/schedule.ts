@@ -191,6 +191,19 @@ export class ScheduleVersionConflictError extends Error {
   }
 }
 
+export class ScheduleIdempotencyConflictError extends Error {
+  readonly code = "schedule_idempotency_conflict";
+  readonly commandId: string;
+
+  constructor(commandId: string) {
+    super(
+      `Schedule command ${commandId} was already used with different input.`,
+    );
+    this.name = "ScheduleIdempotencyConflictError";
+    this.commandId = commandId;
+  }
+}
+
 const stableIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 const localDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 const localTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -520,6 +533,13 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
         `sessions.${session.id}.participants.personId`,
       );
       const key = `${participant.personId}:${participant.role}`;
+      if (!participantConflictRoles.some((role) => role === participant.role)) {
+        validationError(
+          "invalid_participant",
+          `sessions.${session.id}.participants.role`,
+          "Participant role must be speaker, moderator, or chair.",
+        );
+      }
       if (participantKeys.has(key)) {
         validationError(
           "invalid_participant",
@@ -530,6 +550,13 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
       participantKeys.add(key);
     }
 
+    if (!sessionLifecycleStates.some((state) => state === session.state)) {
+      validationError(
+        "invalid_session_state",
+        `sessions.${session.id}.state`,
+        "Session lifecycle state is invalid.",
+      );
+    }
     if (session.state === "accepted_unscheduled" && session.slot !== null) {
       validationError(
         "invalid_session_state",
