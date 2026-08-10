@@ -21,6 +21,11 @@ import {
   type ScheduleTrack,
   type UnassignSessionCommand,
 } from "@sessionbox-killer/domain";
+export {
+  ScheduleIdempotencyConflictError,
+  ScheduleValidationError,
+  ScheduleVersionConflictError,
+} from "@sessionbox-killer/domain";
 import { z } from "zod";
 
 const scheduleIdentifierSchema = z

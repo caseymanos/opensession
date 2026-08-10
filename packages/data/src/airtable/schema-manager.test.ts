@@ -59,14 +59,14 @@ function completeSchema(): AirtableBaseSchema {
 
 describe("Airtable schema", () => {
   it("defines every authoritative table with lifecycle fields", () => {
-    expect(expectedAirtableSchema.version).toBe(3);
+    expect(expectedAirtableSchema.version).toBe(4);
     expect(expectedAirtableSchema.tables).toHaveLength(29);
     expect(
       expectedAirtableSchema.tables.reduce(
         (count, table) => count + table.fields.length,
         0,
       ),
-    ).toBe(428);
+    ).toBe(431);
     expect(
       expectedAirtableSchema.tables.every(
         (table) =>
@@ -111,13 +111,21 @@ describe("Airtable schema", () => {
     const report = compareAirtableSchema(schema);
     const index = createAirtableSchemaIndex(schema);
 
-    expect(report).toMatchObject({ ready: true, schemaVersion: 3 });
+    expect(report).toMatchObject({ ready: true, schemaVersion: 4 });
     expect(report.issues).toEqual([]);
     expect(index.tables.get("events")?.id).toBe("tbl_1");
   });
 
-  it("upgrades the credentialed v1 shape through the additive v3 fields", async () => {
+  it("upgrades the credentialed v1 shape through the additive v4 fields", async () => {
     const newFieldsByTable = new Map<string, ReadonlySet<string>>([
+      [
+        "Events",
+        new Set([
+          "Schedule days JSON",
+          "Schedule snap minutes",
+          "Schedule version",
+        ]),
+      ],
       ["Submissions", new Set(["Draft JSON", "Default reviewer group ID"])],
       [
         "Tracks",
@@ -143,7 +151,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v3", "schema v1");
+      table.description = table.description?.replace("schema v4", "schema v1");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -151,7 +159,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v3",
+                  "schema v4",
                   "schema v1",
                 ),
               }
@@ -184,7 +192,7 @@ describe("Airtable schema", () => {
     });
 
     expect(before.ready).toBe(false);
-    expect(before.issues).toHaveLength(13);
+    expect(before.issues).toHaveLength(16);
     expect(before.issues).toEqual(
       expect.arrayContaining(
         [...newFieldsByTable].flatMap(([table, fields]) =>
@@ -196,6 +204,9 @@ describe("Airtable schema", () => {
     );
     await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
     expect(created).toEqual([
+      "Schedule days JSON",
+      "Schedule snap minutes",
+      "Schedule version",
       "Draft JSON",
       "Default reviewer group ID",
       "CFP selection",
@@ -212,8 +223,16 @@ describe("Airtable schema", () => {
     ]);
   });
 
-  it("upgrades the credentialed v2 shape by adding exactly seven v3 fields", async () => {
+  it("upgrades the credentialed v2 shape by adding exactly ten v4 fields", async () => {
     const newFieldsByTable = new Map<string, ReadonlySet<string>>([
+      [
+        "Events",
+        new Set([
+          "Schedule days JSON",
+          "Schedule snap minutes",
+          "Schedule version",
+        ]),
+      ],
       ["Submissions", new Set(["Draft JSON", "Default reviewer group ID"])],
       [
         "Tracks",
@@ -228,7 +247,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v3", "schema v2");
+      table.description = table.description?.replace("schema v4", "schema v2");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -236,7 +255,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v3",
+                  "schema v4",
                   "schema v2",
                 ),
               }
@@ -253,7 +272,7 @@ describe("Airtable schema", () => {
         if (!table) throw new Error("Missing fixture table");
         const field: AirtableFieldSchema = {
           ...(write.description ? { description: write.description } : {}),
-          id: `fld_v3_${created.length}`,
+          id: `fld_v4_${created.length}`,
           name: write.name,
           ...(write.options ? { options: write.options } : {}),
           type: write.type,
@@ -263,13 +282,13 @@ describe("Airtable schema", () => {
         return field;
       },
       createTable: async () => {
-        throw new Error("v3 does not create tables");
+        throw new Error("v4 does not create tables");
       },
       getBaseSchema: async () => schema,
     });
 
     expect(before.ready).toBe(false);
-    expect(before.issues).toHaveLength(7);
+    expect(before.issues).toHaveLength(10);
     expect(before.issues).toEqual(
       expect.arrayContaining(
         [...newFieldsByTable].flatMap(([table, fields]) =>
@@ -281,6 +300,9 @@ describe("Airtable schema", () => {
     );
     await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
     expect(created).toEqual([
+      "Schedule days JSON",
+      "Schedule snap minutes",
+      "Schedule version",
       "Draft JSON",
       "Default reviewer group ID",
       "CFP selection",
@@ -289,6 +311,62 @@ describe("Airtable schema", () => {
       "Submission track",
       "Default reviewer group ID",
     ]);
+  });
+
+  it("upgrades the credentialed v3 shape by adding exactly three v4 fields", async () => {
+    const newFields = new Set([
+      "Schedule days JSON",
+      "Schedule snap minutes",
+      "Schedule version",
+    ]);
+    const schema = completeSchema();
+    for (const table of schema.tables) {
+      table.description = table.description?.replace("schema v4", "schema v3");
+      table.fields = table.fields
+        .filter(
+          (field) => table.name !== "Events" || !newFields.has(field.name),
+        )
+        .map((field) => ({
+          ...field,
+          ...(field.description
+            ? {
+                description: field.description.replace(
+                  "schema v4",
+                  "schema v3",
+                ),
+              }
+            : {}),
+        }));
+    }
+    const before = compareAirtableSchema(schema);
+    const created: string[] = [];
+    const manager = new AirtableSchemaManager({
+      createField: async (tableId, write) => {
+        const table = schema.tables.find(
+          (candidate) => candidate.id === tableId,
+        );
+        if (!table) throw new Error("Missing fixture table");
+        const field: AirtableFieldSchema = {
+          ...(write.description ? { description: write.description } : {}),
+          id: `fld_v4_${created.length}`,
+          name: write.name,
+          ...(write.options ? { options: write.options } : {}),
+          type: write.type,
+        };
+        table.fields.push(field);
+        created.push(write.name);
+        return field;
+      },
+      createTable: async () => {
+        throw new Error("v4 does not create tables");
+      },
+      getBaseSchema: async () => schema,
+    });
+
+    expect(before.ready).toBe(false);
+    expect(before.issues).toHaveLength(3);
+    await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
+    expect(created).toEqual([...newFields]);
   });
 
   it("reports missing, incompatible, and link-target drift", () => {
@@ -476,8 +554,8 @@ describe("Airtable schema", () => {
     if (!events || !venue) throw new Error("Fixture is incomplete");
     events.name = "Conference Events";
     venue.name = "Location";
-    events.description = events.description?.replace("schema v3", "schema v4");
-    venue.description = venue.description?.replace("schema v3", "schema v4");
+    events.description = events.description?.replace("schema v4", "schema v5");
+    venue.description = venue.description?.replace("schema v4", "schema v5");
 
     let writes = 0;
     const manager = new AirtableSchemaManager({

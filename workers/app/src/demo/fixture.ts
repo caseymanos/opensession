@@ -55,6 +55,20 @@ const organizationAndEvent: DemoSeedEntity[] = [
     Name: "AI Engineer Summit 2026",
     Organization: links(demoOrganizationId),
     "Published version": 3,
+    "Schedule days JSON": json([
+      {
+        businessEnd: "17:00",
+        businessStart: "09:00",
+        date: "2026-08-18",
+      },
+      {
+        businessEnd: "17:00",
+        businessStart: "09:00",
+        date: "2026-08-19",
+      },
+    ]),
+    "Schedule snap minutes": 15,
+    "Schedule version": 3,
     Slug: "ai-engineer-summit",
     Start: eventStart,
     Status: "published",
@@ -561,14 +575,14 @@ const sessions = sessionMetadata.map(
 );
 
 const sessionParticipants: DemoSeedEntity[] = [
-  ["session_01", "contact_speaker_01"],
-  ["session_02", "contact_speaker_01"],
-  ["session_02", "contact_speaker_02"],
-  ["session_03", "contact_speaker_03"],
-  ["session_04", "contact_speaker_04"],
-  ["session_05", "contact_speaker_05"],
-  ["session_06", "contact_speaker_06"],
-].map(([sessionId, contactId], index) =>
+  ["session_01", "contact_speaker_01", "speaker"],
+  ["session_02", "contact_speaker_01", "moderator"],
+  ["session_02", "contact_speaker_02", "speaker"],
+  ["session_03", "contact_speaker_03", "speaker"],
+  ["session_04", "contact_speaker_04", "chair"],
+  ["session_05", "contact_speaker_05", "speaker"],
+  ["session_06", "contact_speaker_06", "speaker"],
+].map(([sessionId, contactId, role], index) =>
   entity(
     "session_participants",
     `session_participant_${String(index + 1).padStart(2, "0")}`,
@@ -576,7 +590,7 @@ const sessionParticipants: DemoSeedEntity[] = [
       "Confirmed state": "confirmed",
       Contact: links(contactId ?? ""),
       Order: 1,
-      Role: "speaker",
+      Role: role ?? "speaker",
       Session: links(sessionId ?? ""),
     },
   ),
@@ -620,7 +634,7 @@ const scheduleSlots: DemoSeedEntity[] = [
     Room: links(roomId ?? ""),
     Session: links(sessionId ?? ""),
     "Start UTC": startsAt ?? "",
-    Version: 1,
+    Version: 3,
   }),
 );
 
