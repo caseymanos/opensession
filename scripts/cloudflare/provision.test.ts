@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assessResources,
   applyAirtableBaseOverride,
+  applyPreviewEmailRecipientOverride,
   applyTurnstileSiteKeyOverride,
   assertEnvironmentIsolation,
   assertProductionConfirmation,
@@ -15,6 +16,7 @@ import {
   parseQueueList,
   parseR2List,
   renderDeploymentConfig,
+  sanitizeWranglerOutput,
   smokeDeployments,
 } from "./provision";
 import {
@@ -263,6 +265,122 @@ describe("Cloudflare provisioner", () => {
         "CONFIGURE_TURNSTILE_SITE_KEY",
       ),
     ).toThrow("TURNSTILE_PREVIEW_SITE_KEY");
+  });
+
+  it("injects one private preview recipient without changing production", () => {
+    const publicConfig = isolatedConfig();
+    const preview = publicConfig.env?.preview;
+    const production = publicConfig.env?.production;
+    if (!preview?.vars || !production?.vars) {
+      throw new Error("Expected both remote environments.");
+    }
+    preview.vars.EMAIL_DELIVERY_CONFIG = {
+      mode: "allowlist",
+      allowlist: [],
+      authFrom: "OpenSession <auth@updates.opensessionboard.com>",
+      authReplyTo: "hello@opensessionboard.com",
+    };
+    production.vars.EMAIL_DELIVERY_CONFIG = {
+      mode: "allowlist",
+      allowlist: [],
+      authFrom: "OpenSession <auth@updates.opensessionboard.com>",
+      authReplyTo: "hello@opensessionboard.com",
+    };
+    const productionBefore = structuredClone(production.vars);
+
+    const configured = applyPreviewEmailRecipientOverride(
+      publicConfig,
+      "  Preview-Judge@Example.Test  ",
+    );
+    const rendered = renderDeploymentConfig(configured, "preview", {
+      d1: { id: "preview-db-id" },
+    });
+
+    expect(rendered.vars).toMatchObject({
+      EMAIL_DELIVERY_CONFIG: {
+        allowlist: ["preview-judge@example.test"],
+        mode: "allowlist",
+      },
+      FEATURE_FLAGS: { email: true },
+    });
+    expect(configured.env?.production?.vars).toEqual(productionBefore);
+  });
+
+  it("fails closed when private preview email injection is unsafe", () => {
+    const createConfig = () => {
+      const candidate = isolatedConfig();
+      const preview = candidate.env?.preview;
+      if (!preview?.vars) {
+        throw new Error("Expected preview variables.");
+      }
+      preview.vars.EMAIL_DELIVERY_CONFIG = {
+        mode: "allowlist",
+        allowlist: [],
+        authFrom: "OpenSession <auth@updates.opensessionboard.com>",
+        authReplyTo: "hello@opensessionboard.com",
+      };
+      return candidate;
+    };
+
+    expect(
+      applyPreviewEmailRecipientOverride(createConfig(), undefined),
+    ).toBeDefined();
+    expect(() =>
+      applyPreviewEmailRecipientOverride(
+        createConfig(),
+        "one@example.test,two@example.test",
+      ),
+    ).toThrow("exactly one valid email address");
+
+    const alreadyEnabled = createConfig();
+    const flags = alreadyEnabled.env?.preview?.vars?.FEATURE_FLAGS;
+    if (!flags || typeof flags !== "object") {
+      throw new Error("Expected preview feature flags.");
+    }
+    (flags as Record<string, unknown>).email = true;
+    expect(() =>
+      applyPreviewEmailRecipientOverride(
+        alreadyEnabled,
+        "preview-judge@example.test",
+      ),
+    ).toThrow("feature-off, empty-allowlist baseline");
+
+    const existingRecipient = createConfig();
+    const delivery =
+      existingRecipient.env?.preview?.vars?.EMAIL_DELIVERY_CONFIG;
+    if (!delivery || typeof delivery !== "object") {
+      throw new Error("Expected preview delivery configuration.");
+    }
+    (delivery as Record<string, unknown>).allowlist = [
+      "someone-else@example.test",
+    ];
+    expect(() =>
+      applyPreviewEmailRecipientOverride(
+        existingRecipient,
+        "preview-judge@example.test",
+      ),
+    ).toThrow("feature-off, empty-allowlist baseline");
+  });
+
+  it("redacts private preview email bindings from Wrangler output", () => {
+    const output = [
+      "Uploaded sessionbox-killer-preview",
+      'env.EMAIL_DELIVERY_CONFIG ({"allowlist":["preview-judge@example.test"]})',
+      "Current Version ID: 86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
+    ].join("\n");
+
+    expect(sanitizeWranglerOutput(output, "preview-judge@example.test")).toBe(
+      [
+        "Uploaded sessionbox-killer-preview",
+        "Current Version ID: 86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
+      ].join("\n"),
+    );
+    expect(
+      sanitizeWranglerOutput(
+        "Deployment rejected for preview-judge@example.test",
+        "preview-judge@example.test",
+      ),
+    ).toBe("Deployment rejected for [redacted-preview-recipient]");
   });
 
   it("rejects matching Airtable overrides before either remote plan", () => {

@@ -150,6 +150,8 @@ const turnstileTestSiteKeys = new Set([
   "2x00000000000000000000BB",
   "3x00000000000000000000FF",
 ]);
+const previewRecipientPattern =
+  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 const ansiEscapePattern = new RegExp(
   `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
   "g",
@@ -157,6 +159,26 @@ const ansiEscapePattern = new RegExp(
 
 export function stripAnsi(value: string): string {
   return value.replaceAll(ansiEscapePattern, "");
+}
+
+export function sanitizeWranglerOutput(
+  value: string,
+  previewRecipient: string | undefined = process.env.EMAIL_PREVIEW_RECIPIENT,
+): string {
+  const normalizedRecipient = previewRecipient?.trim();
+  const recipientVariants = normalizedRecipient
+    ? new Set([normalizedRecipient, normalizedRecipient.toLowerCase()])
+    : new Set<string>();
+  let redacted = stripAnsi(value);
+
+  for (const recipient of recipientVariants) {
+    redacted = redacted.replaceAll(recipient, "[redacted-preview-recipient]");
+  }
+
+  return redacted
+    .split("\n")
+    .filter((line) => !line.includes("EMAIL_DELIVERY_CONFIG"))
+    .join("\n");
 }
 
 export function parseD1List(value: string): Map<string, ResourceDetails> {
@@ -594,11 +616,13 @@ function runWrangler(
   arguments_: string[],
   { print = false }: { print?: boolean } = {},
 ): WranglerResult {
+  const childEnvironment = { ...process.env };
+  delete childEnvironment.EMAIL_PREVIEW_RECIPIENT;
   const result = spawnSync(wranglerPath, arguments_, {
     cwd: rootDirectory,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...childEnvironment,
       FORCE_COLOR: undefined,
       NO_COLOR: "1",
     },
@@ -608,12 +632,12 @@ function runWrangler(
   const stderr = result.stderr ?? "";
 
   if (print) {
-    process.stdout.write(stripAnsi(stdout));
-    process.stderr.write(stripAnsi(stderr));
+    process.stdout.write(sanitizeWranglerOutput(stdout));
+    process.stderr.write(sanitizeWranglerOutput(stderr));
   }
 
   if (result.status !== 0) {
-    const detail = stripAnsi(stderr || stdout).trim();
+    const detail = sanitizeWranglerOutput(stderr || stdout).trim();
     throw new Error(
       `Wrangler ${arguments_.slice(0, 3).join(" ")} failed${detail ? `: ${detail}` : "."}`,
     );
@@ -665,6 +689,61 @@ export function applyTurnstileSiteKeyOverride(
     throw new Error(`Missing Wrangler environment: ${environment}.`);
   }
   target.vars = { ...target.vars, TURNSTILE_SITE_KEY: siteKey };
+  return config;
+}
+
+export function applyPreviewEmailRecipientOverride(
+  config: WranglerConfig,
+  recipient: string | undefined,
+): WranglerConfig {
+  if (!recipient) {
+    return config;
+  }
+
+  const normalizedRecipient = recipient.trim().toLowerCase();
+  if (
+    normalizedRecipient.length > 254 ||
+    normalizedRecipient.includes(",") ||
+    !previewRecipientPattern.test(normalizedRecipient)
+  ) {
+    throw new Error(
+      "EMAIL_PREVIEW_RECIPIENT must be exactly one valid email address.",
+    );
+  }
+
+  const target = config.env?.preview;
+  if (!target) {
+    throw new Error("Missing Wrangler environment: preview.");
+  }
+
+  const deliveryConfig = target.vars?.EMAIL_DELIVERY_CONFIG;
+  const featureFlags = target.vars?.FEATURE_FLAGS;
+  if (
+    !isRecord(deliveryConfig) ||
+    deliveryConfig.mode !== "allowlist" ||
+    !Array.isArray(deliveryConfig.allowlist) ||
+    deliveryConfig.allowlist.length !== 0 ||
+    deliveryConfig.authFrom !==
+      "OpenSession <auth@updates.opensessionboard.com>" ||
+    !isRecord(featureFlags) ||
+    featureFlags.email !== false
+  ) {
+    throw new Error(
+      "Preview email injection requires the verified sender and committed feature-off, empty-allowlist baseline.",
+    );
+  }
+
+  target.vars = {
+    ...target.vars,
+    EMAIL_DELIVERY_CONFIG: {
+      ...deliveryConfig,
+      allowlist: [normalizedRecipient],
+    },
+    FEATURE_FLAGS: {
+      ...featureFlags,
+      email: true,
+    },
+  };
   return config;
 }
 
@@ -1365,7 +1444,19 @@ function parseInventory(
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
-  const config = await readSourceConfig();
+  const previewRecipient = process.env.EMAIL_PREVIEW_RECIPIENT;
+  if (
+    previewRecipient &&
+    !(options.command === "deploy" && options.environment === "preview")
+  ) {
+    throw new Error(
+      "EMAIL_PREVIEW_RECIPIENT is accepted only by the preview deploy command.",
+    );
+  }
+  const config = applyPreviewEmailRecipientOverride(
+    await readSourceConfig(),
+    previewRecipient,
+  );
   const plan = getResourcePlan(config, options.environment);
 
   if (options.command === "apply") {
