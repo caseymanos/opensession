@@ -1,4 +1,37 @@
 export {
+  emailDocumentBlockSchema,
+  emailDocumentSchema,
+  emailMergeFieldNameSchema,
+  emailPreviewRecipientSchema,
+  emailTemplateAudienceSchema,
+  emailTemplateCommandResponseSchema,
+  emailTemplateCommandSchema,
+  emailTemplateDraftSchema,
+  emailTemplateIssueSchema,
+  emailTemplatePreviewRequestSchema,
+  emailTemplatePreviewResponseSchema,
+  emailTemplatePreviewSourceSchema,
+  emailTemplateRecordSchema,
+  emailTemplateSchema,
+  emailTemplateStatusSchema,
+  emailTemplateWorkspaceSchema,
+  renderedEmailTemplateSchema,
+  resolvedEmailMergeFieldSchema,
+  type EmailPreviewRecipient,
+  type EmailTemplateCommand,
+  type EmailTemplateCommandResponse,
+  type EmailTemplatePreviewRequest,
+  type EmailTemplatePreviewResponse,
+  type EmailTemplatePreviewSource,
+  type EmailTemplateRecord,
+  type EmailTemplateWorkspace,
+} from "./contracts.js";
+export {
+  createDeterministicEmailPreviewValues,
+  resolvedEmailMergeFields,
+  type DeterministicEmailPreviewOptions,
+} from "./preview.js";
+export {
   CampaignPlanError,
   createCampaignMessageKey,
   createCampaignPlan,
@@ -17,11 +50,21 @@ export {
   type CampaignSuppressionReason,
 } from "./campaign.js";
 export {
+  emailTemplateFamilyId,
+  emailTemplateHead,
+  emailTemplateIdentityIssue,
+  emailTemplateVersionId,
+} from "./identity.js";
+export {
   analyzeEmailTemplate,
   EmailTemplateValidationError,
   validateEmailMergeValues,
 } from "./merge.js";
-export { renderEmailTemplate } from "./render.js";
+export {
+  renderEmailTemplate,
+  renderSanitizedEmailTemplateBody,
+  type SanitizedEmailTemplateBody,
+} from "./render.js";
 export {
   createSeedEmailTemplates,
   type SeedEmailTemplateOptions,
@@ -41,13 +84,17 @@ export {
   type EmailTemplate,
   type EmailTemplateAnalysis,
   type EmailTemplateAudience,
+  type EmailTemplateDraft,
   type EmailTemplateIssue,
   type EmailTemplateStatus,
   type RenderedEmailTemplate,
+  type ResolvedEmailMergeField,
 } from "./types.js";
 export {
   activateEmailTemplate,
+  archiveEmailTemplate,
   createEmailTemplateRevision,
+  emailTemplateDraft,
   serializeEmailTemplateSnapshot,
   snapshotEmailTemplate,
   type EmailTemplateRevisionChanges,

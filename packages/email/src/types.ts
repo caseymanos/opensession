@@ -77,6 +77,16 @@ export interface EmailTemplate {
   readonly version: number;
 }
 
+export interface EmailTemplateDraft {
+  readonly allowedMergeFields: readonly EmailMergeFieldName[];
+  readonly audience: EmailTemplateAudience;
+  readonly body: EmailDocument;
+  readonly internalName: string;
+  readonly replyTo: string;
+  readonly sender: EmailAddress;
+  readonly subject: string;
+}
+
 export interface EmailTemplateIssue {
   readonly code:
     | "duplicate_field"
@@ -91,7 +101,7 @@ export interface EmailTemplateIssue {
     | "unsafe_url";
   readonly location: string;
   readonly message: string;
-  readonly offset?: number;
+  readonly offset?: number | undefined;
 }
 
 export interface EmailTemplateAnalysis {
@@ -109,6 +119,12 @@ export interface RenderedEmailTemplate {
   readonly templateVersion: number;
   readonly text: string;
   readonly usedFields: readonly EmailMergeFieldName[];
+}
+
+export interface ResolvedEmailMergeField {
+  readonly displayValue: string;
+  readonly name: EmailMergeFieldName;
+  readonly type: EmailMergeFieldType;
 }
 
 export interface EmailMessage {
