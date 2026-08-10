@@ -11,6 +11,14 @@ import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
 import { D1ScheduleProjectionRepository } from "../../src/schedule/d1-repository.js";
 import { AirtableScheduleCommandService } from "../../src/schedule/service.js";
+import {
+  D1DemoEventGuardReader,
+  DemoResetService,
+} from "../../src/demo/reset.js";
+import type {
+  CompiledDemoSeed,
+  DemoResetRequest,
+} from "../../src/demo/types.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface FixtureEnvironment extends BaseAuthorityEnvironment {
@@ -648,6 +656,29 @@ const fixtureHandler = {
       try {
         return Response.json(
           await authority(env).replaceDemoEvent(await request.json()),
+        );
+      } catch (error) {
+        return Response.json(
+          {
+            error: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : "Unknown error",
+          },
+          { status: 409 },
+        );
+      }
+    }
+    if (url.pathname === "/demo-reset") {
+      const body = (await request.json()) as {
+        plan: CompiledDemoSeed;
+        request: DemoResetRequest;
+      };
+      try {
+        return Response.json(
+          await new DemoResetService({
+            authority: authority(env),
+            eventReader: new D1DemoEventGuardReader(env.DB),
+            plan: body.plan,
+          }).reset(body.request),
         );
       } catch (error) {
         return Response.json(

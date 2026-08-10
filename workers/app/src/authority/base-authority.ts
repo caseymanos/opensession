@@ -3,9 +3,16 @@ import {
   AirtableAmbiguousWriteError,
   AirtableError,
   hashAirtableCommand,
+  hashAirtableContent,
   hashAirtableValue,
+  managedAirtableContent,
   type AirtableCommandResult,
 } from "@sessionbox-killer/data/airtable/internal";
+import {
+  demoEventRootFields,
+  demoOrganizationRootFields,
+  demoSeedVersion,
+} from "@sessionbox-killer/domain";
 
 import {
   AirtableAuthorityProvider,
@@ -31,6 +38,7 @@ import {
   type CfpSubmissionPlanReceipt,
 } from "../cfp/submission-authority.js";
 import type {
+  DemoBootstrapRootInspection,
   DemoSeedAuthorityCapabilities,
   DemoSeedAuthorityReceipt,
 } from "../demo/types.js";
@@ -287,6 +295,107 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
 
   capabilities(): DemoSeedAuthorityCapabilities {
     return this.snapshot.capabilities();
+  }
+
+  inspectDemoEventReplacement(organizationId: string, resetRunId: string) {
+    return this.snapshot.inspect(organizationId, resetRunId);
+  }
+
+  async inspectDemoBootstrapRoots(
+    organizationId: string,
+    eventId: string,
+  ): Promise<DemoBootstrapRootInspection> {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(organizationId) ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(eventId)
+    ) {
+      throw new Error("Demo bootstrap root identifiers are invalid.");
+    }
+    return this.serializeBase(async () => {
+      const [organization, event] = await Promise.all([
+        this.provider.readEntity("organizations", organizationId),
+        this.provider.readEntity("events", eventId),
+      ]);
+      const linkedOrganization = event?.fields.Organization;
+      if (
+        !organization ||
+        !event ||
+        organization.fields.ID !== organizationId ||
+        event.fields.ID !== eventId ||
+        event.fields["Is demo"] !== true ||
+        !Array.isArray(linkedOrganization) ||
+        linkedOrganization.length !== 1 ||
+        linkedOrganization[0] !== organization.id
+      ) {
+        throw new Error("Authoritative demo bootstrap roots are invalid.");
+      }
+      const organizationSourceVersion = organization.fields["Source version"];
+      const eventSourceVersion = event.fields["Source version"];
+      if (
+        typeof organizationSourceVersion !== "number" ||
+        !Number.isInteger(organizationSourceVersion) ||
+        organizationSourceVersion !== demoSeedVersion ||
+        typeof eventSourceVersion !== "number" ||
+        !Number.isInteger(eventSourceVersion) ||
+        eventSourceVersion !== demoSeedVersion
+      ) {
+        throw new Error("Authoritative demo bootstrap roots are unversioned.");
+      }
+      const organizationCommand = {
+        commandId: `demo_root_v${demoSeedVersion}_organization`,
+        entityId: organizationId,
+        expectedVersion: demoSeedVersion - 1,
+        fields: demoOrganizationRootFields,
+        table: "organizations" as const,
+      };
+      const eventCommand = {
+        commandId: `demo_root_v${demoSeedVersion}_event`,
+        entityId: eventId,
+        expectedVersion: demoSeedVersion - 1,
+        fields: {
+          ...demoEventRootFields,
+          Organization: [organization.id],
+        },
+        table: "events" as const,
+      };
+      const [
+        organizationCommandHash,
+        eventCommandHash,
+        organizationContentHash,
+        eventContentHash,
+      ] = await Promise.all([
+        hashAirtableCommand(organizationCommand),
+        hashAirtableCommand(eventCommand),
+        hashAirtableContent(
+          managedAirtableContent("organizations", organization.fields),
+          demoSeedVersion,
+        ),
+        hashAirtableContent(
+          managedAirtableContent("events", event.fields),
+          demoSeedVersion,
+        ),
+      ]);
+      if (
+        organization.fields["Last command ID"] !==
+          organizationCommand.commandId ||
+        organization.fields["Last command hash"] !== organizationCommandHash ||
+        organization.fields["Applied content hash"] !==
+          organizationContentHash ||
+        event.fields["Last command ID"] !== eventCommand.commandId ||
+        event.fields["Last command hash"] !== eventCommandHash ||
+        event.fields["Applied content hash"] !== eventContentHash
+      ) {
+        throw new Error(
+          "Authoritative demo bootstrap root metadata is invalid.",
+        );
+      }
+      return {
+        eventRecordId: event.id,
+        eventSourceVersion,
+        organizationRecordId: organization.id,
+        organizationSourceVersion,
+      };
+    });
   }
 
   replaceDemoEvent(

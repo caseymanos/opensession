@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { healthResponseSchema } from "@sessionbox-killer/contracts";
+import { demoEventSlug } from "@sessionbox-killer/domain";
 import { StatePanel, type AppEnvironment } from "@sessionbox-killer/ui";
 
 import { AppShell } from "./AppShell";
+import { resetDemoEventFromBrowser } from "./demo/demoClient";
 import { AgendaBuilder, type AgendaFixtureState } from "./agenda/AgendaBuilder";
 import { workspaceEventSlug } from "./agenda/agendaRoute";
 import { AgendaWorkspace } from "./agenda/AgendaWorkspace";
@@ -122,8 +124,13 @@ export function WorkspaceApp({
     <AppShell
       environment={environment}
       isDemoEvent
-      onResetDemo={() => {
+      onResetDemo={async (confirmation) => {
+        const result = await resetDemoEventFromBrowser(
+          demoEventSlug,
+          confirmation,
+        );
         setResetVersion((current) => current + 1);
+        return result;
       }}
     >
       {content}

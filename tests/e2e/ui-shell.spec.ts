@@ -14,6 +14,12 @@ test("organizer shell exposes the five-part information architecture", async ({
     name: "Primary navigation",
   });
   await expect(navigation).toBeVisible();
+  await expect(page.locator(".event-switcher").first()).toContainText(
+    "AI Engineer Summit 2026",
+  );
+  await expect(page.locator(".event-switcher").first()).toContainText(
+    "October 13–14, 2026",
+  );
 
   for (const group of [
     "Collect",
@@ -100,6 +106,73 @@ test("dialog traps focus and the fixture passes axe at 360px", async ({
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
     .analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("demo reset requires the exact phrase and reports the durable completion", async ({
+  page,
+}) => {
+  const csrfToken = "demo-reset-e2e-csrf-token-that-is-at-least-forty-chars";
+  await page.context().addCookies([
+    {
+      httpOnly: false,
+      name: "__Host-opensession-csrf",
+      sameSite: "Lax",
+      secure: true,
+      url: "https://127.0.0.1:8787",
+      value: csrfToken,
+    },
+  ]);
+  let requestCount = 0;
+  await page.route("**/api/events/*/demo/reset", async (route) => {
+    requestCount += 1;
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+    expect(request.headers()["idempotency-key"]).toMatch(
+      /^demo_reset_[a-f0-9]{32}$/,
+    );
+    expect(request.postDataJSON()).toEqual({
+      confirmation: "RESET AI ENGINEER SUMMIT 2026",
+    });
+    await route.fulfill({
+      json: {
+        receipt: {
+          audit_event_id: "audit_demo_reset_e2e",
+          digest: "a".repeat(64),
+          operation_count: 134,
+          outcome: "applied",
+          reset_run_id: "demo_reset_e2e_request",
+          snapshot_id: `snapshot_${"b".repeat(24)}`,
+        },
+      },
+      status: 200,
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Reset demo" }).click();
+  const dialog = page.getByRole("dialog", { name: "Reset all demo data?" });
+  const submit = dialog.getByRole("button", { name: "Reset demo data" });
+  await expect(submit).toBeDisabled();
+  await dialog.getByLabel("Confirmation phrase").fill("RESET DEMO");
+  await expect(submit).toBeDisabled();
+  await dialog
+    .getByLabel("Confirmation phrase")
+    .fill("RESET AI ENGINEER SUMMIT 2026");
+  await expect(submit).toBeEnabled();
+  await submit.click();
+
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByText("Demo data reset", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "134 authoritative records restored from snapshot_bbbbbbbbbbbbbbbbbbbbbbbb · digest aaaaaaaaaaaa…",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(requestCount).toBe(1);
 });
 
 test("workspace remains usable at a 200 percent text scale", async ({

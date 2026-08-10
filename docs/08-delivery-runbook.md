@@ -131,6 +131,21 @@ pnpm cloudflare:public-performance:preview -- --event-slug <SLUG> --seed <SEED_I
 pnpm cloudflare:rollback:preview -- --version-id <VERSION_ID>
 ```
 
+The deterministic demo bootstrap is a separate operator-only release step. Run it only after the complete forward migration chain through `0015_demo_bootstrap_authorization.sql` and the same immutable Worker SHA are active. It refuses a foreign or duplicate Airtable root, writes the two canonical roots through `AirtableCommandStore`, registers the exact base and source-record lineage with readiness unset, synchronizes through `BaseAuthority`, and only then applies and verifies the 134-record snapshot plus four private assets. It does not expose a public bootstrap screen or accept an arbitrary event.
+
+Supply the base, runtime PAT, and owner address only to the process. The raw owner address is stored only in the intended private D1 user identity row so normal sign-in can resolve the operational owner; it never enters the fixture, Git, logs, pull requests, Linear, or Wrangler's child environment. The raw one-time authorization token exists only in ignored mode-`0600` resume state, while D1 retains only its SHA-256 hash and immutable environment/base/operation scope. All three process-private values are filtered from Wrangler's child environment and output:
+
+```bash
+AIRTABLE_PREVIEW_BASE_ID=app_REPLACE_ME \
+AIRTABLE_PAT=pat_REPLACE_ME \
+DEMO_OWNER_EMAIL=owner@example.test \
+pnpm cloudflare:demo:bootstrap -- --environment preview
+```
+
+An interrupted run reuses the same durable operation and private token. The CLI renews only an exact expired pending/leased authorization, verifies that D1 changed one matching row, and accepts a completed operation only as a zero-mutation stored-result replay. A permanent fail-closed conflict requires the operator to correct the authoritative cause and explicitly pass `--restart-failed`; it never chooses a new tenant, base, root, or snapshot. Production additionally requires `--confirm-production` and `DEMO_PRODUCTION_CONFIRM=production`.
+
+Normal demo reset is not an operator endpoint. The workspace calls the authenticated event reset route with same-origin JSON, the current CSRF token, a stable idempotency key, and the exact displayed confirmation phrase. The server independently requires an active owner with `organization:manage`, the compiled organization/event pair, ready D1 lineage, and authoritative Airtable `Is demo=true`; it rate-limits the event, identity, and IP before invoking the idempotent snapshot replacement.
+
 The approved preview deploy is supplied only to that process and never copied into source, evidence, or logs:
 
 ```bash
@@ -214,6 +229,7 @@ Record Lighthouse/WebPageTest artifacts for 360px mobile and desktop. Performanc
 - confirm email and ICS arrival/import;
 - upload/download private file and reject unauthorized URL;
 - reset then complete the scripted path without admin repair;
+- run a second reset with a new idempotency key and verify the same compiled digest/counts, then reload in a fresh browser session;
 - test on slow mobile profile and keyboard only;
 - record a backup walkthrough video.
 

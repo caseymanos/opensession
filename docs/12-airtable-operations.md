@@ -4,7 +4,7 @@
 
 Airtable is the authoritative store for conference-program business data. D1 contains authentication, operations, audit, and read projections; it must not become an independent writer of Airtable-owned entities.
 
-The expected schema is versioned in `packages/data/src/airtable/schema-definition.ts`. Version 2 contains all 29 authoritative tables from the data model, stable internal IDs, source versions, command IDs, UTC lifecycle timestamps, human-readable field types, and explicit linked-record targets. Version 2 additively extends email templates with sender, structured-body, generated HTML/plain-text, and merge-field metadata, plus an exact campaign template snapshot; applying it does not rewrite version 1 records.
+The expected schema is versioned in `packages/data/src/airtable/schema-definition.ts`. Version 4 contains all 29 authoritative tables from the data model, stable internal IDs, source versions, command IDs, UTC lifecycle timestamps, human-readable field types, and explicit linked-record targets. Its additive upgrades include durable CFP draft/routing metadata, structured email/template snapshots, and schedule-domain fields; applying them does not rewrite earlier records.
 
 Schema bootstrap is non-destructive:
 
@@ -60,6 +60,8 @@ pnpm --filter @sessionbox-killer/data airtable probe --environment preview --app
 
 Production bootstrap or probe additionally requires both `--confirm-production` and `AIRTABLE_PRODUCTION_CONFIRM=production`. Preview and production base IDs are rejected when equal.
 
+The release demo bootstrap is intentionally narrower than the generic probe. After D1 migration `0015` and the matching Worker deploy, `pnpm cloudflare:demo:bootstrap -- --environment preview` accepts only an empty base or the exact command-store-managed demo roots. The deterministic root command ID is tied to the shared seed version; Source version, last-command hash, applied-content hash, and organization link must all replay exactly. The Worker then reconciles those source record IDs before the guarded snapshot may create any child record.
+
 Operator commands require the environment-specific base variable. They never fall back to the Worker's generic `AIRTABLE_BASE_ID`, so a production mutation cannot silently target an unverified base.
 
 ## Runtime guarantees
@@ -77,6 +79,6 @@ Operator commands require the environment-specific base variable. They never fal
 - Direct organizer edits are authoritative. The reconciler accepts changed content only when the protected hash, Source version, and command markers still match its last projection; adoption advances Source version before updating the projection, so a stale app command cannot overwrite the edit. Lifecycle-field tampering fails closed. A base-wide webhook cursor advances only after every active tenant converges, and a scheduled complete scan protects against missed or expired notifications.
 - Airtable has no compare-and-swap primitive. Correctness therefore depends on the single base authority Durable Object and its long-lived command-store instance. Direct Worker/workflow use of `AirtableClient` for authoritative mutations is prohibited by the package export and lint boundary.
 
-The workerd authority suites apply the production D1 migrations, inject projection failures after successful Airtable writes, and verify alarm-safe repair with one provider mutation, an unchanged replay response, canonical projections, and durable idempotency/audit/outbox/repair state. Crash cases abort the object while the provider response is in flight and prove persisted-lease readback recovery without a second mutation. The shared projector and reconciliation path cover all 29 schema-v2 tables, multi-tenant webhook cursor ingestion, scheduled full scans, tombstones, organizer edit adoption with version advancement, stale-writer rejection, and protected-lifecycle tamper rejection.
+The workerd authority suites apply the production D1 migrations, inject projection failures after successful Airtable writes, and verify alarm-safe repair with one provider mutation, an unchanged replay response, canonical projections, and durable idempotency/audit/outbox/repair state. Crash cases abort the object while the provider response is in flight and prove persisted-lease readback recovery without a second mutation. The shared projector and reconciliation path cover all 29 schema-v4 tables, multi-tenant webhook cursor ingestion, scheduled full scans, tombstones, organizer edit adoption with version advancement, stale-writer rejection, and protected-lifecycle tamper rejection.
 
-Provider behavior is covered by deterministic fetch fixtures. The credentialed preview probe is the only RAL-33 verification step that requires owner-provided Airtable access.
+Provider behavior is covered by deterministic fetch fixtures. Credentialed preview checks and the operator-only demo root/bootstrap path are the release steps that require owner-provided Airtable access.

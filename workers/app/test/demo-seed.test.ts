@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { compileDemoSeed, resolveDemoSeedFields } from "../src/demo/compiler";
 import { demoEventId, demoSeedSource } from "../src/demo/fixture";
@@ -34,6 +36,31 @@ describe("deterministic demo seed compiler", () => {
     expect(first.operations).toHaveLength(134);
     expect(first.snapshotId).toBe(`snapshot_${first.digest.slice(0, 24)}`);
     expect(first.operations.length).toBe(demoSeedSource.entities.length);
+    const manifest = JSON.parse(
+      readFileSync(
+        resolve(process.cwd(), "workers/app/src/demo/seed-manifest.json"),
+        "utf8",
+      ),
+    ) as {
+      assetCount: number;
+      digest: string;
+      eventId: string;
+      operationCount: number;
+      organizationId: string;
+      schemaVersion: number;
+      seedVersion: number;
+      snapshotId: string;
+    };
+    expect(manifest).toMatchObject({
+      assetCount: first.assets.length,
+      digest: first.digest,
+      eventId: first.eventId,
+      operationCount: first.operations.length,
+      organizationId: first.organizationId,
+      schemaVersion: 1,
+      seedVersion: first.seedVersion,
+      snapshotId: first.snapshotId,
+    });
     expect(
       new Set(
         first.operations.map(({ templateOperationId }) => templateOperationId),

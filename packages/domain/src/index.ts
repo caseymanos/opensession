@@ -16,4 +16,5 @@ export function isEnvironment(value: string): value is Environment {
 }
 
 export * from "./cfp-rules.js";
+export * from "./demo.js";
 export * from "./schedule.js";

@@ -80,9 +80,33 @@ class RecordingAuthority implements DemoSeedAuthorityGateway {
   calls: Parameters<DemoSeedAuthorityGateway["replaceDemoEvent"]>[0][] = [];
   capabilityValue: DemoSeedAuthorityCapabilities = fullCapabilities;
   readonly #applied = new Set<string>();
+  readonly #runs = new Map<
+    string,
+    Parameters<DemoSeedAuthorityGateway["replaceDemoEvent"]>[0]
+  >();
 
   capabilities(): Promise<DemoSeedAuthorityCapabilities> {
     return Promise.resolve(this.capabilityValue);
+  }
+
+  inspectDemoEventReplacement(organizationId: string, resetRunId: string) {
+    const input = this.#runs.get(resetRunId);
+    return Promise.resolve(
+      input && input.plan.organizationId === organizationId
+        ? {
+            actorId: input.actorId,
+            digest: input.plan.digest,
+            eventId: input.plan.eventId,
+            expectedSourceVersion: input.expectedSourceVersion,
+            operationCount: input.plan.operations.length,
+            organizationId: input.plan.organizationId,
+            receiptAvailable: this.#applied.has(resetRunId),
+            resetRunId,
+            snapshotId: input.plan.snapshotId,
+            state: this.#applied.has(resetRunId) ? "complete" : "applying",
+          }
+        : null,
+    );
   }
 
   replaceDemoEvent(
@@ -90,6 +114,16 @@ class RecordingAuthority implements DemoSeedAuthorityGateway {
   ): Promise<DemoSeedAuthorityReceipt> {
     this.calls.push(input);
     const replayed = this.#applied.has(input.resetRunId);
+    const existing = this.#runs.get(input.resetRunId);
+    if (
+      existing &&
+      (existing.actorId !== input.actorId ||
+        existing.expectedSourceVersion !== input.expectedSourceVersion ||
+        existing.plan.digest !== input.plan.digest)
+    ) {
+      throw new Error("Conflicting replacement input");
+    }
+    this.#runs.set(input.resetRunId, input);
     this.#applied.add(input.resetRunId);
     return Promise.resolve({
       auditEventId: `audit_${input.resetRunId}`,
@@ -134,6 +168,12 @@ describe("guarded demo reset service", () => {
       resetRunId: "req_demo_reset",
       snapshotId: plan.snapshotId,
     });
+    eventReader.event = {
+      eventId: demoEventId,
+      isDemo: true,
+      organizationId: demoOrganizationId,
+      sourceVersion: 8,
+    };
     await expect(service.reset(request())).resolves.toMatchObject({
       outcome: "replayed",
       resetRunId: "req_demo_reset",
@@ -147,6 +187,11 @@ describe("guarded demo reset service", () => {
       snapshotId: plan.snapshotId,
     });
     expect(authority.calls).toHaveLength(3);
+    expect(
+      authority.calls
+        .slice(0, 2)
+        .map(({ expectedSourceVersion }) => expectedSourceVersion),
+    ).toEqual([7, 7]);
     expect(authority.calls[0]).toMatchObject({
       actorId: "usr_demo_owner",
       expectedSourceVersion: 7,
@@ -157,6 +202,32 @@ describe("guarded demo reset service", () => {
     });
     expect("commandId" in (authority.calls[0] ?? {})).toBe(false);
     expect(authority.calls[0]?.plan.digest).toBe(plan.digest);
+  });
+
+  it("rejects a changed actor under an existing reset key without another write", async () => {
+    const authority = new RecordingAuthority();
+    const eventReader = new RecordingEventReader();
+    const service = new DemoResetService({ authority, eventReader, plan });
+    await service.reset(request());
+    eventReader.event = {
+      eventId: demoEventId,
+      isDemo: true,
+      organizationId: demoOrganizationId,
+      sourceVersion: 8,
+    };
+
+    await expect(
+      service.reset(
+        request({
+          actor: {
+            id: "usr_different_owner",
+            organizationId: demoOrganizationId,
+            permissions: ["organization:manage"],
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(authority.calls).toHaveLength(1);
   });
 
   it.each([

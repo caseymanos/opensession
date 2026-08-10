@@ -488,6 +488,18 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0015_demo_bootstrap_authorization.sql"),
+        "--config",
+        config,
+      ]);
       const handoffOutput = executeMigration([
         "d1",
         "execute",
@@ -617,6 +629,7 @@ describe("D1 operational foundation", () => {
       "email_suppressions",
       "demo_snapshot_items",
       "demo_snapshot_runs",
+      "demo_bootstrap_authorizations",
       "external_mappings",
       "file_objects",
       "file_upload_intents",
@@ -692,6 +705,46 @@ describe("D1 operational foundation", () => {
         "schedule_version",
       ]),
     );
+  });
+
+  it("keeps one-time demo bootstrap authorization scoped and state-consistent", () => {
+    query(`INSERT INTO demo_bootstrap_authorizations (
+      operation_id, token_hash, environment, base_key, organization_id,
+      event_id, organization_source_record_id, event_source_record_id,
+      seed_version, snapshot_id, seed_digest, status, created_at, updated_at,
+      expires_at
+    ) VALUES (
+      'demo_bootstrap_schema', '${hash}', 'preview', 'preview:appDemo',
+      'org_demo', 'evt_demo', 'recOOOOOOOOOOOOOO', 'recEEEEEEEEEEEEEE',
+      1, 'snapshot_demo', '${hash}', 'pending', '${timestamp}', '${timestamp}',
+      '2026-08-10T01:00:00.000Z'
+    );`);
+    expect(
+      query<{ status: string }>(
+        "SELECT status FROM demo_bootstrap_authorizations WHERE operation_id = 'demo_bootstrap_schema';",
+      ).results,
+    ).toEqual([{ status: "pending" }]);
+    expectSqlFailure(
+      `UPDATE demo_bootstrap_authorizations
+       SET status = 'complete' WHERE operation_id = 'demo_bootstrap_schema';`,
+    );
+    expectSqlFailure(`INSERT INTO demo_bootstrap_authorizations (
+      operation_id, token_hash, environment, base_key, organization_id,
+      event_id, organization_source_record_id, event_source_record_id,
+      seed_version, snapshot_id, seed_digest, status, created_at, updated_at,
+      expires_at
+    ) VALUES (
+      'demo_bootstrap_bad_scope', '${"b".repeat(64)}', 'staging', 'bad',
+      'org_demo', 'evt_demo', 'recOOOOOOOOOOOOOO', 'recEEEEEEEEEEEEEE',
+      1, 'snapshot_demo', '${hash}', 'pending', '${timestamp}', '${timestamp}',
+      '2026-08-10T01:00:00.000Z'
+    );`);
+    expect(
+      query<{ name: string }>(
+        `SELECT name FROM pragma_index_list('demo_bootstrap_authorizations')
+         WHERE name = 'idx_demo_bootstrap_authorizations_pending';`,
+      ).results,
+    ).toEqual([{ name: "idx_demo_bootstrap_authorizations_pending" }]);
   });
 
   it("enforces canonical CFP routes and durable draft JSON", () => {

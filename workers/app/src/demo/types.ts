@@ -109,8 +109,25 @@ export interface DemoSeedAuthorityReceipt {
   readonly snapshotId: string;
 }
 
+export interface DemoSnapshotRunInspection {
+  readonly actorId: string;
+  readonly digest: string;
+  readonly eventId: string;
+  readonly expectedSourceVersion: number;
+  readonly operationCount: number;
+  readonly organizationId: string;
+  readonly receiptAvailable: boolean;
+  readonly resetRunId: string;
+  readonly snapshotId: string;
+  readonly state: string;
+}
+
 export interface DemoSeedAuthorityGateway {
   capabilities(): Promise<DemoSeedAuthorityCapabilities>;
+  inspectDemoEventReplacement?(
+    organizationId: string,
+    resetRunId: string,
+  ): Promise<DemoSnapshotRunInspection | null>;
   replaceDemoEvent(input: {
     readonly actorId: string;
     readonly expectedSourceVersion: number;
@@ -120,4 +137,19 @@ export interface DemoSeedAuthorityGateway {
     readonly requireAuthoritativeDemo: true;
     readonly resetRunId: string;
   }): Promise<DemoSeedAuthorityReceipt>;
+}
+
+export interface DemoBootstrapRootInspection {
+  readonly eventRecordId: string;
+  readonly eventSourceVersion: number;
+  readonly organizationRecordId: string;
+  readonly organizationSourceVersion: number;
+}
+
+export interface DemoBootstrapAuthorityGateway extends DemoSeedAuthorityGateway {
+  inspectDemoBootstrapRoots(
+    organizationId: string,
+    eventId: string,
+  ): Promise<DemoBootstrapRootInspection>;
+  synchronize(organizationIds: readonly string[]): Promise<unknown>;
 }

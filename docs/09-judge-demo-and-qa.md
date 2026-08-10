@@ -72,6 +72,7 @@ The demo should show a coherent operating system, not a checklist of disconnecte
 ### 11:15–12:00 — close
 
 - Reset the demo event (guard visible), show success, then open source/setup docs.
+- Reload, perform one independent second reset, and show the same snapshot receipt/counts with no manual Airtable or D1 repair.
 - Close on product judgment: fewer handoffs, fewer hidden failures, faster public program, no $40k-class lock-in.
 
 ## Five-minute fallback walkthrough
@@ -111,6 +112,8 @@ Create/revoke key → authorized pagination → cross-event denial → idempoten
 ### E2E-07 Recovery
 
 Simulate Airtable 429, post-authority projection failure, email failure, queue retry, workflow resume, reconciliation, and demo reset after interrupted run.
+
+For the final live reset gate, start from the immutable release SHA and capture exact operational identifiers privately in Linear. Pass one must mutate representative Airtable, projection, and private-asset state, reset through the owner UI, and verify the compiled digest/counts after reload. Pass two must repeat from a fresh browser session with a new idempotency key and converge to the same digest/counts. Public documentation records only the sanitized scenario and generic pass/fail outcome.
 
 ## Test matrix
 
