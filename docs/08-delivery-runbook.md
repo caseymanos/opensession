@@ -32,7 +32,7 @@ Cloudflare provisioning can begin after the owner supplies or authorizes:
 
 Prefer `wrangler login` for a user-supervised local session; otherwise pass a scoped token through the environment and immediately store application secrets with `wrangler secret put`. Never paste secrets into Linear, docs, command output, or committed files.
 
-Environment-specific account state, resource identifiers, sender inventory, and verification evidence belong in the private release system or short-lived CI artifacts. They must not be copied into the public repository. The committed Wrangler file contains only safe names and placeholders; supply remote Airtable base IDs through `AIRTABLE_PREVIEW_BASE_ID` or `AIRTABLE_PRODUCTION_BASE_ID` and remote Turnstile site keys through `TURNSTILE_PREVIEW_SITE_KEY` or `TURNSTILE_PRODUCTION_SITE_KEY` when running the provisioner.
+Environment-specific account state, resource identifiers, sender inventory, and verification evidence belong in the private release system or short-lived CI artifacts. They must not be copied into the public repository. The committed Wrangler file contains safe names, the client-visible Turnstile site key, and placeholders for private account-specific resource identifiers. Supply remote Airtable base IDs through `AIRTABLE_PREVIEW_BASE_ID` or `AIRTABLE_PRODUCTION_BASE_ID` when running the provisioner. `TURNSTILE_PREVIEW_SITE_KEY` and `TURNSTILE_PRODUCTION_SITE_KEY` remain optional public-value overrides for a coordinated widget rotation.
 
 ## Resource inventory target
 
@@ -70,17 +70,15 @@ Commit binding names and safe variables in `wrangler.jsonc`; use `.dev.vars` loc
 
 `workers/app/wrangler.jsonc` is the source of truth for Worker settings and bindings. This follows Cloudflare's recommendation for new projects; YAML is not a Wrangler configuration format. The Cloudflare orchestration CLI remains code because it must query remote inventory, create only missing resources, resolve generated D1 IDs, enforce two-part production confirmation, deploy, and smoke-test. It is compiled from strict TypeScript before execution and its emitted JavaScript is ignored under `.cloudflare/`.
 
-Remote plans fail before account access when `AIRTABLE_BASE_ID` is missing, malformed, or still a `CONFIGURE` placeholder. They also reject missing or placeholder Turnstile site keys and every [Cloudflare-documented test site key](https://developers.cloudflare.com/turnstile/troubleshooting/testing/); Cloudflare explicitly warns that test credentials must never reach production. Preview and production base IDs and public site keys are injected only into the ignored rendered deployment config. PATs and the Turnstile secret remain outside source control, and these public configuration values do not authorize deployment, migration, secret installation, or route attachment.
+Remote plans fail before account access when `AIRTABLE_BASE_ID` is missing, malformed, or still a `CONFIGURE` placeholder. They also reject missing or placeholder Turnstile site keys and every [Cloudflare-documented test site key](https://developers.cloudflare.com/turnstile/troubleshooting/testing/); Cloudflare explicitly warns that test credentials must never reach production. Preview and production base IDs are injected only into the ignored rendered deployment config. The client-visible Turnstile site key is committed per environment and may be overridden during a coordinated widget rotation. PATs and the Turnstile secret remain outside source control, and these public configuration values do not authorize deployment, migration, secret installation, or route attachment.
 
 For example, supply the preview identifier only for the process that needs it:
 
 ```bash
 AIRTABLE_PREVIEW_BASE_ID=app_REPLACE_ME \
-TURNSTILE_PREVIEW_SITE_KEY=CONFIGURE_TURNSTILE_SITE_KEY \
 pnpm cloudflare:plan
 
 AIRTABLE_PRODUCTION_BASE_ID=app_REPLACE_ME \
-TURNSTILE_PRODUCTION_SITE_KEY=CONFIGURE_TURNSTILE_SITE_KEY \
 pnpm cloudflare:run plan --environment production
 ```
 
