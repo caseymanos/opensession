@@ -153,6 +153,7 @@ Token tables store hashes, prefix, expiry/use/revoke timestamps, never plaintext
 ### Delivery and consistency
 
 - `idempotency_keys`
+- `cfp_submission_reservations`
 - `outbox_events`
 - `workflow_runs`
 - `provider_messages`
@@ -178,6 +179,8 @@ Normalized tables mirror only query-critical fields:
 - `p_resources`
 
 Every projection row has `source_record_id`, `source_version`, `projected_at`.
+
+`cfp_submission_reservations` contains only organization/event/user IDs, the server-derived submission and plan IDs, and a semantic request hash. Its atomic insert is the per-account submission-limit gate; raw idempotency keys and proposal bodies are never stored there.
 
 ## Required indexes
 

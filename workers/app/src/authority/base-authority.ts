@@ -298,6 +298,16 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     return this.serializeBase(() => this.cfpSubmissions.execute(input));
   }
 
+  resumeCfpSubmissionPlan(
+    organizationId: string,
+    planId: string,
+    requestHash: string,
+  ): Promise<CfpSubmissionPlanReceipt | null> {
+    return this.serializeBase(() =>
+      this.cfpSubmissions.resume(organizationId, planId, requestHash),
+    );
+  }
+
   inspectCfpSubmissionPlan(
     organizationId: string,
     planId: string,

@@ -66,6 +66,16 @@ const confirmationStorageKey =
   "opensession.public-cfp.ai-engineer-summit.confirmation";
 const idempotencyStorageKey =
   "opensession.public-cfp.ai-engineer-summit.idempotency";
+const cfpFormVersion = 2;
+
+function csrfToken() {
+  const prefix = "__Host-opensession-csrf=";
+  const cookie = document.cookie
+    .split(";")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith(prefix));
+  return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
+}
 
 function readStorage(key: string) {
   try {
@@ -1400,12 +1410,9 @@ function InteractivePublicCfpFlow({
         track: draft.track,
         workshop_prerequisites: draft.workshopPrerequisites,
       },
+      form_version: cfpFormVersion,
+      mode: "submit",
       participants: draft.speakers,
-      routing: {
-        default_reviewer_group_id: draft.defaultReviewerGroupId,
-        route_key: draft.routeKey,
-        submission_track: draft.submissionTrack,
-      },
       turnstile_action: "cfp_submit",
       turnstile_token: submissionTurnstileToken,
     });
@@ -1424,6 +1431,17 @@ function InteractivePublicCfpFlow({
       window.crypto.randomUUID();
     submissionKey.current = idempotencyKey;
     writeStorage(idempotencyStorageKey, idempotencyKey);
+    const csrf = csrfToken();
+    if (!csrf) {
+      setSubmitting(false);
+      setSubmitError(
+        "Your sign-in session needs to be refreshed before submitting.",
+      );
+      setAnnouncement(
+        "Submission stopped because the sign-in session expired.",
+      );
+      return;
+    }
 
     try {
       const response = await fetch(
@@ -1434,17 +1452,18 @@ function InteractivePublicCfpFlow({
           headers: {
             "Content-Type": "application/json",
             "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrf,
           },
           method: "POST",
         },
       );
       const payload: unknown = await response.json().catch(() => null);
-      const submissionId =
+      const confirmation =
         payload &&
         typeof payload === "object" &&
-        "submission_id" in payload &&
-        typeof payload.submission_id === "string"
-          ? payload.submission_id
+        "friendly_id" in payload &&
+        typeof payload.friendly_id === "string"
+          ? payload.friendly_id
           : null;
       if (response.status === 429) {
         const retryAfter = Number.parseInt(
@@ -1455,10 +1474,10 @@ function InteractivePublicCfpFlow({
           `rate_limited:${Number.isFinite(retryAfter) ? retryAfter : 60}`,
         );
       }
-      if (!response.ok || !submissionId) {
+      if (!response.ok || !confirmation) {
         throw new Error("submission_failed");
       }
-      completeSubmission(submissionId);
+      completeSubmission(confirmation);
     } catch (error) {
       setSubmitting(false);
       setSubmitError(

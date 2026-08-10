@@ -249,40 +249,60 @@ export const publicCfpConfigurationResponseSchema = z
   })
   .strict();
 
-export const protectedPublicCfpSubmissionRequestSchema = z
+const publicCfpAnswerValueSchema = z.union([
+  z.string().max(20_000),
+  z.boolean(),
+  z.array(z.string().max(2_048)).max(128),
+]);
+
+const publicCfpSubmissionAnswersSchema = z
+  .record(publicIdentifierSchema, publicCfpAnswerValueSchema)
+  .refine((answers) => Object.keys(answers).length <= 128, {
+    message: "A submission cannot contain more than 128 answers.",
+  });
+
+const publicCfpSubmissionParticipantSchema = z
   .object({
-    answers: z
+    email: z.email().trim().max(320),
+    id: publicIdentifierSchema,
+    name: z.string().trim().min(1).max(160),
+    role: z.string().trim().max(160),
+  })
+  .strict();
+
+const publicCfpSubmissionBase = {
+  answers: publicCfpSubmissionAnswersSchema,
+  form_version: z.int().positive(),
+  participants: z.array(publicCfpSubmissionParticipantSchema).min(1).max(8),
+} as const;
+
+export const protectedPublicCfpSubmissionRequestSchema = z.discriminatedUnion(
+  "mode",
+  [
+    z
       .object({
-        abstract: z.string().trim().min(120).max(12_000),
-        format: z.string().trim().min(1).max(80),
-        outcomes: z.string().trim().min(1).max(4_000),
-        title: z.string().trim().min(8).max(300),
-        track: z.string().trim().min(1).max(160),
-        workshop_prerequisites: z.string().trim().max(4_000),
+        ...publicCfpSubmissionBase,
+        mode: z.literal("draft"),
       })
       .strict(),
-    participants: z
-      .array(
-        z
-          .object({
-            email: z.email().trim().max(320),
-            id: publicIdentifierSchema,
-            name: z.string().trim().min(1).max(160),
-            role: z.string().trim().max(160),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(8),
-    routing: z
+    z
       .object({
-        default_reviewer_group_id: publicIdentifierSchema,
-        route_key: publicIdentifierSchema,
-        submission_track: z.string().trim().min(1).max(160),
+        ...publicCfpSubmissionBase,
+        mode: z.literal("submit"),
+        turnstile_action: z.literal("cfp_submit"),
+        turnstile_token: turnstileTokenSchema,
       })
       .strict(),
-    turnstile_action: z.literal("cfp_submit"),
-    turnstile_token: turnstileTokenSchema,
+  ],
+);
+
+export const publicCfpSubmissionResponseSchema = z
+  .object({
+    friendly_id: z.string().trim().min(1).max(64),
+    outcome: z.enum(["applied", "replayed"]),
+    source_version: z.int().positive(),
+    status: z.enum(["draft", "submitted"]),
+    submission_id: publicIdentifierSchema,
   })
   .strict();
 
@@ -325,6 +345,9 @@ export type PublicCfpConfigurationResponse = z.infer<
 >;
 export type ProtectedPublicCfpSubmissionRequest = z.infer<
   typeof protectedPublicCfpSubmissionRequestSchema
+>;
+export type PublicCfpSubmissionResponse = z.infer<
+  typeof publicCfpSubmissionResponseSchema
 >;
 
 export const uploadPurposeSchema = z.enum([

@@ -2,6 +2,11 @@ import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { D1PublicCfpPolicyReader } from "../src/cfp/policy";
+import {
+  cfpSubmissionCoordinates,
+  D1CfpSubmissionCompiler,
+} from "../src/cfp/submission-compiler";
+import type { AuthenticatedSession } from "../src/auth/service";
 
 const hash = "c".repeat(64);
 const pepper = "cfp-policy-test-pepper-with-at-least-32-characters";
@@ -251,6 +256,7 @@ beforeAll(async () => {
   origin = listening.url.origin;
   await server.getWorker<Env>().applyD1Migrations("DB");
   await seedCfp("open-cfp");
+  await seedCfp("limit-cfp");
   await seedCfp("closed-cfp", {
     closesAt: "2001-01-01T00:00:00.000Z",
   });
@@ -327,6 +333,257 @@ describe("authoritative public CFP policy", () => {
       (await reader.readBySlug("open-cfp", new Date("2099-01-01T00:00:00Z")))
         ?.acceptingSubmissions,
     ).toBe(false);
+  });
+
+  it("compiles an authenticated request into server-owned authority routing", async () => {
+    const environment = await server.getWorker<Env>().getEnv();
+    const policy = await new D1PublicCfpPolicyReader(environment.DB).readBySlug(
+      "open-cfp",
+    );
+    if (!policy) throw new Error("The compiler fixture policy is missing.");
+    const session: AuthenticatedSession = {
+      csrfTokenHash: "b".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      id: "session_cfp_compiler",
+      tokenHash: "c".repeat(64),
+      user: {
+        displayName: "Primary Speaker",
+        email: "primary@example.test",
+        id: "user_cfp_compiler",
+      },
+    };
+    await environment.DB.prepare(
+      `INSERT INTO users
+        (id, email_normalized, display_name, status, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'active', ?4, ?4)`,
+    )
+      .bind(
+        session.user.id,
+        session.user.email,
+        session.user.displayName,
+        projectedAt,
+      )
+      .run();
+    const request = {
+      answers: {
+        format: "30-minute talk",
+        track: "Product",
+        workshop_prerequisites: "This hidden value must be cleared.",
+      },
+      form_version: 2,
+      mode: "submit" as const,
+      participants: [
+        {
+          email: "primary@example.test",
+          id: "primary-speaker",
+          name: "Primary Speaker",
+          role: "Principal Engineer",
+        },
+      ],
+      turnstile_action: "cfp_submit" as const,
+      turnstile_token: "XXXX.DUMMY.TOKEN.XXXX",
+    };
+    const coordinates = await cfpSubmissionCoordinates(
+      policy,
+      session,
+      "request-key-compiler-0001",
+      request,
+    );
+    const plan = await new D1CfpSubmissionCompiler(environment.DB).compile(
+      policy,
+      session,
+      request,
+      coordinates,
+      new Date("2026-08-10T12:00:00.000Z"),
+    );
+    const submission = plan.items.find((item) => item.table === "submissions");
+
+    expect(policy.authority).toMatchObject({
+      eventRecordId: "rec_event_open-cfp",
+      formRecordId: "rec_form_open-cfp",
+      organizationRecordId: "rec_tenant_open-cfp",
+      tracks: [
+        {
+          entityId: "track_open-cfp",
+          providerRecordId: "rec_track_open-cfp",
+        },
+      ],
+    });
+    expect(plan).toMatchObject({
+      actorId: session.user.id,
+      mode: "submit",
+      requestHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(submission?.fields).toMatchObject({
+      "Default reviewer group ID": "group-product",
+      "Route key": "product-track-d",
+      Status: "submitted",
+      Track: {
+        kind: "provider_record",
+        recordId: "rec_track_open-cfp",
+      },
+    });
+    expect(String(submission?.fields["Draft JSON"])).not.toContain(
+      "hidden value",
+    );
+    expect(
+      plan.items.some(
+        (item) =>
+          item.table === "submission_answers" &&
+          item.fields["Field stable key"] === "workshop_prerequisites",
+      ),
+    ).toBe(false);
+
+    const refreshedChallenge = await cfpSubmissionCoordinates(
+      policy,
+      session,
+      "request-key-compiler-0001",
+      { ...request, turnstile_token: "A-FRESH-TOKEN" },
+    );
+    expect(refreshedChallenge.requestHash).toBe(coordinates.requestHash);
+
+    const changedRequest = {
+      ...request,
+      answers: { ...request.answers, format: "90-minute workshop" },
+      turnstile_token: "A-FRESH-TOKEN",
+    };
+    const changedCoordinates = await cfpSubmissionCoordinates(
+      policy,
+      session,
+      "request-key-compiler-0001",
+      changedRequest,
+    );
+    expect(changedCoordinates.planId).toBe(coordinates.planId);
+    expect(changedCoordinates.requestHash).not.toBe(coordinates.requestHash);
+    await expect(
+      new D1CfpSubmissionCompiler(environment.DB).compile(
+        policy,
+        session,
+        changedRequest,
+        changedCoordinates,
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("requires same-origin session and CSRF protection on submission writes", async () => {
+    const body = JSON.stringify({
+      answers: { format: "30-minute talk", track: "Product" },
+      form_version: 2,
+      mode: "draft",
+      participants: [
+        {
+          email: "speaker@example.test",
+          id: "primary-speaker",
+          name: "Primary Speaker",
+          role: "Engineer",
+        },
+      ],
+    });
+    const crossOrigin = await server.fetch(
+      "/api/v1/public/events/open-cfp/submissions",
+      {
+        body,
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "request-key-route-0001",
+          Origin: "https://attacker.example",
+        },
+        method: "POST",
+      },
+    );
+    expect(crossOrigin.status).toBe(403);
+
+    const unauthenticated = await server.fetch(
+      "/api/v1/public/events/open-cfp/submissions",
+      {
+        body,
+        headers: {
+          ...authHeaders("203.0.113.107"),
+          "Idempotency-Key": "request-key-route-0002",
+          "X-CSRF-Token": "missing-session",
+        },
+        method: "POST",
+      },
+    );
+    expect(unauthenticated.status).toBe(401);
+    await expect(unauthenticated.json()).resolves.toMatchObject({
+      error: { code: "invalid_session" },
+    });
+  });
+
+  it("atomically reserves no more than the published per-account limit", async () => {
+    const environment = await server.getWorker<Env>().getEnv();
+    const policy = await new D1PublicCfpPolicyReader(environment.DB).readBySlug(
+      "limit-cfp",
+    );
+    if (!policy) throw new Error("The limit fixture policy is missing.");
+    const session: AuthenticatedSession = {
+      csrfTokenHash: "d".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      id: "session_cfp_limit",
+      tokenHash: "e".repeat(64),
+      user: {
+        displayName: "Limited Speaker",
+        email: "limited@example.test",
+        id: "user_cfp_limit",
+      },
+    };
+    await environment.DB.prepare(
+      `INSERT INTO users
+        (id, email_normalized, display_name, status, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'active', ?4, ?4)`,
+    )
+      .bind(
+        session.user.id,
+        session.user.email,
+        session.user.displayName,
+        projectedAt,
+      )
+      .run();
+    const request = {
+      answers: { format: "30-minute talk", track: "Product" },
+      form_version: 2,
+      mode: "draft" as const,
+      participants: [
+        {
+          email: session.user.email,
+          id: "limited-speaker",
+          name: "Limited Speaker",
+          role: "Engineer",
+        },
+      ],
+    };
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 4 }, async (_, index) => {
+        const coordinates = await cfpSubmissionCoordinates(
+          policy,
+          session,
+          `request-key-limit-000${index}`,
+          request,
+        );
+        return new D1CfpSubmissionCompiler(environment.DB).compile(
+          policy,
+          session,
+          request,
+          coordinates,
+        );
+      }),
+    );
+
+    expect(
+      attempts.filter((attempt) => attempt.status === "fulfilled"),
+    ).toHaveLength(3);
+    expect(
+      attempts.filter((attempt) => attempt.status === "rejected"),
+    ).toHaveLength(1);
+    expect(
+      await environment.DB.prepare(
+        `SELECT COUNT(*) AS count FROM cfp_submission_reservations
+         WHERE organization_id = ?1 AND event_id = ?2 AND user_id = ?3`,
+      )
+        .bind(policy.organizationId, policy.eventId, session.user.id)
+        .first(),
+    ).toEqual({ count: 3 });
   });
 
   it("registers an unprivileged identity only for an open valid CFP", async () => {

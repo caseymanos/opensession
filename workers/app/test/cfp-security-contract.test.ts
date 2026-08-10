@@ -11,6 +11,8 @@ function submission() {
       track: "AI Engineering",
       workshop_prerequisites: "",
     },
+    form_version: 2,
+    mode: "submit" as const,
     participants: [
       {
         email: "speaker@example.test",
@@ -19,11 +21,6 @@ function submission() {
         role: "Principal engineer",
       },
     ],
-    routing: {
-      default_reviewer_group_id: "group-ai",
-      route_key: "ai-track-a",
-      submission_track: "AI Engineering · Track A",
-    },
     turnstile_action: "cfp_submit",
     turnstile_token: "XXXX.DUMMY.TOKEN.XXXX",
   };
@@ -38,7 +35,7 @@ describe("protected CFP submission contract", () => {
 
   it("rejects oversized fields and participant lists", () => {
     const oversized = submission();
-    oversized.answers.abstract = "A".repeat(12_001);
+    oversized.answers.abstract = "A".repeat(20_001);
     expect(
       protectedPublicCfpSubmissionRequestSchema.safeParse(oversized).success,
     ).toBe(false);
@@ -65,8 +62,32 @@ describe("protected CFP submission contract", () => {
     expect(
       protectedPublicCfpSubmissionRequestSchema.safeParse({
         ...submission(),
+        routing: {
+          default_reviewer_group_id: "group-ai",
+          route_key: "ai-track-a",
+          submission_track: "AI Engineering · Track A",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      protectedPublicCfpSubmissionRequestSchema.safeParse({
+        ...submission(),
         turnstile_action: "sign_in",
       }).success,
     ).toBe(false);
+  });
+
+  it("allows bounded drafts without a reusable security token", () => {
+    const draft = submission();
+    const { turnstile_action, turnstile_token, ...withoutChallenge } = draft;
+    void turnstile_action;
+    void turnstile_token;
+    expect(
+      protectedPublicCfpSubmissionRequestSchema.safeParse({
+        ...withoutChallenge,
+        answers: { title: "A partial proposal" },
+        mode: "draft",
+      }).success,
+    ).toBe(true);
   });
 });

@@ -50,6 +50,7 @@ function readMigrationStatements(): string[] {
     "0009_authority_cache_invalidation.sql",
     "0010_cache_invalidation_delivery.sql",
     "0011_cfp_authoritative_routing.sql",
+    "0012_cfp_submission_reservations.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -223,6 +224,7 @@ function submissionPlan(): CfpSubmissionPlanInput {
     operation: "cfp.submission.persist",
     organizationId,
     planId: "plan_cfp_saga_submit",
+    requestHash: "a".repeat(64),
     submissionId,
   };
 }
@@ -312,6 +314,24 @@ describe("CFP submission authority plan", () => {
 
     const replay = await post("/execute-cfp-plan", submissionPlan());
     await expect(replay.json()).resolves.toMatchObject({ outcome: "replayed" });
+    expect(await providerMutationCount()).toBe(4);
+    const resumedReplay = await post("/resume-cfp-plan", {
+      organizationId,
+      planId: "plan_cfp_saga_submit",
+      requestHash: "a".repeat(64),
+    });
+    await expect(resumedReplay.json()).resolves.toMatchObject({
+      outcome: "replayed",
+    });
+    const mismatchedReplay = await post("/resume-cfp-plan", {
+      organizationId,
+      planId: "plan_cfp_saga_submit",
+      requestHash: "b".repeat(64),
+    });
+    expect(mismatchedReplay.status).toBe(409);
+    await expect(mismatchedReplay.json()).resolves.toMatchObject({
+      error: "CfpSubmissionPlanIdempotencyConflictError",
+    });
     expect(await providerMutationCount()).toBe(4);
     const complete = await server.fetch(
       `/inspect-cfp-plan?organizationId=${organizationId}&planId=plan_cfp_saga_submit`,
