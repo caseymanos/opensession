@@ -2,6 +2,8 @@ import {
   assertValidScheduleSnapshot,
   isIanaTimezone,
   participantConflictRoles,
+  participantReadinessStates,
+  scheduleHardConflictCodes,
   scheduleValidationReasons,
   sessionLifecycleStates,
   type CancelSessionCommand,
@@ -11,17 +13,26 @@ import {
   type PublishScheduleCommand,
   type RescheduleSessionCommand,
   type ScheduleCommand,
+  type ScheduleConflictEntity,
+  type ScheduleConflictInterval,
+  type ScheduleConflictPolicy,
+  type ScheduleConflictReport,
   type ScheduleCommandResult,
+  type ScheduleHardConflict,
   type ScheduleFormat,
   type ScheduleParticipant,
+  type ScheduleParticipantReadiness,
   type ScheduleRoom,
+  type ScheduleSessionReference,
   type ScheduleSession,
   type ScheduleSlot,
   type ScheduleSnapshot,
+  type ScheduleSoftWarning,
   type ScheduleTrack,
   type UnassignSessionCommand,
 } from "@sessionbox-killer/domain";
 export {
+  ScheduleHardConflictError,
   ScheduleIdempotencyConflictError,
   ScheduleValidationError,
   ScheduleVersionConflictError,
@@ -41,7 +52,28 @@ const utcInstantSchema = z.iso
   });
 
 export const participantConflictRoleSchema = z.enum(participantConflictRoles);
+export const participantReadinessStateSchema = z.enum(
+  participantReadinessStates,
+);
 export const sessionLifecycleStateSchema = z.enum(sessionLifecycleStates);
+
+export const scheduleParticipantReadinessSchema = z
+  .object({
+    missingRequiredTaskCount: z.int().nonnegative(),
+    state: participantReadinessStateSchema,
+  })
+  .strict()
+  .superRefine((readiness, context) => {
+    if (
+      (readiness.state === "missing_required_tasks") !==
+      readiness.missingRequiredTaskCount > 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Participant readiness state and missing count disagree.",
+      });
+    }
+  }) satisfies z.ZodType<ScheduleParticipantReadiness>;
 
 export const eventScheduleDaySchema = z
   .object({
@@ -98,6 +130,7 @@ export const scheduleParticipantSchema = z
   .object({
     displayName: z.string().trim().min(1).max(160),
     personId: scheduleIdentifierSchema,
+    readiness: scheduleParticipantReadinessSchema.optional(),
     role: participantConflictRoleSchema,
   })
   .strict() satisfies z.ZodType<ScheduleParticipant>;
@@ -105,6 +138,7 @@ export const scheduleParticipantSchema = z
 export const scheduleSlotSchema = z
   .object({
     endAt: utcInstantSchema,
+    overrideReason: z.string().trim().min(8).max(500).nullable().optional(),
     publicationVersion: z.int().nonnegative(),
     roomId: scheduleIdentifierSchema,
     startAt: utcInstantSchema,
@@ -119,6 +153,7 @@ export const scheduleSessionSchema = z
       .int()
       .positive()
       .max(24 * 60),
+    expectedAttendance: z.int().nonnegative().nullable().optional(),
     formatId: scheduleIdentifierSchema,
     id: scheduleIdentifierSchema,
     participants: z.array(scheduleParticipantSchema).max(32),
@@ -164,6 +199,7 @@ export const placeSessionCommandSchema = scheduleCommandBaseSchema
       .int()
       .positive()
       .max(24 * 60),
+    overrideReason: z.string().trim().min(8).max(500).optional(),
     roomId: scheduleIdentifierSchema,
     sessionId: scheduleIdentifierSchema,
     startAt: utcInstantSchema,
@@ -177,6 +213,7 @@ export const rescheduleSessionCommandSchema = scheduleCommandBaseSchema
       .int()
       .positive()
       .max(24 * 60),
+    overrideReason: z.string().trim().min(8).max(500).optional(),
     roomId: scheduleIdentifierSchema,
     sessionId: scheduleIdentifierSchema,
     startAt: utcInstantSchema,
@@ -236,14 +273,147 @@ export const scheduleIdempotencyConflictErrorSchema = z
   })
   .strict();
 
+export const scheduleConflictEntitySchema = z
+  .object({
+    id: scheduleIdentifierSchema,
+    name: z.string().trim().min(1).max(300),
+    type: z.enum(["participant", "room"]),
+  })
+  .strict() satisfies z.ZodType<ScheduleConflictEntity>;
+
+export const scheduleSessionReferenceSchema = z
+  .object({
+    id: scheduleIdentifierSchema,
+    title: z.string().trim().min(1).max(300),
+  })
+  .strict() satisfies z.ZodType<ScheduleSessionReference>;
+
+export const scheduleConflictIntervalSchema = z
+  .object({ endAt: utcInstantSchema, startAt: utcInstantSchema })
+  .strict()
+  .refine(
+    (interval) => Date.parse(interval.startAt) < Date.parse(interval.endAt),
+    { message: "Conflict overlap must have positive duration." },
+  ) satisfies z.ZodType<ScheduleConflictInterval>;
+
+const resolutionHrefSchema = z
+  .string()
+  .min(1)
+  .max(1_000)
+  .refine((value) => value.startsWith("/app/") && !value.startsWith("//"), {
+    message: "Resolution link must be an application-relative path.",
+  });
+
+export const scheduleHardConflictSchema = z
+  .object({
+    code: z.enum(scheduleHardConflictCodes),
+    entity: scheduleConflictEntitySchema,
+    eventId: scheduleIdentifierSchema,
+    overlap: scheduleConflictIntervalSchema,
+    overrideAllowed: z.literal(false),
+    resolutionHref: resolutionHrefSchema,
+    sessionA: scheduleSessionReferenceSchema,
+    sessionB: scheduleSessionReferenceSchema,
+  })
+  .strict() satisfies z.ZodType<ScheduleHardConflict>;
+
+const scheduleWarningOverrideSchema = z
+  .object({
+    allowed: z.literal(true),
+    reason: z.string().trim().min(8).max(500).nullable(),
+    sessionId: scheduleIdentifierSchema.nullable(),
+  })
+  .strict()
+  .superRefine((override, context) => {
+    if ((override.reason === null) !== (override.sessionId === null)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Warning override reason and session must be present together.",
+      });
+    }
+  });
+
+const scheduleWarningBase = {
+  entity: scheduleConflictEntitySchema,
+  eventId: scheduleIdentifierSchema,
+  override: scheduleWarningOverrideSchema,
+  resolutionHref: resolutionHrefSchema,
+} as const;
+
+export const scheduleCapacityWarningSchema = z
+  .object({
+    ...scheduleWarningBase,
+    capacity: z.int().positive(),
+    code: z.literal("capacity_exceeded"),
+    expectedAttendance: z.int().nonnegative(),
+    session: scheduleSessionReferenceSchema,
+  })
+  .strict();
+
+export const scheduleTransitionWarningSchema = z
+  .object({
+    ...scheduleWarningBase,
+    availableMinutes: z.number().nonnegative(),
+    code: z.literal("transition_buffer"),
+    requiredMinutes: z.int().positive(),
+    sessionA: scheduleSessionReferenceSchema,
+    sessionB: scheduleSessionReferenceSchema,
+  })
+  .strict();
+
+export const scheduleReadinessWarningSchema = z
+  .object({
+    ...scheduleWarningBase,
+    code: z.literal("missing_readiness"),
+    missingRequiredTaskCount: z.int().nonnegative(),
+    readinessState: z.enum(["missing_required_tasks", "not_configured"]),
+    session: scheduleSessionReferenceSchema,
+  })
+  .strict();
+
+export const scheduleSoftWarningSchema = z.discriminatedUnion("code", [
+  scheduleCapacityWarningSchema,
+  scheduleTransitionWarningSchema,
+  scheduleReadinessWarningSchema,
+]) satisfies z.ZodType<ScheduleSoftWarning>;
+
+export const scheduleConflictPolicySchema = z
+  .object({
+    transitionBufferMinutes: z
+      .int()
+      .min(0)
+      .max(24 * 60),
+  })
+  .strict() satisfies z.ZodType<ScheduleConflictPolicy>;
+
+export const scheduleConflictReportSchema = z
+  .object({
+    eventId: scheduleIdentifierSchema,
+    hardConflicts: z.array(scheduleHardConflictSchema),
+    policy: scheduleConflictPolicySchema,
+    softWarnings: z.array(scheduleSoftWarningSchema),
+  })
+  .strict() satisfies z.ZodType<ScheduleConflictReport>;
+
+export const scheduleHardConflictErrorSchema = z
+  .object({
+    code: z.literal("schedule_hard_conflict"),
+    conflicts: z.array(scheduleHardConflictSchema).min(1),
+    message: z.string().min(1).max(1_000),
+  })
+  .strict();
+
 export const scheduleCommandErrorSchema = z.discriminatedUnion("code", [
   scheduleValidationErrorSchema,
   scheduleVersionConflictErrorSchema,
   scheduleIdempotencyConflictErrorSchema,
+  scheduleHardConflictErrorSchema,
 ]);
 
 export const scheduleCommandResultSchema = z
   .object({
+    analysis: scheduleConflictReportSchema,
     changedSessionIds: z.array(scheduleIdentifierSchema),
     commandId: scheduleIdentifierSchema,
     replayed: z.boolean(),
@@ -269,15 +439,24 @@ export type {
   EventScheduleDay,
   EventSchedulingConfig,
   ParticipantConflictRole,
+  ParticipantReadinessState,
   ScheduleCommand,
   ScheduleCommandPort,
   ScheduleCommandResult,
+  ScheduleConflictEntity,
+  ScheduleConflictInterval,
+  ScheduleConflictPolicy,
+  ScheduleConflictReport,
   ScheduleFormat,
+  ScheduleHardConflict,
   ScheduleParticipant,
+  ScheduleParticipantReadiness,
   ScheduleRoom,
   ScheduleSession,
+  ScheduleSessionReference,
   ScheduleSlot,
   ScheduleSnapshot,
+  ScheduleSoftWarning,
   ScheduleTrack,
   SessionLifecycleState,
 } from "@sessionbox-killer/domain";

@@ -22,7 +22,7 @@ export default defineConfig({
         "apps/web/src/demo/demoClient.ts",
         "packages/contracts/src/{demo,index,schedule}.ts",
         "packages/data/src/airtable/{client,command-store,config,demo-root,errors,rate-limiter,schema-definition,schema-manager}.ts",
-        "packages/domain/src/{demo,schedule}.ts",
+        "packages/domain/src/{conflicts,demo,schedule}.ts",
         "packages/email/src/{campaign,merge,render,versioning}.ts",
         "scripts/cloudflare/{demo-bootstrap,provision,public-performance,release}.ts",
         "workers/app/src/auth/{authorization,crypto,http,routes,service}.ts",

@@ -4,6 +4,7 @@ import {
   scheduleCommandSchema,
   scheduleSnapshotSchema,
 } from "../../packages/contracts/src/index";
+import { evaluateScheduleConflicts } from "../../packages/domain/src/index";
 import { agendaScheduleSnapshotFixture } from "../../apps/web/src/agenda/agendaModel";
 
 export async function mockAgendaApi(page: Page) {
@@ -122,6 +123,7 @@ export async function mockAgendaApi(page: Page) {
       json: {
         ok: true,
         result: {
+          analysis: evaluateScheduleConflicts(snapshot),
           changedSessionIds,
           commandId: command.commandId,
           replayed: false,

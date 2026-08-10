@@ -27,7 +27,11 @@ const server = createTestHarness({
     {
       configPath: "workers/app/wrangler.jsonc",
       secrets: { AUTH_HASH_PEPPER: pepper },
-      vars: { FEATURE_FLAGS: featureFlags },
+      vars: {
+        AIRTABLE_BASE_ID: "app12345678",
+        APP_ENV: "local",
+        FEATURE_FLAGS: featureFlags,
+      },
     },
   ],
 });
@@ -579,6 +583,193 @@ describe("passwordless authentication runtime", () => {
       },
       ok: false,
     });
+  });
+
+  it("enforces hard conflicts on placement and publish at the server boundary", async () => {
+    const owner = await seedSession("usr_owner", "schedule_conflicts");
+    const env = await server.getWorker<Env>().getEnv();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE p_events SET schedule_version = 1 WHERE id = 'evt_one'`,
+      ),
+      env.DB.prepare(
+        `UPDATE p_sessions SET status = 'scheduled'
+         WHERE id = 'session_own'`,
+      ),
+      env.DB.prepare(
+        `UPDATE p_sessions SET expected_attendance = 150
+         WHERE id = 'session_other'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO p_session_participants (
+           id, organization_id, event_id, session_id, contact_id, role,
+           sort_order, confirmed_state, source_record_id, source_version,
+           source_content_hash, projected_at
+         ) VALUES (?, ?, ?, ?, ?, 'moderator', 1, 'confirmed', ?, 1, ?, ?)`,
+      ).bind(
+        "participant_schedule_conflict",
+        "org_one",
+        "evt_one",
+        "session_other",
+        "contact_speaker",
+        "rec_participant_schedule_conflict",
+        hash,
+        timestamp,
+      ),
+      env.DB.prepare(
+        `INSERT INTO p_schedule_slots (
+           id, organization_id, event_id, session_id, room_id, starts_at,
+           ends_at, version, published_version, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, 1, ?, ?)`,
+      ).bind(
+        "slot_schedule_existing",
+        "org_one",
+        "evt_one",
+        "session_own",
+        "room_one",
+        "2026-10-13T10:00:00.000Z",
+        "2026-10-13T10:30:00.000Z",
+        "rec_slot_schedule_existing",
+        hash,
+        timestamp,
+      ),
+    ]);
+
+    const collisionCommand = {
+      commandId: "cmd_server_room_collision",
+      durationMinutes: 30,
+      eventId: "evt_one",
+      expectedVersion: 1,
+      overrideReason: "Hard conflicts are never overrideable",
+      roomId: "room_one",
+      sessionId: "session_other",
+      startAt: "2026-10-13T10:15:00.000Z",
+      type: "place_session",
+    };
+    const beforeCollision = await server.fetch(
+      "/api/events/event-one/schedule",
+      { headers: { Cookie: owner.cookie } },
+    );
+    expect(beforeCollision.status, await beforeCollision.clone().text()).toBe(
+      200,
+    );
+    const collision = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify(collisionCommand),
+        headers: authHeaders(owner.cookie, owner.csrf),
+        method: "POST",
+      },
+    );
+    expect(collision.status, await collision.clone().text()).toBe(409);
+    await expect(collision.json()).resolves.toMatchObject({
+      error: {
+        code: "schedule_hard_conflict",
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: "room_overlap",
+            entity: { id: "room_one", name: "Main room", type: "room" },
+            overlap: {
+              endAt: "2026-10-13T10:30:00.000Z",
+              startAt: "2026-10-13T10:15:00.000Z",
+            },
+            overrideAllowed: false,
+            sessionA: { id: "session_other", title: "Other session" },
+            sessionB: { id: "session_own", title: "Speaker session" },
+          }),
+          expect.objectContaining({
+            code: "participant_overlap",
+            entity: expect.objectContaining({ id: "contact_speaker" }),
+          }),
+        ]),
+      },
+      ok: false,
+    });
+
+    const rejectedSession = await env.DB.prepare(
+      "SELECT status FROM p_sessions WHERE id = 'session_other'",
+    ).first<{ status: string }>();
+    expect(rejectedSession?.status).toBe("accepted");
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE p_sessions SET status = 'scheduled'
+         WHERE id = 'session_other'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO p_schedule_slots (
+           id, organization_id, event_id, session_id, room_id, starts_at,
+           ends_at, version, published_version, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, 1, ?, ?)`,
+      ).bind(
+        "slot_schedule_conflicting",
+        "org_one",
+        "evt_one",
+        "session_other",
+        "room_one",
+        "2026-10-13T10:15:00.000Z",
+        "2026-10-13T10:45:00.000Z",
+        "rec_slot_schedule_conflicting",
+        hash,
+        timestamp,
+      ),
+    ]);
+
+    const report = await server.fetch(
+      "/api/events/event-one/schedule/conflicts",
+      { headers: { Cookie: owner.cookie } },
+    );
+    expect(report.status).toBe(200);
+    await expect(report.json()).resolves.toMatchObject({
+      eventId: "evt_one",
+      hardConflicts: expect.arrayContaining([
+        expect.objectContaining({ code: "room_overlap" }),
+        expect.objectContaining({ code: "participant_overlap" }),
+      ]),
+      softWarnings: expect.arrayContaining([
+        expect.objectContaining({ code: "capacity_exceeded" }),
+        expect.objectContaining({ code: "missing_readiness" }),
+      ]),
+    });
+
+    const publish = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_server_publish_conflict",
+          eventId: "evt_one",
+          expectedVersion: 1,
+          type: "publish_schedule",
+        }),
+        headers: authHeaders(owner.cookie, owner.csrf),
+        method: "POST",
+      },
+    );
+    expect(publish.status).toBe(409);
+    await expect(publish.json()).resolves.toMatchObject({
+      error: { code: "schedule_hard_conflict" },
+      ok: false,
+    });
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `DELETE FROM p_schedule_slots
+         WHERE id IN ('slot_schedule_existing', 'slot_schedule_conflicting')`,
+      ),
+      env.DB.prepare(
+        `DELETE FROM p_session_participants
+         WHERE id = 'participant_schedule_conflict'`,
+      ),
+      env.DB.prepare(
+        `UPDATE p_sessions SET status = 'accepted', expected_attendance = NULL
+         WHERE id IN ('session_own', 'session_other')`,
+      ),
+      env.DB.prepare(
+        `UPDATE p_events SET schedule_version = 0 WHERE id = 'evt_one'`,
+      ),
+    ]);
   });
 
   it("enforces role, tenant, revocation, and speaker relationship scope", async () => {

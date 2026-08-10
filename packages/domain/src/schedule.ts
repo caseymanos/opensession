@@ -1,3 +1,12 @@
+import {
+  defaultScheduleConflictPolicy,
+  evaluateScheduleConflicts,
+  ScheduleHardConflictError,
+  type ScheduleConflictPolicy,
+  type ScheduleConflictReport,
+  type ScheduleSoftWarning,
+} from "./conflicts.js";
+
 export const participantConflictRoles = [
   "speaker",
   "moderator",
@@ -5,6 +14,20 @@ export const participantConflictRoles = [
 ] as const;
 
 export type ParticipantConflictRole = (typeof participantConflictRoles)[number];
+
+export const participantReadinessStates = [
+  "ready",
+  "missing_required_tasks",
+  "not_configured",
+] as const;
+
+export type ParticipantReadinessState =
+  (typeof participantReadinessStates)[number];
+
+export interface ScheduleParticipantReadiness {
+  missingRequiredTaskCount: number;
+  state: ParticipantReadinessState;
+}
 
 export const sessionLifecycleStates = [
   "accepted_unscheduled",
@@ -54,11 +77,13 @@ export interface ScheduleFormat {
 export interface ScheduleParticipant {
   displayName: string;
   personId: string;
+  readiness?: ScheduleParticipantReadiness | undefined;
   role: ParticipantConflictRole;
 }
 
 export interface ScheduleSlot {
   endAt: string;
+  overrideReason?: string | null | undefined;
   publicationVersion: number;
   roomId: string;
   startAt: string;
@@ -68,6 +93,7 @@ export interface ScheduleSlot {
 export interface ScheduleSession {
   abstract: string;
   durationMinutes: number;
+  expectedAttendance?: number | null | undefined;
   formatId: string;
   id: string;
   participants: readonly ScheduleParticipant[];
@@ -93,6 +119,7 @@ export interface ScheduleCommandBase {
 
 export interface PlaceSessionCommand extends ScheduleCommandBase {
   durationMinutes: number;
+  overrideReason?: string | undefined;
   roomId: string;
   sessionId: string;
   startAt: string;
@@ -101,6 +128,7 @@ export interface PlaceSessionCommand extends ScheduleCommandBase {
 
 export interface RescheduleSessionCommand extends ScheduleCommandBase {
   durationMinutes: number;
+  overrideReason?: string | undefined;
   roomId: string;
   sessionId: string;
   startAt: string;
@@ -129,6 +157,7 @@ export type ScheduleCommand =
   | UnassignSessionCommand;
 
 export interface ScheduleCommandResult {
+  analysis: ScheduleConflictReport;
   changedSessionIds: readonly string[];
   commandId: string;
   replayed: boolean;
@@ -155,6 +184,7 @@ export const scheduleValidationReasons = [
   "invalid_timezone",
   "invalid_track",
   "invalid_version",
+  "override_not_allowed",
   "session_not_found",
 ] as const;
 
@@ -333,6 +363,19 @@ function assertSlot(
       "invalid_version",
       `sessions.${session.id}.slot.version`,
       "Slot versions must be valid event schedule versions.",
+    );
+  }
+  if (
+    slot.overrideReason !== undefined &&
+    slot.overrideReason !== null &&
+    (slot.overrideReason !== slot.overrideReason.trim() ||
+      slot.overrideReason.length < 8 ||
+      slot.overrideReason.length > 500)
+  ) {
+    validationError(
+      "invalid_command",
+      `sessions.${session.id}.slot.overrideReason`,
+      "Schedule override reasons must contain 8 to 500 trimmed characters.",
     );
   }
 
@@ -530,6 +573,18 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
         "Session duration must be a positive multiple of the snap interval.",
       );
     }
+    if (
+      session.expectedAttendance !== undefined &&
+      session.expectedAttendance !== null &&
+      (!Number.isInteger(session.expectedAttendance) ||
+        session.expectedAttendance < 0)
+    ) {
+      validationError(
+        "invalid_command",
+        `sessions.${session.id}.expectedAttendance`,
+        "Expected attendance must be a non-negative whole number.",
+      );
+    }
     const participantKeys = new Set<string>();
     for (const participant of session.participants) {
       assertStableIdentifier(
@@ -550,6 +605,25 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
           `sessions.${session.id}.participants`,
           "A participant role may appear only once per session.",
         );
+      }
+      if (participant.readiness) {
+        const { missingRequiredTaskCount, state } = participant.readiness;
+        if (
+          !participantReadinessStates.some(
+            (readinessState) => readinessState === state,
+          ) ||
+          !Number.isInteger(missingRequiredTaskCount) ||
+          missingRequiredTaskCount < 0 ||
+          (state === "missing_required_tasks" &&
+            missingRequiredTaskCount === 0) ||
+          (state !== "missing_required_tasks" && missingRequiredTaskCount !== 0)
+        ) {
+          validationError(
+            "invalid_participant",
+            `sessions.${session.id}.participants.readiness`,
+            "Participant readiness state and missing task count are inconsistent.",
+          );
+        }
       }
       participantKeys.add(key);
     }
@@ -619,6 +693,7 @@ function nextSlot(
   roomId: string,
   startAt: string,
   version: number,
+  overrideReason?: string,
 ): ScheduleSlot {
   const start = new Date(startAt);
   if (!Number.isFinite(start.getTime()) || !startAt.endsWith("Z")) {
@@ -630,6 +705,7 @@ function nextSlot(
   }
   const slot = {
     endAt: new Date(start.getTime() + durationMinutes * 60_000).toISOString(),
+    overrideReason: overrideReason?.trim() ?? null,
     publicationVersion: 0,
     roomId,
     startAt,
@@ -641,6 +717,15 @@ function nextSlot(
     slot,
   );
   return slot;
+}
+
+function warningInvolvesSession(
+  warning: ScheduleSoftWarning,
+  sessionId: string,
+): boolean {
+  return warning.code === "transition_buffer"
+    ? warning.sessionA.id === sessionId || warning.sessionB.id === sessionId
+    : warning.session.id === sessionId;
 }
 
 function replaceSession(
@@ -667,6 +752,7 @@ function replaceSession(
 export function applyScheduleCommand(
   snapshot: ScheduleSnapshot,
   command: ScheduleCommand,
+  conflictPolicy: ScheduleConflictPolicy = defaultScheduleConflictPolicy,
 ): ScheduleCommandResult {
   assertValidScheduleSnapshot(snapshot);
   assertStableIdentifier(command.commandId, "command.commandId");
@@ -755,6 +841,7 @@ export function applyScheduleCommand(
             command.roomId,
             command.startAt,
             nextVersion,
+            command.overrideReason,
           ),
           state: "scheduled",
         };
@@ -777,6 +864,7 @@ export function applyScheduleCommand(
             command.roomId,
             command.startAt,
             nextVersion,
+            command.overrideReason,
           ),
           state: "scheduled",
         };
@@ -803,23 +891,55 @@ export function applyScheduleCommand(
     changedSessionIds = [command.sessionId];
   }
 
+  const nextSnapshot: ScheduleSnapshot = {
+    ...snapshot,
+    event: {
+      ...snapshot.event,
+      publicationVersion:
+        command.type === "publish_schedule"
+          ? nextVersion
+          : snapshot.event.publicationVersion,
+      version: nextVersion,
+    },
+    sessions,
+  };
+  assertValidScheduleSnapshot(nextSnapshot);
+  const analysis = evaluateScheduleConflicts(nextSnapshot, conflictPolicy);
+  const blockingConflicts =
+    command.type === "publish_schedule"
+      ? analysis.hardConflicts
+      : command.type === "place_session" ||
+          command.type === "reschedule_session"
+        ? analysis.hardConflicts.filter(
+            (conflict) =>
+              conflict.sessionA.id === command.sessionId ||
+              conflict.sessionB.id === command.sessionId,
+          )
+        : [];
+  if (blockingConflicts.length > 0) {
+    throw new ScheduleHardConflictError(blockingConflicts);
+  }
+  if (
+    (command.type === "place_session" ||
+      command.type === "reschedule_session") &&
+    command.overrideReason !== undefined &&
+    !analysis.softWarnings.some((warning) =>
+      warningInvolvesSession(warning, command.sessionId),
+    )
+  ) {
+    validationError(
+      "override_not_allowed",
+      "command.overrideReason",
+      "An override reason is allowed only when the placement has a soft warning.",
+    );
+  }
+
   const result: ScheduleCommandResult = {
+    analysis,
     changedSessionIds,
     commandId: command.commandId,
     replayed: false,
-    snapshot: {
-      ...snapshot,
-      event: {
-        ...snapshot.event,
-        publicationVersion:
-          command.type === "publish_schedule"
-            ? nextVersion
-            : snapshot.event.publicationVersion,
-        version: nextVersion,
-      },
-      sessions,
-    },
+    snapshot: nextSnapshot,
   };
-  assertValidScheduleSnapshot(result.snapshot);
   return result;
 }
