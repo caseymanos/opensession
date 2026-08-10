@@ -166,7 +166,7 @@
           "writes": true,
         },
         "TURNSTILE_HOSTNAMES": "preview.opensessionboard.com",
-        "TURNSTILE_SITE_KEY": "CONFIGURE_TURNSTILE_SITE_KEY",
+        "TURNSTILE_SITE_KEY": "0x4AAAAAAEMM5i0m9gJjWf1_",
       },
       "analytics_engine_datasets": [
         {
@@ -279,7 +279,7 @@
           "writes": false,
         },
         "TURNSTILE_HOSTNAMES": "opensessionboard.com,www.opensessionboard.com",
-        "TURNSTILE_SITE_KEY": "CONFIGURE_TURNSTILE_SITE_KEY",
+        "TURNSTILE_SITE_KEY": "0x4AAAAAAEMM5i0m9gJjWf1_",
       },
       "analytics_engine_datasets": [
         {
