@@ -12,7 +12,11 @@ import { getBaseAuthority } from "./authority/binding.js";
 import { registerPublicCfpRoutes } from "./cfp/routes";
 import { inspectFeatureFlags, isFeatureEnabled } from "./features";
 import { parseEmailDeliveryConfig } from "./email/config.js";
-import { EmailQueueDeliveryService } from "./email/delivery.js";
+import {
+  CampaignEmailCoordinator,
+  EmailQueueDeliveryService,
+  pruneExpiredEmailQueuePayloads,
+} from "./email/delivery.js";
 import { ResendEmailDeliveryProvider } from "./email/provider.js";
 import { registerEmailWebhookRoutes } from "./email/routes.js";
 import {
@@ -477,6 +481,7 @@ const worker = {
         Promise.all([
           pruneExpiredOperationalEvents(environment.DB),
           pruneExpiredAbuseLimits(environment.DB),
+          pruneExpiredEmailQueuePayloads(environment.DB, scheduledAt),
         ])
           .then(() => {
             emitOperationalLog("info", environment, {
@@ -506,6 +511,48 @@ const worker = {
     }
 
     if (controller.cron === "17 * * * *") {
+      if (isFeatureEnabled(environment.FEATURE_FLAGS, "email")) {
+        const emailHandoffStartedAt = performance.now();
+        executionContext.waitUntil(
+          Promise.resolve()
+            .then(() =>
+              new CampaignEmailCoordinator({
+                config: parseEmailDeliveryConfig(
+                  environment.EMAIL_DELIVERY_CONFIG,
+                  environment.APP_ENV,
+                ),
+                database: environment.DB,
+                queue: environment.EMAIL_QUEUE,
+              }).drainPendingHandoffs(),
+            )
+            .then((handedOff) => {
+              emitOperationalLog("info", environment, {
+                attempt: handedOff,
+                duration_ms: roundedDuration(
+                  emailHandoffStartedAt,
+                  performance.now(),
+                ),
+                event: "email.queue_handoff.drained",
+                outcome: "success",
+                queue: "email_send",
+              });
+            })
+            .catch((error: unknown) => {
+              emitOperationalLog("error", environment, {
+                duration_ms: roundedDuration(
+                  emailHandoffStartedAt,
+                  performance.now(),
+                ),
+                error_type:
+                  error instanceof Error ? error.name : "UnknownError",
+                event: "email.queue_handoff.failed",
+                outcome: "failure",
+                queue: "email_send",
+              });
+              throw error;
+            }),
+        );
+      }
       const uploadStartedAt = performance.now();
       const uploadJobId = `upload_cleanup_${scheduledAt
         .toISOString()

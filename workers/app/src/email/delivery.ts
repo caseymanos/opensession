@@ -22,7 +22,11 @@ export type EmailQueueAction =
 export type CampaignEnqueueResult =
   | { readonly outcome: "queued" }
   | {
-      readonly outcome: "already_queued" | "already_terminal" | "suppressed";
+      readonly outcome:
+        | "already_queued"
+        | "already_terminal"
+        | "handoff_pending"
+        | "suppressed";
       readonly status: string;
     };
 
@@ -54,6 +58,12 @@ interface ProviderMessageRow {
   template_version: number | null;
 }
 
+interface CampaignCoordinatorRow extends ProviderMessageRow {
+  queue_payload_json: string | null;
+  queue_handed_off_at: string | null;
+  queue_handoff_lease_expires_at: string | null;
+}
+
 interface ClaimedMessageRow {
   attempt_count: number;
   recipient_hash: string;
@@ -73,6 +83,9 @@ interface MagicLinkDeliveryRow {
 }
 
 const providerLeaseMilliseconds = 2 * 60 * 1_000;
+const queueHandoffLeaseMilliseconds = 30 * 1_000;
+const queuePayloadRetentionMilliseconds = 30 * 24 * 60 * 60 * 1_000;
+const maximumQueuePayloadBytes = 120 * 1_024;
 const maximumProviderAttempts = 5;
 const retryDelays = [30, 120, 600, 1_800] as const;
 const terminalStatuses = new Set([
@@ -163,6 +176,13 @@ export class CampaignEmailCoordinator {
     const address = message.email.to[0] as string;
     const recipientHash = await sha256Hex(address.trim().toLowerCase());
     const payloadHash = await campaignPayloadHash(message.email);
+    const queuePayloadJson = JSON.stringify(message);
+    if (
+      new TextEncoder().encode(queuePayloadJson).byteLength >
+      maximumQueuePayloadBytes
+    ) {
+      throw new TypeError("Campaign queue payload exceeds 120 KiB.");
+    }
     const suppression = await this.#database
       .prepare(
         `SELECT reason FROM email_suppressions
@@ -180,10 +200,10 @@ export class CampaignEmailCoordinator {
            id, organization_id, event_id, campaign_id, contact_id, kind,
            provider, idempotency_key, recipient_hash, template_id,
            template_version, payload_hash, delivery_mode, status, created_at,
-           updated_at, error_code
+           updated_at, error_code, queue_payload_json
          ) VALUES (
            ?1, ?2, ?3, ?4, ?5, 'campaign', 'resend', ?1, ?6, ?7, ?8, ?9,
-           ?10, ?11, ?12, ?12, ?13
+           ?10, ?11, ?12, ?12, ?13, ?14
          ) ON CONFLICT (organization_id, idempotency_key) DO NOTHING`,
       )
       .bind(
@@ -200,41 +220,48 @@ export class CampaignEmailCoordinator {
         initialStatus,
         now,
         errorCode,
+        suppression ? null : queuePayloadJson,
       )
       .run();
+    let result: CampaignEnqueueResult = { outcome: "queued" };
+    let existing: CampaignCoordinatorRow | null = null;
     if (inserted.meta.changes !== 1) {
-      const existing = await this.#message(message);
-      if (
-        !existing ||
-        !this.#matchesMessage(existing, message, recipientHash, payloadHash)
-      ) {
+      existing = await this.#message(message);
+      if (!existing || !this.#matchesScope(existing, message, recipientHash)) {
         throw new Error("Campaign message idempotency state is inconsistent.");
       }
-      return terminalStatuses.has(existing.status)
-        ? { outcome: "already_terminal", status: existing.status }
-        : { outcome: "already_queued", status: existing.status };
+      if (terminalStatuses.has(existing.status)) {
+        return { outcome: "already_terminal", status: existing.status };
+      }
+      if (existing.status === "sending" || existing.queue_handed_off_at) {
+        return { outcome: "already_queued", status: existing.status };
+      }
+      result = { outcome: "already_queued", status: existing.status };
     }
-    if (suppression) {
+    if (inserted.meta.changes === 1 && suppression) {
       return { outcome: "suppressed", status: "suppressed" };
     }
-    try {
-      await this.#queue.send(message);
-      return { outcome: "queued" };
-    } catch (error) {
-      await this.#database
+    if (existing && suppression) {
+      const suppressed = await this.#database
         .prepare(
           `UPDATE provider_messages
-           SET status = 'failed', error_code = 'queue_rejected', updated_at = ?1
-           WHERE organization_id = ?2 AND id = ?3 AND status = 'queued'`,
+           SET status = 'suppressed', error_code = 'recipient_suppressed',
+               queue_payload_json = NULL, updated_at = ?1
+           WHERE organization_id = ?2 AND id = ?3 AND status = 'queued'
+             AND queue_handed_off_at IS NULL
+             AND (queue_handoff_lease_expires_at IS NULL
+               OR queue_handoff_lease_expires_at <= ?1)`,
         )
-        .bind(
-          this.#now().toISOString(),
-          message.organization_id,
-          message.message_id,
-        )
+        .bind(now, message.organization_id, message.message_id)
         .run();
-      throw error;
+      if (suppressed.meta.changes === 1) {
+        return { outcome: "suppressed", status: "suppressed" };
+      }
     }
+    const handoffMessage = existing
+      ? await this.#durableMessage(existing, message, payloadHash)
+      : message;
+    return this.#handoff(handoffMessage, result);
   }
 
   async replay(
@@ -249,12 +276,14 @@ export class CampaignEmailCoordinator {
       (message.email.to[0] as string).trim().toLowerCase(),
     );
     const payloadHash = await campaignPayloadHash(message.email);
-    if (
-      !existing ||
-      !this.#matchesMessage(existing, message, recipientHash, payloadHash)
-    ) {
+    if (!existing || !this.#matchesScope(existing, message, recipientHash)) {
       throw new Error("Campaign message does not exist.");
     }
+    const handoffMessage = await this.#durableMessage(
+      existing,
+      message,
+      payloadHash,
+    );
     if (existing.status !== "failed") {
       return { outcome: "not_replayable", status: existing.status };
     }
@@ -271,7 +300,7 @@ export class CampaignEmailCoordinator {
         .prepare(
           `UPDATE provider_messages
            SET status = 'suppressed', error_code = 'recipient_suppressed',
-               updated_at = ?1
+               queue_payload_json = NULL, updated_at = ?1
            WHERE organization_id = ?2 AND id = ?3 AND status = 'failed'`,
         )
         .bind(
@@ -286,7 +315,8 @@ export class CampaignEmailCoordinator {
       .prepare(
         `UPDATE provider_messages
          SET status = 'queued', error_code = NULL, delivery_mode = ?1,
-             updated_at = ?2
+             queue_handed_off_at = NULL,
+             queue_handoff_lease_expires_at = NULL, updated_at = ?2
          WHERE organization_id = ?3 AND id = ?4 AND status = 'failed'`,
       )
       .bind(
@@ -303,39 +333,230 @@ export class CampaignEmailCoordinator {
         status: current?.status ?? "missing",
       };
     }
+    const handoff = await this.#handoff(handoffMessage, { outcome: "queued" });
+    if (handoff.outcome === "queued") return handoff;
+    return { outcome: "not_replayable", status: handoff.status };
+  }
+
+  async drainPendingHandoffs(limit = 25): Promise<number> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new TypeError(
+        "Queue handoff drain limit must be between 1 and 100.",
+      );
+    }
+    const rows = await this.#database
+      .prepare(
+        `SELECT id, organization_id, queue_payload_json
+         FROM provider_messages
+         WHERE status = 'queued' AND queue_handed_off_at IS NULL
+           AND queue_payload_json IS NOT NULL
+           AND (queue_handoff_lease_expires_at IS NULL
+             OR queue_handoff_lease_expires_at <= ?1)
+         ORDER BY created_at, id
+         LIMIT ?2`,
+      )
+      .bind(this.#now().toISOString(), limit)
+      .all<{
+        id: string;
+        organization_id: string;
+        queue_payload_json: string;
+      }>();
+    let handedOff = 0;
+    for (const row of rows.results) {
+      let message: CampaignEmailQueueMessage;
+      try {
+        if (
+          new TextEncoder().encode(row.queue_payload_json).byteLength >
+          maximumQueuePayloadBytes
+        ) {
+          throw new TypeError("Campaign queue payload exceeds 120 KiB.");
+        }
+        const parsed = parseEmailQueueMessage(
+          JSON.parse(row.queue_payload_json) as unknown,
+        );
+        if (parsed.kind !== "campaign.email.requested") {
+          throw new TypeError("Campaign queue message is required.");
+        }
+        message = parsed;
+      } catch (error) {
+        if (!(error instanceof SyntaxError || error instanceof TypeError)) {
+          throw error;
+        }
+        await this.#database
+          .prepare(
+            `UPDATE provider_messages
+             SET status = 'failed', error_code = 'invalid_queue_payload',
+                 queue_handoff_lease_expires_at = NULL,
+                 queue_payload_json = NULL, updated_at = ?1
+             WHERE organization_id = ?2 AND id = ?3 AND status = 'queued'
+               AND queue_handed_off_at IS NULL`,
+          )
+          .bind(this.#now().toISOString(), row.organization_id, row.id)
+          .run();
+        continue;
+      }
+      const result = await this.enqueue(message);
+      if (result.outcome !== "handoff_pending") handedOff += 1;
+    }
+    return handedOff;
+  }
+
+  async #handoff(
+    message: CampaignEmailQueueMessage,
+    result: CampaignEnqueueResult,
+  ): Promise<CampaignEnqueueResult> {
+    const now = this.#now();
+    const nowIso = now.toISOString();
+    const leaseExpiresAt = new Date(
+      now.getTime() + queueHandoffLeaseMilliseconds,
+    ).toISOString();
+    const claimed = await this.#database
+      .prepare(
+        `UPDATE provider_messages
+         SET queue_handoff_lease_expires_at = ?1,
+             queue_payload_json = COALESCE(queue_payload_json, ?2),
+             delivery_mode = ?3, updated_at = ?4, error_code = NULL
+         WHERE organization_id = ?5 AND id = ?6 AND status = 'queued'
+           AND queue_handed_off_at IS NULL
+           AND (queue_payload_json IS NOT NULL OR payload_hash = ?7)
+           AND (queue_handoff_lease_expires_at IS NULL
+             OR queue_handoff_lease_expires_at <= ?4)
+         RETURNING id`,
+      )
+      .bind(
+        leaseExpiresAt,
+        JSON.stringify(message),
+        this.#config.mode,
+        nowIso,
+        message.organization_id,
+        message.message_id,
+        await campaignPayloadHash(message.email),
+      )
+      .first<{ id: string }>();
+    if (!claimed) {
+      return { outcome: "handoff_pending", status: "queued" };
+    }
     try {
       await this.#queue.send(message);
-      return { outcome: "queued" };
     } catch (error) {
       await this.#database
         .prepare(
           `UPDATE provider_messages
-           SET status = 'failed', error_code = 'queue_rejected', updated_at = ?1
-           WHERE organization_id = ?2 AND id = ?3 AND status = 'queued'`,
+           SET queue_handoff_lease_expires_at = NULL, updated_at = ?1
+           WHERE organization_id = ?2 AND id = ?3
+             AND queue_handoff_lease_expires_at = ?4
+             AND queue_handed_off_at IS NULL`,
         )
         .bind(
           this.#now().toISOString(),
           message.organization_id,
           message.message_id,
+          leaseExpiresAt,
         )
         .run();
       throw error;
     }
+    const confirmed = await this.#database
+      .prepare(
+        `UPDATE provider_messages
+         SET queue_handed_off_at = ?1, queue_handoff_lease_expires_at = NULL,
+             queue_payload_json = NULL, updated_at = ?1
+         WHERE organization_id = ?2 AND id = ?3
+           AND queue_handoff_lease_expires_at = ?4
+           AND queue_handed_off_at IS NULL`,
+      )
+      .bind(
+        this.#now().toISOString(),
+        message.organization_id,
+        message.message_id,
+        leaseExpiresAt,
+      )
+      .run();
+    if (confirmed.meta.changes !== 1) {
+      const current = await this.#message(message);
+      const recipientHash = await sha256Hex(
+        (message.email.to[0] as string).trim().toLowerCase(),
+      );
+      const payloadHash = await campaignPayloadHash(message.email);
+      if (
+        current?.queue_handed_off_at &&
+        this.#matchesMessage(current, message, recipientHash, payloadHash)
+      ) {
+        return result;
+      }
+      throw new Error("Campaign queue handoff confirmation was lost.");
+    }
+    return result;
   }
 
   async #message(
     message: CampaignEmailQueueMessage,
-  ): Promise<ProviderMessageRow | null> {
+  ): Promise<CampaignCoordinatorRow | null> {
     return this.#database
       .prepare(
         `SELECT attempt_count, campaign_id, contact_id, delivery_mode, event_id,
                 idempotency_key, lease_expires_at, payload_hash, recipient_hash,
-                status, template_id, template_version
+                queue_handed_off_at, queue_handoff_lease_expires_at,
+                queue_payload_json, status, template_id, template_version
          FROM provider_messages
          WHERE organization_id = ?1 AND id = ?2`,
       )
       .bind(message.organization_id, message.message_id)
-      .first<ProviderMessageRow>();
+      .first<CampaignCoordinatorRow>();
+  }
+
+  async #durableMessage(
+    row: CampaignCoordinatorRow,
+    current: CampaignEmailQueueMessage,
+    currentPayloadHash: string,
+  ): Promise<CampaignEmailQueueMessage> {
+    if (!row.queue_payload_json) {
+      if (row.payload_hash !== currentPayloadHash) {
+        throw new Error("Campaign message idempotency state is inconsistent.");
+      }
+      return current;
+    }
+    let durable: CampaignEmailQueueMessage;
+    try {
+      const parsed = parseEmailQueueMessage(JSON.parse(row.queue_payload_json));
+      if (parsed.kind !== "campaign.email.requested") {
+        throw new TypeError("Campaign queue message is required.");
+      }
+      durable = parsed;
+    } catch {
+      throw new Error("Campaign queue payload state is inconsistent.");
+    }
+    const durableRecipientHash = await sha256Hex(
+      (durable.email.to[0] as string).trim().toLowerCase(),
+    );
+    const durablePayloadHash = await campaignPayloadHash(durable.email);
+    if (
+      !this.#matchesMessage(
+        row,
+        durable,
+        durableRecipientHash,
+        durablePayloadHash,
+      )
+    ) {
+      throw new Error("Campaign queue payload state is inconsistent.");
+    }
+    return durable;
+  }
+
+  #matchesScope(
+    row: ProviderMessageRow,
+    message: CampaignEmailQueueMessage,
+    recipientHash: string,
+  ): boolean {
+    return (
+      row.idempotency_key === message.message_id &&
+      row.campaign_id === message.campaign_id &&
+      row.contact_id === message.contact_id &&
+      row.event_id === message.event_id &&
+      row.template_id === message.template_id &&
+      row.template_version === message.template_version &&
+      row.recipient_hash === recipientHash
+    );
   }
 
   #matchesMessage(
@@ -345,16 +566,41 @@ export class CampaignEmailCoordinator {
     payloadHash: string,
   ): boolean {
     return (
-      row.idempotency_key === message.message_id &&
-      row.campaign_id === message.campaign_id &&
-      row.contact_id === message.contact_id &&
-      row.event_id === message.event_id &&
-      row.template_id === message.template_id &&
-      row.template_version === message.template_version &&
-      row.recipient_hash === recipientHash &&
+      this.#matchesScope(row, message, recipientHash) &&
       row.payload_hash === payloadHash
     );
   }
+}
+
+export async function pruneExpiredEmailQueuePayloads(
+  database: D1Database,
+  now = new Date(),
+): Promise<number> {
+  const cutoff = new Date(
+    now.getTime() - queuePayloadRetentionMilliseconds,
+  ).toISOString();
+  const result = await database
+    .prepare(
+      `UPDATE provider_messages
+       SET status = CASE
+             WHEN status = 'queued' AND queue_handed_off_at IS NULL
+               THEN 'failed'
+             ELSE status
+           END,
+           error_code = CASE
+             WHEN status = 'queued' AND queue_handed_off_at IS NULL
+               THEN 'queue_handoff_expired'
+             ELSE error_code
+           END,
+           queue_handoff_lease_expires_at = NULL,
+           queue_payload_json = NULL,
+           updated_at = ?1
+       WHERE queue_payload_json IS NOT NULL AND created_at <= ?2
+         AND status IN ('queued', 'failed')`,
+    )
+    .bind(now.toISOString(), cutoff)
+    .run();
+  return result.meta.changes;
 }
 
 export class EmailQueueDeliveryService {
@@ -429,6 +675,19 @@ export class EmailQueueDeliveryService {
       );
     }
     if (terminalStatuses.has(existing.status)) return { action: "ack" };
+    const now = this.#now();
+    const nowIso = now.toISOString();
+    await this.#database
+      .prepare(
+        `UPDATE provider_messages
+         SET queue_handed_off_at = COALESCE(queue_handed_off_at, ?1),
+             queue_handoff_lease_expires_at = NULL,
+             queue_payload_json = NULL, updated_at = ?1
+         WHERE organization_id = ?2 AND id = ?3
+           AND queue_handed_off_at IS NULL`,
+      )
+      .bind(nowIso, message.organization_id, message.message_id)
+      .run();
     if (existing.delivery_mode !== this.#config.mode) {
       await this.#failCampaignBeforeAttempt(
         message,
@@ -437,8 +696,6 @@ export class EmailQueueDeliveryService {
       );
       return { action: "ack" };
     }
-    const now = this.#now();
-    const nowIso = now.toISOString();
     const leaseExpiresAt = new Date(
       now.getTime() + providerLeaseMilliseconds,
     ).toISOString();
@@ -446,7 +703,10 @@ export class EmailQueueDeliveryService {
       .prepare(
         `UPDATE provider_messages
          SET status = 'sending', attempt_count = attempt_count + 1,
-             lease_expires_at = ?1, updated_at = ?2, error_code = NULL
+             lease_expires_at = ?1, updated_at = ?2, error_code = NULL,
+             queue_handed_off_at = COALESCE(queue_handed_off_at, ?2),
+             queue_handoff_lease_expires_at = NULL,
+             queue_payload_json = NULL
          WHERE organization_id = ?3 AND id = ?4
            AND (status = 'queued' OR (status = 'sending' AND lease_expires_at <= ?2))
          RETURNING attempt_count, recipient_hash`,
@@ -607,6 +867,10 @@ export class EmailQueueDeliveryService {
           `UPDATE provider_messages
            SET status = ?1, provider_message_id = COALESCE(?2, provider_message_id),
                error_code = ?3, lease_expires_at = NULL, updated_at = ?4,
+               queue_payload_json = CASE
+                 WHEN ?1 IN ('sent', 'delivered', 'suppressed') THEN NULL
+                 ELSE queue_payload_json
+               END,
                sent_at = CASE WHEN ?1 IN ('sent', 'delivered') THEN COALESCE(sent_at, ?4) ELSE sent_at END,
                delivered_at = CASE WHEN ?1 = 'delivered' THEN COALESCE(delivered_at, ?4) ELSE delivered_at END
            WHERE organization_id = ?5 AND id = ?6 AND status = 'sending'

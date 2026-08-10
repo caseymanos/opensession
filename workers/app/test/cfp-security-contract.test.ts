@@ -1,4 +1,7 @@
-import { protectedPublicCfpSubmissionRequestSchema } from "@sessionbox-killer/contracts";
+import {
+  protectedPublicCfpSubmissionRequestSchema,
+  protectedPublicCfpSubmissionUpdateRequestSchema,
+} from "@sessionbox-killer/contracts";
 import { describe, expect, it } from "vitest";
 
 function submission() {
@@ -13,6 +16,7 @@ function submission() {
     },
     form_version: 2,
     mode: "submit" as const,
+    participant_consent: true as const,
     participants: [
       {
         email: "speaker@example.test",
@@ -77,9 +81,35 @@ describe("protected CFP submission contract", () => {
     ).toBe(false);
   });
 
+  it("requires participant consent and unique participant identities", () => {
+    const withoutConsent = submission();
+    expect(
+      protectedPublicCfpSubmissionRequestSchema.safeParse({
+        ...withoutConsent,
+        participant_consent: false,
+      }).success,
+    ).toBe(false);
+    const duplicate = submission();
+    duplicate.participants.push({
+      email: "co-speaker@example.test",
+      id: duplicate.participants[0]?.id ?? "speaker-primary",
+      name: "Co-speaker",
+      role: "Engineer",
+    });
+    expect(
+      protectedPublicCfpSubmissionRequestSchema.safeParse(duplicate).success,
+    ).toBe(false);
+  });
+
   it("allows bounded drafts without a reusable security token", () => {
     const draft = submission();
-    const { turnstile_action, turnstile_token, ...withoutChallenge } = draft;
+    const {
+      participant_consent,
+      turnstile_action,
+      turnstile_token,
+      ...withoutChallenge
+    } = draft;
+    void participant_consent;
     void turnstile_action;
     void turnstile_token;
     expect(
@@ -89,5 +119,32 @@ describe("protected CFP submission contract", () => {
         mode: "draft",
       }).success,
     ).toBe(true);
+  });
+
+  it("requires an exact projected version for owned updates", () => {
+    const draft = submission();
+    const {
+      participant_consent,
+      turnstile_action,
+      turnstile_token,
+      ...withoutChallenge
+    } = draft;
+    void participant_consent;
+    void turnstile_action;
+    void turnstile_token;
+    const update = {
+      ...withoutChallenge,
+      expected_source_version: 3,
+      mode: "draft" as const,
+    };
+    expect(
+      protectedPublicCfpSubmissionUpdateRequestSchema.safeParse(update).success,
+    ).toBe(true);
+    const { expected_source_version, ...withoutVersion } = update;
+    void expected_source_version;
+    expect(
+      protectedPublicCfpSubmissionUpdateRequestSchema.safeParse(withoutVersion)
+        .success,
+    ).toBe(false);
   });
 });
