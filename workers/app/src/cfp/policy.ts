@@ -18,9 +18,11 @@ interface EventRow {
   id: string;
   name: string;
   organization_id: string;
+  organization_source_record_id: string;
   slug: string;
   starts_at: string | null;
   status: "closed" | "open" | "published";
+  source_record_id: string;
   timezone: string;
   venue: string | null;
 }
@@ -29,6 +31,7 @@ interface FormRow {
   edit_after_close: number;
   id: string;
   name: string;
+  source_record_id: string;
   status: "closed" | "published";
   submission_limit: number | null;
   version: number;
@@ -67,7 +70,9 @@ interface TrackRow {
   cfp_selection: string | null;
   default_reviewer_group_id: string | null;
   description: string | null;
+  id: string;
   route_key: string | null;
+  source_record_id: string;
   submission_track: string | null;
 }
 
@@ -77,6 +82,16 @@ interface FormatRow {
 
 export interface PublicCfpPolicy {
   readonly acceptingSubmissions: boolean;
+  readonly authority: {
+    readonly eventRecordId: string;
+    readonly formRecordId: string;
+    readonly organizationRecordId: string;
+    readonly tracks: readonly {
+      readonly entityId: string;
+      readonly providerRecordId: string;
+      readonly route: CfpTrackRoute;
+    }[];
+  };
   readonly eventId: string;
   readonly formId: string;
   readonly formVersion: number;
@@ -246,7 +261,8 @@ export class D1PublicCfpPolicyReader {
       .prepare(
         `SELECT event.id, event.organization_id, event.name, event.slug,
                 event.timezone, event.starts_at, event.ends_at, event.venue,
-                event.cfp_opens_at, event.cfp_closes_at, event.status
+                event.cfp_opens_at, event.cfp_closes_at, event.status,
+                event.source_record_id, tenant.source_record_id AS organization_source_record_id
          FROM p_events AS event
          JOIN tenant_registry AS tenant
            ON tenant.organization_id = event.organization_id
@@ -271,7 +287,7 @@ export class D1PublicCfpPolicyReader {
     const formResult = await this.#database
       .prepare(
         `SELECT id, name, status, version, welcome_content, submission_limit,
-                edit_after_close
+                edit_after_close, source_record_id
          FROM p_forms
          WHERE organization_id = ?1 AND event_id = ?2
            AND status IN ('published', 'closed')
@@ -320,8 +336,9 @@ export class D1PublicCfpPolicyReader {
           .all<RuleRow>(),
         this.#database
           .prepare(
-            `SELECT cfp_selection, cfp_aliases_json, route_key,
-                    submission_track, default_reviewer_group_id, description
+            `SELECT id, cfp_selection, cfp_aliases_json, route_key,
+                    submission_track, default_reviewer_group_id, description,
+                    source_record_id
              FROM p_tracks
              WHERE organization_id = ?1 AND event_id = ?2
                AND source_deleted_at IS NULL
@@ -393,7 +410,7 @@ export class D1PublicCfpPolicyReader {
       );
     }
 
-    const routes: CfpTrackRoute[] = trackResult.results.map((track) => {
+    const authorityTracks = trackResult.results.map((track) => {
       if (
         !track.cfp_selection?.trim() ||
         !track.route_key?.trim() ||
@@ -405,16 +422,21 @@ export class D1PublicCfpPolicyReader {
         );
       }
       return {
-        aliases: parsedStringArray(
-          track.cfp_aliases_json,
-          `Aliases for ${track.cfp_selection}`,
-        ),
-        defaultReviewerGroupId: track.default_reviewer_group_id,
-        routeKey: track.route_key,
-        selection: track.cfp_selection,
-        submissionTrack: track.submission_track,
+        entityId: track.id,
+        providerRecordId: track.source_record_id,
+        route: {
+          aliases: parsedStringArray(
+            track.cfp_aliases_json,
+            `Aliases for ${track.cfp_selection}`,
+          ),
+          defaultReviewerGroupId: track.default_reviewer_group_id,
+          routeKey: track.route_key,
+          selection: track.cfp_selection,
+          submissionTrack: track.submission_track,
+        },
       };
     });
+    const routes = authorityTracks.map((track) => track.route);
     const routeCandidates = new Set<string>();
     for (const route of routes) {
       for (const candidate of [route.selection, ...(route.aliases ?? [])]) {
@@ -554,6 +576,12 @@ export class D1PublicCfpPolicyReader {
 
     return {
       acceptingSubmissions,
+      authority: {
+        eventRecordId: event.source_record_id,
+        formRecordId: form.source_record_id,
+        organizationRecordId: event.organization_source_record_id,
+        tracks: authorityTracks,
+      },
       eventId: event.id,
       formId: form.id,
       formVersion: form.version,

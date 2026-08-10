@@ -54,6 +54,16 @@ async function storeReviewDraft(page: Page) {
 }
 
 async function mockVerifiedSession(page: Page) {
+  await page.context().addCookies([
+    {
+      httpOnly: false,
+      name: "__Host-opensession-csrf",
+      sameSite: "Lax",
+      secure: true,
+      url: "https://127.0.0.1:8787",
+      value: "test-csrf-token-for-public-cfp",
+    },
+  ]);
   await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       body: JSON.stringify({ user: { email: "mina@example.com" } }),
@@ -227,12 +237,20 @@ test("Product selection submits one canonical Track D reviewer route", async ({
 }) => {
   await mockVerifiedSession(page);
   let payload: unknown;
+  let csrfHeader = "";
   await page.route(
     "**/api/v1/public/events/ai-engineer-summit/submissions",
     async (route) => {
       payload = route.request().postDataJSON();
+      csrfHeader = route.request().headers()["x-csrf-token"] ?? "";
       await route.fulfill({
-        body: JSON.stringify({ submission_id: "AES-777777" }),
+        body: JSON.stringify({
+          friendly_id: "AES-777777",
+          outcome: "applied",
+          source_version: 1,
+          status: "submitted",
+          submission_id: "submission_test_777777",
+        }),
         contentType: "application/json",
         status: 201,
       });
@@ -255,14 +273,13 @@ test("Product selection submits one canonical Track D reviewer route", async ({
   );
   expect(payload).toMatchObject({
     answers: { track: "Product" },
-    routing: {
-      default_reviewer_group_id: "group-product",
-      route_key: "product-track-d",
-      submission_track: "Product · Track D",
-    },
+    form_version: 2,
+    mode: "submit",
     turnstile_action: "cfp_submit",
     turnstile_token: expect.stringMatching(/^test-token-/),
   });
+  expect(payload).not.toHaveProperty("routing");
+  expect(csrfHeader).toBe("test-csrf-token-for-public-cfp");
 });
 
 test("explicit fixtures cover server policy and durable recovery states", async ({
@@ -375,7 +392,13 @@ test("429 Retry-After preserves the draft and reuses the idempotency key", async
         return;
       }
       await route.fulfill({
-        body: JSON.stringify({ submission_id: "AES-429429" }),
+        body: JSON.stringify({
+          friendly_id: "AES-429429",
+          outcome: "applied",
+          source_version: 1,
+          status: "submitted",
+          submission_id: "submission_test_429429",
+        }),
         contentType: "application/json",
         status: 201,
       });
@@ -457,7 +480,13 @@ test("confirmed server submission remains successful when browser storage is una
     async (route) => {
       requestCount += 1;
       await route.fulfill({
-        body: JSON.stringify({ submission_id: "AES-654321" }),
+        body: JSON.stringify({
+          friendly_id: "AES-654321",
+          outcome: "applied",
+          source_version: 1,
+          status: "submitted",
+          submission_id: "submission_test_654321",
+        }),
         contentType: "application/json",
         status: 201,
       });

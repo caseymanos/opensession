@@ -469,6 +469,30 @@ const fixtureHandler = {
         );
       }
     }
+    if (url.pathname === "/resume-cfp-plan") {
+      const body = (await request.json()) as {
+        organizationId?: string;
+        planId?: string;
+        requestHash?: string;
+      };
+      try {
+        return Response.json(
+          await authority(env).resumeCfpSubmissionPlan(
+            body.organizationId ?? "",
+            body.planId ?? "",
+            body.requestHash ?? "",
+          ),
+        );
+      } catch (error) {
+        return Response.json(
+          {
+            error: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : "Unknown error",
+          },
+          { status: 409 },
+        );
+      }
+    }
     if (url.pathname === "/inspect-cfp-plan") {
       return Response.json(
         await authority(env).inspectCfpSubmissionPlan(

@@ -421,6 +421,18 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0012_cfp_submission_reservations.sql"),
+        "--config",
+        config,
+      ]);
       const output = executeMigration([
         "d1",
         "execute",
@@ -500,6 +512,7 @@ describe("D1 operational foundation", () => {
       "audit_events",
       "auth_sessions",
       "auth_session_secrets",
+      "cfp_submission_reservations",
       "event_memberships",
       "email_delivery_attempts",
       "email_provider_events",

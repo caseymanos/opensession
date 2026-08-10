@@ -24,7 +24,7 @@ export default defineConfig({
         "packages/email/src/{campaign,merge,render,versioning}.ts",
         "scripts/cloudflare/{provision,public-performance,release}.ts",
         "workers/app/src/auth/{authorization,crypto,http,routes,service}.ts",
-        "workers/app/src/cfp/{policy,routes}.ts",
+        "workers/app/src/cfp/{policy,routes,submission-authority,submission-compiler}.ts",
         "workers/app/src/demo/{compiler,reset}.ts",
         "workers/app/src/email/{config,delivery,messages,provider,routes,webhook}.ts",
         "workers/app/src/public-schedule/{cache,projection}.ts",

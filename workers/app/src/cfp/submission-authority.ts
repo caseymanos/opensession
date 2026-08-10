@@ -53,6 +53,7 @@ export interface CfpSubmissionPlanInput {
   readonly operation: "cfp.submission.persist";
   readonly organizationId: string;
   readonly planId: string;
+  readonly requestHash: string;
   readonly submissionId: string;
 }
 
@@ -365,6 +366,7 @@ export function parseCfpSubmissionPlanInput(
       "operation",
       "organizationId",
       "planId",
+      "requestHash",
       "submissionId",
     ],
     "CFP submission plan",
@@ -374,6 +376,12 @@ export function parseCfpSubmissionPlanInput(
   assertStableId(value.organizationId, "CFP submission organization ID");
   assertStableId(value.planId, "CFP submission plan ID");
   assertStableId(value.submissionId, "CFP submission ID");
+  if (
+    typeof value.requestHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.requestHash)
+  ) {
+    throw new TypeError("CFP submission request hash is invalid.");
+  }
   if (value.operation !== "cfp.submission.persist") {
     throw new TypeError("CFP submission plan operation is invalid.");
   }
@@ -503,6 +511,7 @@ export function parseCfpSubmissionPlanInput(
     operation: value.operation,
     organizationId: value.organizationId,
     planId: value.planId,
+    requestHash: value.requestHash,
     submissionId: value.submissionId,
   };
 }
@@ -592,6 +601,25 @@ export class CfpSubmissionAuthority {
     };
     this.completePlan(input, receipt);
     return receipt;
+  }
+
+  async resume(
+    organizationId: string,
+    planId: string,
+    requestHash: string,
+  ): Promise<CfpSubmissionPlanReceipt | null> {
+    assertStableId(organizationId, "CFP submission organization ID");
+    assertStableId(planId, "CFP submission plan ID");
+    if (!/^[0-9a-f]{64}$/.test(requestHash)) {
+      throw new TypeError("CFP submission request hash is invalid.");
+    }
+    const row = this.plan(organizationId, planId);
+    if (!row) return null;
+    const input = parseCfpSubmissionPlanInput(JSON.parse(row.plan_json));
+    if (input.requestHash !== requestHash) {
+      throw new CfpSubmissionPlanIdempotencyConflictError(planId);
+    }
+    return this.execute(input);
   }
 
   inspect(

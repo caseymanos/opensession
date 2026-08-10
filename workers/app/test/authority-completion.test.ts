@@ -78,6 +78,7 @@ function readMigrationStatements(): string[] {
     "0009_authority_cache_invalidation.sql",
     "0010_cache_invalidation_delivery.sql",
     "0011_cfp_authoritative_routing.sql",
+    "0012_cfp_submission_reservations.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
