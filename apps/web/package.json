@@ -1,0 +1,17 @@
+{
+  "name": "@sessionbox-killer/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sessionbox-killer/contracts": "workspace:*",
+    "@sessionbox-killer/domain": "workspace:*",
+    "@sessionbox-killer/ui": "workspace:*",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

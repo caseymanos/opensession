@@ -1,0 +1,439 @@
+{
+  "schemaVersion": 1,
+  "forecastAsOf": "2026-08-09",
+  "forecastOnly": true,
+  "evalKitCommit": "d99935c3e3c6c50c6b9292220260ccfe2df6d6d4",
+  "requiredItemCount": 84,
+  "optionalArea": {
+    "prefix": "CRM",
+    "itemCount": 12,
+    "owner": "RAL-100"
+  },
+  "items": [
+    {
+      "id": "CFP-01",
+      "capability": "custom public form and validation",
+      "owners": ["RAL-41"]
+    },
+    {
+      "id": "CFP-02",
+      "capability": "conditional form logic",
+      "owners": ["RAL-42"]
+    },
+    {
+      "id": "CFP-03",
+      "capability": "anonymous branded CFP portal",
+      "owners": ["RAL-43"]
+    },
+    {
+      "id": "CFP-04",
+      "capability": "submission-window enforcement",
+      "owners": ["RAL-43"]
+    },
+    {
+      "id": "CFP-05",
+      "capability": "speaker account, submit, confirmation and dashboard",
+      "owners": ["RAL-43"]
+    },
+    {
+      "id": "CFP-06",
+      "capability": "submission round-trip to organizer",
+      "owners": ["RAL-43", "RAL-44"]
+    },
+    {
+      "id": "CFP-07",
+      "capability": "draft save and resume",
+      "owners": ["RAL-43"]
+    },
+    {
+      "id": "CFP-08",
+      "capability": "submission receipt email",
+      "owners": ["RAL-55", "RAL-56", "RAL-57"]
+    },
+    {
+      "id": "CFP-09",
+      "capability": "speaker edit round-trip while open",
+      "owners": ["RAL-43", "RAL-44"]
+    },
+    {
+      "id": "CFP-10",
+      "capability": "reviewer provisioning and role isolation",
+      "owners": ["RAL-46", "RAL-47"]
+    },
+    {
+      "id": "CFP-11",
+      "capability": "review score/comment round-trip",
+      "owners": ["RAL-47", "RAL-48"]
+    },
+    {
+      "id": "CFP-12",
+      "capability": "accept and reject decisions",
+      "owners": ["RAL-48"]
+    },
+    {
+      "id": "CFP-13",
+      "capability": "speaker-visible decision status",
+      "owners": ["RAL-48", "RAL-50"]
+    },
+    {
+      "id": "CFP-14",
+      "capability": "decision email dispatch",
+      "owners": ["RAL-55", "RAL-56", "RAL-57"]
+    },
+    {
+      "id": "CFP-15",
+      "capability": "accepted submission handoff to session",
+      "owners": ["RAL-49"]
+    },
+    {
+      "id": "CFP-16",
+      "capability": "editing lock after CFP closes",
+      "owners": ["RAL-43"]
+    },
+
+    {
+      "id": "ABS-01",
+      "capability": "multiple review rounds",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-02",
+      "capability": "round-specific reviewer pools",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-03",
+      "capability": "multi-type scorecard editor",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-04",
+      "capability": "weighted scoring aggregate",
+      "owners": ["RAL-46", "RAL-48"]
+    },
+    {
+      "id": "ABS-05",
+      "capability": "exact reviewer assignment scoping",
+      "owners": ["RAL-46", "RAL-47"]
+    },
+    {
+      "id": "ABS-06",
+      "capability": "bulk or automatic review assignment",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-07",
+      "capability": "blind reviewer view",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-08",
+      "capability": "reviewer progress dashboard",
+      "owners": ["RAL-96", "RAL-65"]
+    },
+    {
+      "id": "ABS-09",
+      "capability": "bulk outstanding-review reminders",
+      "owners": ["RAL-96", "RAL-57"]
+    },
+    {
+      "id": "ABS-10",
+      "capability": "sortable aggregate results",
+      "owners": ["RAL-48"]
+    },
+    {
+      "id": "ABS-11",
+      "capability": "co-author persistence and visibility",
+      "owners": ["RAL-43", "RAL-44"]
+    },
+    {
+      "id": "ABS-12",
+      "capability": "reviewer conflict or recusal",
+      "owners": ["RAL-46", "RAL-47"]
+    },
+    {
+      "id": "ABS-13",
+      "capability": "review score and status export",
+      "owners": ["RAL-96"]
+    },
+    {
+      "id": "ABS-14",
+      "capability": "optional AI-assisted triage when claimed",
+      "owners": ["RAL-76"]
+    },
+
+    {
+      "id": "SPK-01",
+      "capability": "searchable organizer speaker roster",
+      "owners": ["RAL-65"]
+    },
+    {
+      "id": "SPK-02",
+      "capability": "organizer-managed speaker profile",
+      "owners": ["RAL-51"]
+    },
+    {
+      "id": "SPK-03",
+      "capability": "speaker CSV import",
+      "owners": ["RAL-98"]
+    },
+    {
+      "id": "SPK-04",
+      "capability": "persistent filterable speaker status",
+      "owners": ["RAL-50", "RAL-65"]
+    },
+    {
+      "id": "SPK-05",
+      "capability": "dated multi-speaker general tasks",
+      "owners": ["RAL-52"]
+    },
+    {
+      "id": "SPK-06",
+      "capability": "speaker portal invitation",
+      "owners": ["RAL-50", "RAL-57"]
+    },
+    {
+      "id": "SPK-07",
+      "capability": "speaker-scoped personal portal",
+      "owners": ["RAL-50"]
+    },
+    {
+      "id": "SPK-08",
+      "capability": "speaker profile and headshot round-trip",
+      "owners": ["RAL-51"]
+    },
+    {
+      "id": "SPK-09",
+      "capability": "general task completion in portal",
+      "owners": ["RAL-52", "RAL-53"]
+    },
+    {
+      "id": "SPK-10",
+      "capability": "organizer deliverable download",
+      "owners": ["RAL-53"]
+    },
+    {
+      "id": "SPK-11",
+      "capability": "session assignments across speaker views",
+      "owners": ["RAL-50", "RAL-60"]
+    },
+    {
+      "id": "SPK-12",
+      "capability": "speaker completion progress",
+      "owners": ["RAL-65"]
+    },
+    {
+      "id": "SPK-13",
+      "capability": "logged bulk speaker email",
+      "owners": ["RAL-55", "RAL-56"]
+    },
+    {
+      "id": "SPK-14",
+      "capability": "personalized email merge fields",
+      "owners": ["RAL-55"]
+    },
+    {
+      "id": "SPK-15",
+      "capability": "persistent travel or logistics fields",
+      "owners": ["RAL-104"]
+    },
+    {
+      "id": "SPK-16",
+      "capability": "due-date incomplete-task reminders",
+      "owners": ["RAL-57"]
+    },
+
+    {
+      "id": "CNT-01",
+      "capability": "file-request task creation",
+      "owners": ["RAL-52"]
+    },
+    {
+      "id": "CNT-02",
+      "capability": "speaker task file upload",
+      "owners": ["RAL-53"]
+    },
+    {
+      "id": "CNT-03",
+      "capability": "speaker task and session scoping",
+      "owners": ["RAL-50", "RAL-53"]
+    },
+    {
+      "id": "CNT-04",
+      "capability": "deliverable file versions",
+      "owners": ["RAL-53"]
+    },
+    {
+      "id": "CNT-05",
+      "capability": "cross-role deliverable comments",
+      "owners": ["RAL-97"]
+    },
+    {
+      "id": "CNT-06",
+      "capability": "upload constraint guidance",
+      "owners": ["RAL-53"]
+    },
+    {
+      "id": "CNT-07",
+      "capability": "filterable deliverables dashboard",
+      "owners": ["RAL-65"]
+    },
+    {
+      "id": "CNT-08",
+      "capability": "bulk outstanding-task reminders",
+      "owners": ["RAL-57"]
+    },
+    {
+      "id": "CNT-09",
+      "capability": "central session content editing",
+      "owners": ["RAL-60"]
+    },
+    {
+      "id": "CNT-10",
+      "capability": "admin speaker bio and headshot editing",
+      "owners": ["RAL-51"]
+    },
+    {
+      "id": "CNT-11",
+      "capability": "restorable attributed content history",
+      "owners": ["RAL-97"]
+    },
+    {
+      "id": "CNT-12",
+      "capability": "public-content approval gate",
+      "owners": ["RAL-51", "RAL-64"]
+    },
+    {
+      "id": "CNT-13",
+      "capability": "central files library",
+      "owners": ["RAL-97"]
+    },
+    {
+      "id": "CNT-14",
+      "capability": "bulk latest-file ZIP export",
+      "owners": ["RAL-97"]
+    },
+
+    {
+      "id": "AIA-01",
+      "capability": "multi-day agenda builder",
+      "owners": ["RAL-61"]
+    },
+    {
+      "id": "AIA-02",
+      "capability": "configurable rooms and tracks",
+      "owners": ["RAL-60", "RAL-61"]
+    },
+    {
+      "id": "AIA-03",
+      "capability": "persistent slot placement",
+      "owners": ["RAL-61", "RAL-63"]
+    },
+    {
+      "id": "AIA-04",
+      "capability": "speaker overlap warning",
+      "owners": ["RAL-62"]
+    },
+    {
+      "id": "AIA-05",
+      "capability": "room conflict enforcement",
+      "owners": ["RAL-62", "RAL-63"]
+    },
+    {
+      "id": "AIA-06",
+      "capability": "session move and conflict clearing",
+      "owners": ["RAL-61", "RAL-62"]
+    },
+    {
+      "id": "AIA-07",
+      "capability": "agenda publication handoff",
+      "owners": ["RAL-64"]
+    },
+    {
+      "id": "AIA-08",
+      "capability": "one-action scheduling assist",
+      "owners": ["RAL-98"]
+    },
+
+    {
+      "id": "EMB-01",
+      "capability": "complete public sessions list cards",
+      "owners": ["RAL-99"]
+    },
+    {
+      "id": "EMB-02",
+      "capability": "session and speaker keyword search",
+      "owners": ["RAL-99"]
+    },
+    {
+      "id": "EMB-03",
+      "capability": "faceted sessions filters",
+      "owners": ["RAL-99"]
+    },
+    {
+      "id": "EMB-04",
+      "capability": "alphabetized public speakers list",
+      "owners": ["RAL-67", "RAL-99"]
+    },
+    {
+      "id": "EMB-05",
+      "capability": "speaker detail and session drill-down",
+      "owners": ["RAL-67", "RAL-99"]
+    },
+    {
+      "id": "EMB-06",
+      "capability": "correct public agenda layout",
+      "owners": ["RAL-64", "RAL-66"]
+    },
+    {
+      "id": "EMB-07",
+      "capability": "agenda day navigation",
+      "owners": ["RAL-66"]
+    },
+    {
+      "id": "EMB-08",
+      "capability": "agenda session detail",
+      "owners": ["RAL-66"]
+    },
+    {
+      "id": "EMB-09",
+      "capability": "chronological public itinerary",
+      "owners": ["RAL-103"]
+    },
+    {
+      "id": "EMB-10",
+      "capability": "anonymous personal schedule selection",
+      "owners": ["RAL-103"]
+    },
+    {
+      "id": "EMB-11",
+      "capability": "persistent selection and calendar export",
+      "owners": ["RAL-103"]
+    },
+    {
+      "id": "EMB-12",
+      "capability": "searchable photo-first speaker gallery",
+      "owners": ["RAL-67"]
+    },
+    {
+      "id": "EMB-13",
+      "capability": "speaker gallery detail",
+      "owners": ["RAL-67"]
+    },
+    {
+      "id": "EMB-14",
+      "capability": "five anonymous widget surfaces",
+      "owners": ["RAL-99"]
+    },
+    {
+      "id": "EMB-15",
+      "capability": "per-widget embed and share builder",
+      "owners": ["RAL-68", "RAL-99"]
+    },
+    {
+      "id": "EMB-16",
+      "capability": "cross-surface published-data consistency",
+      "owners": ["RAL-64", "RAL-66", "RAL-67", "RAL-99"]
+    }
+  ]
+}

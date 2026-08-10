@@ -1,0 +1,17 @@
+{
+  "url": "https://replace-with-preview-or-production.example.invalid",
+  "areas": [],
+  "includeOptional": false,
+  "personaEmails": {
+    "organizer": "replace+sbek-organizer@example.invalid",
+    "speaker": "replace+sbek-speaker@example.invalid",
+    "speaker2": "replace+sbek-speaker2@example.invalid",
+    "reviewer": "replace+sbek-reviewer@example.invalid"
+  },
+  "credentials": {},
+  "agentModel": "claude-sonnet-5",
+  "judgeModel": "claude-opus-5",
+  "maxTurnsPerScenario": 70,
+  "headless": true,
+  "submissionNotes": "Record the deployed SHA, seed/reset identity, demo-login routes, and any deliberate fixture deviations before a scored run."
+}

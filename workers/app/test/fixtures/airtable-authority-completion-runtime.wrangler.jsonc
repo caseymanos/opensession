@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-airtable-authority-completion-runtime",
+  "main": "airtable-authority-runtime.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "exports": {
+    "FixtureBaseAuthority": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BASE_AUTHORITY",
+        "class_name": "FixtureBaseAuthority",
+      },
+    ],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "authority-completion-fixture",
+      "database_id": "completion-local",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "authority-completion-uploads-fixture",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "PROJECTION_REPAIR_QUEUE",
+        "queue": "authority-completion-repair-fixture",
+      },
+    ],
+  },
+  "services": [
+    {
+      "binding": "AIRTABLE_UPSTREAM",
+      "service": "opensession-airtable-authority-completion-mock",
+    },
+  ],
+  "vars": {
+    "APP_ENV": "local",
+    "AIRTABLE_BASE_ID": "appAuthorityFixture",
+    "AIRTABLE_PAT": "fixture-credential",
+    "AIRTABLE_REQUESTS_PER_SECOND": "1000",
+    "AUTHORITY_CACHE_INVALIDATION_REDRIVE_MILLISECONDS": "500",
+    "AUTHORITY_LEASE_MILLISECONDS": "2000",
+    "AUTHORITY_RECOVERY_DELAY_MILLISECONDS": "3000",
+  },
+}

@@ -1,0 +1,94 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`typed email templates > renders deterministic HTML and plain-text previews for every seed 1`] = `
+[
+  {
+    "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">Your AI Engineer Summit 2026 submission is safely recorded.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">Thanks, Mina</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">We received “Reliable Agents in Production” for AI Engineer Summit 2026. Your confirmation number is SUB-0104.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/submissions/SUB-0104" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">Review your submission</a></p><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Questions? Reply to this email or contact program@example.test.</p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_submission_receipt",
+    "replyTo": "program@example.test",
+    "subject": "We received SUB-0104 for AI Engineer Summit 2026",
+    "text": "Thanks, Mina
+
+We received “Reliable Agents in Production” for AI Engineer Summit 2026. Your confirmation number is SUB-0104.
+
+Review your submission
+https://events.example.test/ai-engineer-summit/submissions/SUB-0104
+
+Questions? Reply to this email or contact program@example.test.
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+  {
+    "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">Your proposal for AI Engineer Summit 2026 has been accepted.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">You’re on the program, Mina</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">We’re delighted to accept “Reliable Agents in Production” for AI Engineer Summit 2026.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/submissions/SUB-0104" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">Open your speaker portal</a></p><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">The portal shows your next steps and the information the program team still needs.</p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_submission_accepted",
+    "replyTo": "program@example.test",
+    "subject": "Accepted: Reliable Agents in Production at AI Engineer Summit 2026",
+    "text": "You’re on the program, Mina
+
+We’re delighted to accept “Reliable Agents in Production” for AI Engineer Summit 2026.
+
+Open your speaker portal
+https://events.example.test/ai-engineer-summit/submissions/SUB-0104
+
+The portal shows your next steps and the information the program team still needs.
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+  {
+    "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">The AI Engineer Summit 2026 program team has reviewed your proposal.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">An update on your proposal</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Hi Mina, thank you for proposing “Reliable Agents in Production” for AI Engineer Summit 2026. We aren’t able to include it in this program.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/submissions/SUB-0104" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">View your submission</a></p><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Questions about the process can go to program@example.test.</p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_submission_declined",
+    "replyTo": "program@example.test",
+    "subject": "Your AI Engineer Summit 2026 proposal",
+    "text": "An update on your proposal
+
+Hi Mina, thank you for proposing “Reliable Agents in Production” for AI Engineer Summit 2026. We aren’t able to include it in this program.
+
+View your submission
+https://events.example.test/ai-engineer-summit/submissions/SUB-0104
+
+Questions about the process can go to program@example.test.
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+  {
+    "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">One AI Engineer Summit 2026 speaker task needs your attention.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">A quick readiness reminder</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Hi Mina, “Upload your final slides” for AI Engineer Summit 2026 is due September 2 at 5:00 PM PT.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/portal/tasks/task_slides" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">Complete this task</a></p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_task_reminder",
+    "replyTo": "program@example.test",
+    "subject": "Reminder: Upload your final slides is due September 2 at 5:00 PM PT",
+    "text": "A quick readiness reminder
+
+Hi Mina, “Upload your final slides” for AI Engineer Summit 2026 is due September 2 at 5:00 PM PT.
+
+Complete this task
+https://events.example.test/ai-engineer-summit/portal/tasks/task_slides
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+  {
+    "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">Your AI Engineer Summit 2026 session time or room changed.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">Your session schedule changed</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Hi Mina, “Reliable Agents in Production” at AI Engineer Summit 2026 is now scheduled for September 18 at 10:00 AM PT–September 18 at 10:40 AM PT in Harbor Stage.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/sessions/ses-104" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">View the current schedule</a></p><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">A calendar update will keep the same event identity so your calendar can replace the prior time.</p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_schedule_updated",
+    "replyTo": "program@example.test",
+    "subject": "Schedule update: Reliable Agents in Production",
+    "text": "Your session schedule changed
+
+Hi Mina, “Reliable Agents in Production” at AI Engineer Summit 2026 is now scheduled for September 18 at 10:00 AM PT–September 18 at 10:40 AM PT in Harbor Stage.
+
+View the current schedule
+https://events.example.test/ai-engineer-summit/sessions/ses-104
+
+A calendar update will keep the same event identity so your calendar can replace the prior time.
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+]
+`;

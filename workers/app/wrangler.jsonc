@@ -1,0 +1,342 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sessionbox-killer",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../../apps/web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health/*"],
+  },
+  "observability": {
+    "enabled": false,
+  },
+  "cache": {
+    "enabled": true,
+    "cross_version_cache": false,
+  },
+  "triggers": { "crons": ["17 3 * * *", "17 * * * *"] },
+  "version_metadata": {
+    "binding": "WORKER_VERSION",
+  },
+  "exports": {
+    "BaseAuthority": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" }],
+  },
+  "secrets": {
+    "required": [
+      "AIRTABLE_PAT",
+      "AUTH_HASH_PEPPER",
+      "RESEND_API_KEY",
+      "RESEND_WEBHOOK_SECRET",
+      "TURNSTILE_SECRET",
+    ],
+  },
+  "vars": {
+    "APP_ENV": "local",
+    "AIRTABLE_BASE_ID": "app_CONFIGURE_LOCAL",
+    "EMAIL_DELIVERY_CONFIG": {
+      "mode": "sink",
+      "allowlist": [],
+      "authFrom": "OpenSession <auth@local.opensession.test>",
+      "authReplyTo": "hello@local.opensession.test",
+    },
+    "FEATURE_FLAGS": {
+      "ai": false,
+      "embeds": false,
+      "email": false,
+      "integrations": false,
+      "webhooks": false,
+      "writes": true,
+    },
+    "TURNSTILE_HOSTNAMES": "localhost,127.0.0.1",
+    "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "OBSERVABILITY",
+      "dataset": "sessionbox_killer_observability_local",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sessionbox-killer-local",
+      "database_id": "local",
+      "migrations_dir": "../../migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "sessionbox-killer-uploads-local",
+    },
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "EMAIL_QUEUE", "queue": "email-send-local" },
+      {
+        "binding": "PROJECTION_REPAIR_QUEUE",
+        "queue": "projection-repair-local",
+      },
+      {
+        "binding": "WEBHOOK_DELIVERY_QUEUE",
+        "queue": "webhook-delivery-local",
+      },
+      {
+        "binding": "INTEGRATION_EXPORT_QUEUE",
+        "queue": "integration-export-local",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "email-send-local",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "email-send-local-dlq",
+        "max_concurrency": 5,
+        "retry_delay": 30,
+      },
+      {
+        "queue": "projection-repair-local",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "projection-repair-local-dlq",
+        "max_concurrency": 2,
+        "retry_delay": 30,
+      },
+    ],
+  },
+  "env": {
+    "preview": {
+      "name": "sessionbox-killer-preview",
+      "workers_dev": true,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "preview.opensessionboard.com",
+          "custom_domain": true,
+        },
+      ],
+      "version_metadata": {
+        "binding": "WORKER_VERSION",
+      },
+      "cache": {
+        "enabled": true,
+        "cross_version_cache": false,
+      },
+      "triggers": { "crons": ["17 3 * * *", "17 * * * *"] },
+      "durable_objects": {
+        "bindings": [
+          { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
+        ],
+      },
+      "secrets": {
+        "required": [
+          "AIRTABLE_PAT",
+          "AUTH_HASH_PEPPER",
+          "RESEND_API_KEY",
+          "RESEND_WEBHOOK_SECRET",
+          "TURNSTILE_SECRET",
+        ],
+      },
+      "vars": {
+        "APP_ENV": "preview",
+        "AIRTABLE_BASE_ID": "app_CONFIGURE_PREVIEW",
+        "EMAIL_DELIVERY_CONFIG": {
+          "mode": "allowlist",
+          "allowlist": [],
+          "authFrom": "OpenSession <auth@preview.opensessionboard.com>",
+          "authReplyTo": "hello@opensessionboard.com",
+        },
+        "FEATURE_FLAGS": {
+          "ai": false,
+          "embeds": false,
+          "email": false,
+          "integrations": false,
+          "webhooks": false,
+          "writes": true,
+        },
+        "TURNSTILE_HOSTNAMES": "preview.opensessionboard.com",
+        "TURNSTILE_SITE_KEY": "CONFIGURE_TURNSTILE_SITE_KEY",
+      },
+      "analytics_engine_datasets": [
+        {
+          "binding": "OBSERVABILITY",
+          "dataset": "sessionbox_killer_observability_preview",
+        },
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sessionbox-killer-preview",
+          "migrations_dir": "../../migrations",
+        },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "UPLOADS",
+          "bucket_name": "sessionbox-killer-uploads-preview",
+        },
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "EMAIL_QUEUE", "queue": "email-send-preview" },
+          {
+            "binding": "PROJECTION_REPAIR_QUEUE",
+            "queue": "projection-repair-preview",
+          },
+          {
+            "binding": "WEBHOOK_DELIVERY_QUEUE",
+            "queue": "webhook-delivery-preview",
+          },
+          {
+            "binding": "INTEGRATION_EXPORT_QUEUE",
+            "queue": "integration-export-preview",
+          },
+        ],
+        "consumers": [
+          {
+            "queue": "email-send-preview",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "email-send-preview-dlq",
+            "max_concurrency": 5,
+            "retry_delay": 30,
+          },
+          {
+            "queue": "projection-repair-preview",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "projection-repair-preview-dlq",
+            "max_concurrency": 2,
+            "retry_delay": 30,
+          },
+        ],
+      },
+    },
+    "production": {
+      "name": "sessionbox-killer-prod",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "opensessionboard.com",
+          "custom_domain": true,
+        },
+        {
+          "pattern": "www.opensessionboard.com",
+          "custom_domain": true,
+        },
+      ],
+      "version_metadata": {
+        "binding": "WORKER_VERSION",
+      },
+      "cache": {
+        "enabled": true,
+        "cross_version_cache": false,
+      },
+      "triggers": { "crons": ["17 3 * * *", "17 * * * *"] },
+      "durable_objects": {
+        "bindings": [
+          { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
+        ],
+      },
+      "secrets": {
+        "required": [
+          "AIRTABLE_PAT",
+          "AUTH_HASH_PEPPER",
+          "RESEND_API_KEY",
+          "RESEND_WEBHOOK_SECRET",
+          "TURNSTILE_SECRET",
+        ],
+      },
+      "vars": {
+        "APP_ENV": "production",
+        "AIRTABLE_BASE_ID": "app_CONFIGURE_PRODUCTION",
+        "EMAIL_DELIVERY_CONFIG": {
+          "mode": "allowlist",
+          "allowlist": [],
+          "authFrom": "OpenSession <auth@updates.opensessionboard.com>",
+          "authReplyTo": "hello@opensessionboard.com",
+        },
+        "FEATURE_FLAGS": {
+          "ai": false,
+          "embeds": false,
+          "email": false,
+          "integrations": false,
+          "webhooks": false,
+          "writes": false,
+        },
+        "TURNSTILE_HOSTNAMES": "opensessionboard.com,www.opensessionboard.com",
+        "TURNSTILE_SITE_KEY": "CONFIGURE_TURNSTILE_SITE_KEY",
+      },
+      "analytics_engine_datasets": [
+        {
+          "binding": "OBSERVABILITY",
+          "dataset": "sessionbox_killer_observability_production",
+        },
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sessionbox-killer-prod",
+          "migrations_dir": "../../migrations",
+        },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "UPLOADS",
+          "bucket_name": "sessionbox-killer-uploads-prod",
+        },
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "EMAIL_QUEUE", "queue": "email-send-prod" },
+          {
+            "binding": "PROJECTION_REPAIR_QUEUE",
+            "queue": "projection-repair-prod",
+          },
+          {
+            "binding": "WEBHOOK_DELIVERY_QUEUE",
+            "queue": "webhook-delivery-prod",
+          },
+          {
+            "binding": "INTEGRATION_EXPORT_QUEUE",
+            "queue": "integration-export-prod",
+          },
+        ],
+        "consumers": [
+          {
+            "queue": "email-send-prod",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "email-send-prod-dlq",
+            "max_concurrency": 5,
+            "retry_delay": 30,
+          },
+          {
+            "queue": "projection-repair-prod",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "projection-repair-prod-dlq",
+            "max_concurrency": 2,
+            "retry_delay": 30,
+          },
+        ],
+      },
+    },
+  },
+}

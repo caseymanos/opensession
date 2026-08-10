@@ -1,0 +1,17 @@
+{
+  "name": "@sessionbox-killer/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sessionbox-killer/contracts": "workspace:*",
+    "@sessionbox-killer/data": "workspace:*",
+    "@sessionbox-killer/domain": "workspace:*",
+    "@sessionbox-killer/email": "workspace:*",
+    "hono": "^4.12.3",
+    "resend": "^6.18.1"
+  }
+}

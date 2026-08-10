@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+playwright-report
+test-results
+*.cpuprofile
+.wrangler
+.cloudflare
+docs
+workers/app/worker-configuration.d.ts
+*.md

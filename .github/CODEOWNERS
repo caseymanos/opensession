@@ -1,0 +1,10 @@
+* @caseymanos
+
+/.github/ @caseymanos
+/migrations/ @caseymanos
+/scripts/cloudflare/ @caseymanos
+/workers/app/src/auth/ @caseymanos
+/workers/app/src/authority/ @caseymanos
+/workers/app/src/email/ @caseymanos
+/workers/app/src/uploads/ @caseymanos
+/workers/app/wrangler.jsonc @caseymanos

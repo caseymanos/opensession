@@ -1,0 +1,21 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-airtable-authority-mock",
+  "main": "airtable-authority-mock.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "exports": {
+    "FixtureAirtableState": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STATE",
+        "class_name": "FixtureAirtableState",
+      },
+    ],
+  },
+}
