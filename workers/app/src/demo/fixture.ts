@@ -59,12 +59,12 @@ const organizationAndEvent: DemoSeedEntity[] = [
       {
         businessEnd: "17:00",
         businessStart: "09:00",
-        date: "2026-08-18",
+        date: "2026-10-13",
       },
       {
         businessEnd: "17:00",
         businessStart: "09:00",
-        date: "2026-08-19",
+        date: "2026-10-14",
       },
     ]),
     "Schedule snap minutes": 15,

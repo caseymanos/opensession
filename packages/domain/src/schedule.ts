@@ -92,6 +92,7 @@ export interface ScheduleCommandBase {
 }
 
 export interface PlaceSessionCommand extends ScheduleCommandBase {
+  durationMinutes: number;
   roomId: string;
   sessionId: string;
   startAt: string;
@@ -99,6 +100,7 @@ export interface PlaceSessionCommand extends ScheduleCommandBase {
 }
 
 export interface RescheduleSessionCommand extends ScheduleCommandBase {
+  durationMinutes: number;
   roomId: string;
   sessionId: string;
   startAt: string;
@@ -478,6 +480,7 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
     if (
       !Number.isInteger(format.defaultDurationMinutes) ||
       format.defaultDurationMinutes < snapshot.event.snapMinutes ||
+      format.defaultDurationMinutes > 24 * 60 ||
       format.defaultDurationMinutes % snapshot.event.snapMinutes !== 0
     ) {
       validationError(
@@ -518,6 +521,7 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
     if (
       !Number.isInteger(session.durationMinutes) ||
       session.durationMinutes < snapshot.event.snapMinutes ||
+      session.durationMinutes > 24 * 60 ||
       session.durationMinutes % snapshot.event.snapMinutes !== 0
     ) {
       validationError(
@@ -611,6 +615,7 @@ export function assertValidScheduleSnapshot(snapshot: ScheduleSnapshot): void {
 function nextSlot(
   snapshot: ScheduleSnapshot,
   session: ScheduleSession,
+  durationMinutes: number,
   roomId: string,
   startAt: string,
   version: number,
@@ -624,9 +629,7 @@ function nextSlot(
     );
   }
   const slot = {
-    endAt: new Date(
-      start.getTime() + session.durationMinutes * 60_000,
-    ).toISOString(),
+    endAt: new Date(start.getTime() + durationMinutes * 60_000).toISOString(),
     publicationVersion: 0,
     roomId,
     startAt,
@@ -634,7 +637,7 @@ function nextSlot(
   };
   assertSlot(
     { ...snapshot, event: { ...snapshot.event, version } },
-    session,
+    { ...session, durationMinutes },
     slot,
   );
   return slot;
@@ -676,6 +679,18 @@ export function applyScheduleCommand(
     command.type === "reschedule_session"
   ) {
     assertStableIdentifier(command.roomId, "command.roomId");
+    if (
+      !Number.isInteger(command.durationMinutes) ||
+      command.durationMinutes < snapshot.event.snapMinutes ||
+      command.durationMinutes > 24 * 60 ||
+      command.durationMinutes % snapshot.event.snapMinutes !== 0
+    ) {
+      validationError(
+        "invalid_duration",
+        "command.durationMinutes",
+        "Command duration must be a positive multiple of the event snap interval.",
+      );
+    }
   }
   if (command.eventId !== snapshot.event.eventId) {
     validationError(
@@ -732,9 +747,11 @@ export function applyScheduleCommand(
         }
         return {
           ...session,
+          durationMinutes: command.durationMinutes,
           slot: nextSlot(
             snapshot,
             session,
+            command.durationMinutes,
             command.roomId,
             command.startAt,
             nextVersion,
@@ -752,9 +769,11 @@ export function applyScheduleCommand(
         }
         return {
           ...session,
+          durationMinutes: command.durationMinutes,
           slot: nextSlot(
             snapshot,
             session,
+            command.durationMinutes,
             command.roomId,
             command.startAt,
             nextVersion,

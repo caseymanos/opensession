@@ -1,5 +1,6 @@
 import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { scheduleSnapshotSchema } from "@sessionbox-killer/contracts";
 
 import { sha256Hex } from "../src/auth/crypto";
 import { AuthService } from "../src/auth/service";
@@ -213,6 +214,34 @@ beforeAll(async () => {
       ('evt_two', 'org_two', 'Event Two', 'event-two', 'UTC', 'draft',
        'rec_evt_two', 1, ${sqlString(hash)}, ${sqlString(timestamp)});
 
+    UPDATE p_events
+    SET schedule_days_json = '[{"date":"2026-10-13","businessStart":"09:00","businessEnd":"17:00"}]',
+        schedule_snap_minutes = 15,
+        schedule_version = 0
+    WHERE id = 'evt_one';
+
+    INSERT INTO p_rooms
+      (id, organization_id, event_id, name, capacity, sort_order,
+       source_record_id, source_version, source_content_hash, projected_at)
+    VALUES
+      ('room_one', 'org_one', 'evt_one', 'Main room', 100, 1,
+       'rec_room_one', 1, ${sqlString(hash)}, ${sqlString(timestamp)});
+
+    INSERT INTO p_tracks
+      (id, organization_id, event_id, name, sort_order, source_record_id,
+       source_version, source_content_hash, projected_at)
+    VALUES
+      ('track_one', 'org_one', 'evt_one', 'General', 1, 'rec_track_one', 1,
+       ${sqlString(hash)}, ${sqlString(timestamp)});
+
+    INSERT INTO p_formats
+      (id, organization_id, event_id, name, default_duration_minutes,
+       sort_order, source_record_id, source_version, source_content_hash,
+       projected_at)
+    VALUES
+      ('format_one', 'org_one', 'evt_one', 'Talk', 30, 1,
+       'rec_format_one', 1, ${sqlString(hash)}, ${sqlString(timestamp)});
+
     INSERT INTO organization_memberships
       (id, organization_id, user_id, role, created_at, updated_at, revoked_at)
     VALUES
@@ -242,14 +271,17 @@ beforeAll(async () => {
        ${sqlString(hash)}, ${sqlString(timestamp)});
 
     INSERT INTO p_sessions
-      (id, organization_id, event_id, friendly_id, title, status, updated_at,
-       source_record_id, source_version, source_content_hash, projected_at)
+      (id, organization_id, event_id, friendly_id, title, status, track_id,
+       format_id, duration_minutes, updated_at, source_record_id,
+       source_version, source_content_hash, projected_at)
     VALUES
       ('session_own', 'org_one', 'evt_one', 'SES-OWN', 'Speaker session',
-       'accepted', ${sqlString(timestamp)}, 'rec_session_own', 1,
+       'accepted', 'track_one', 'format_one', 30, ${sqlString(timestamp)},
+       'rec_session_own', 1,
        ${sqlString(hash)}, ${sqlString(timestamp)}),
       ('session_other', 'org_one', 'evt_one', 'SES-OTHER', 'Other session',
-       'accepted', ${sqlString(timestamp)}, 'rec_session_other', 1,
+       'accepted', 'track_one', 'format_one', 30, ${sqlString(timestamp)},
+       'rec_session_other', 1,
        ${sqlString(hash)}, ${sqlString(timestamp)});
 
     INSERT INTO p_session_participants
@@ -471,6 +503,82 @@ describe("passwordless authentication runtime", () => {
         })
       ).status,
     ).toBe(200);
+  });
+
+  it("resolves authenticated schedule reads by workspace slug or canonical ID", async () => {
+    const owner = await seedSession("usr_owner", "schedule_owner");
+    const speaker = await seedSession("usr_speaker", "schedule_speaker");
+    const bySlug = await server.fetch("/api/events/event-one/schedule", {
+      headers: { Cookie: owner.cookie },
+    });
+    expect(bySlug.status, await bySlug.clone().text()).toBe(200);
+    const slugSnapshot = scheduleSnapshotSchema.parse(await bySlug.json());
+    expect(slugSnapshot.event).toMatchObject({
+      eventId: "evt_one",
+      slug: "event-one",
+    });
+    expect(slugSnapshot.rooms.map(({ id }) => id)).toEqual(["room_one"]);
+
+    const byId = await server.fetch("/api/events/evt_one/schedule", {
+      headers: { Cookie: owner.cookie },
+    });
+    expect(byId.status).toBe(200);
+    await expect(byId.json()).resolves.toEqual(slugSnapshot);
+    expect(
+      (
+        await server.fetch("/api/events/event-one/schedule", {
+          headers: { Cookie: speaker.cookie },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await server.fetch("/api/events/event-one/schedule")).status).toBe(
+      401,
+    );
+
+    const missingCsrf = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_schedule_route_test",
+          durationMinutes: 30,
+          eventId: "evt_one",
+          expectedVersion: 0,
+          roomId: "room_one",
+          sessionId: "session_other",
+          startAt: "2026-10-13T09:00:00.000Z",
+          type: "place_session",
+        }),
+        headers: authHeaders(owner.cookie),
+        method: "POST",
+      },
+    );
+    expect(missingCsrf.status).toBe(403);
+    await expect(missingCsrf.json()).resolves.toMatchObject({
+      error: { code: "invalid_csrf" },
+    });
+
+    const mismatchedCanonicalId = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_schedule_route_mismatch",
+          eventId: "evt_two",
+          expectedVersion: 0,
+          type: "publish_schedule",
+        }),
+        headers: authHeaders(owner.cookie, owner.csrf),
+        method: "POST",
+      },
+    );
+    expect(mismatchedCanonicalId.status).toBe(422);
+    await expect(mismatchedCanonicalId.json()).resolves.toMatchObject({
+      error: {
+        code: "schedule_validation_error",
+        field: "eventId",
+        reason: "invalid_command",
+      },
+      ok: false,
+    });
   });
 
   it("enforces role, tenant, revocation, and speaker relationship scope", async () => {

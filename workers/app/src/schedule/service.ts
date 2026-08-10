@@ -19,7 +19,7 @@ import { D1ScheduleProjectionRepository } from "./d1-repository.js";
 
 interface ScheduleServiceOptions {
   actorId: string;
-  authority: Pick<DurableObjectStub<BaseAuthority>, "execute">;
+  authority: Pick<BaseAuthority, "execute">;
   database: D1Database;
   requestId: string;
 }
@@ -111,7 +111,7 @@ function rowsById<T extends EntityPersistenceRow>(
 
 export class AirtableScheduleCommandService implements ScheduleCommandPort {
   readonly #actorId: string;
-  readonly #authority: Pick<DurableObjectStub<BaseAuthority>, "execute">;
+  readonly #authority: Pick<BaseAuthority, "execute">;
   readonly #database: D1Database;
   readonly #projection: D1ScheduleProjectionRepository;
   readonly #requestId: string;
@@ -350,7 +350,10 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         );
       }
 
-      if (previousSession.state !== nextSession.state) {
+      if (
+        previousSession.state !== nextSession.state ||
+        previousSession.durationMinutes !== nextSession.durationMinutes
+      ) {
         operations.push(
           await this.#operation(
             command,
@@ -359,6 +362,7 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
             sessionId,
             sessionRecord.source_version,
             {
+              "Duration minutes": nextSession.durationMinutes,
               Public: nextSession.state === "published",
               Status: sessionProviderState(nextSession.state),
             },
