@@ -43,7 +43,8 @@ function readMigrationStatements(): string[] {
     "0010_cache_invalidation_delivery.sql",
     "0011_cfp_authoritative_routing.sql",
     "0012_cfp_submission_reservations.sql",
-    "0013_schedule_domain.sql",
+    "0013_email_queue_handoff.sql",
+    "0014_schedule_domain.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
