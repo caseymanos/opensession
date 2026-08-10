@@ -27,6 +27,7 @@ import {
 } from "@sessionbox-killer/ui";
 
 import {
+  agendaSpeakerScheduleFacts,
   speakerReadinessFixture,
   type SpeakerReadinessView,
 } from "./readinessModel";
@@ -150,7 +151,7 @@ export function ReadinessDashboard({
       icon: CalendarClock,
       label: "Accepted unscheduled",
       tone: "clay",
-      value: "4",
+      value: String(agendaSpeakerScheduleFacts.acceptedUnscheduledCount),
     },
     {
       detail: "Blocks publication",

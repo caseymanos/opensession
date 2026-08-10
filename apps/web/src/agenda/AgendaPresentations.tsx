@@ -9,30 +9,18 @@ import {
 import { StatusPill } from "@sessionbox-killer/ui";
 
 import {
+  agendaDays,
   agendaRooms,
-  agendaTimes,
+  agendaTracks,
   type AgendaDay,
-  type AgendaSessionView,
   type AgendaView,
   type ScheduledSessionView,
 } from "./agendaModel";
 
-const tracks: AgendaSessionView["track"][] = [
-  "AI Engineering",
-  "Evaluation",
-  "Infrastructure",
-  "Product",
-];
-
-const trackTone: Record<AgendaSessionView["track"], string> = {
-  "AI Engineering": "ai",
-  Evaluation: "eval",
-  Infrastructure: "infra",
-  Product: "product",
-};
-
 function dayLabel(day: AgendaDay) {
-  return day === "tuesday" ? "Tuesday, August 18" : "Wednesday, August 19";
+  return (
+    agendaDays.find((candidate) => candidate.date === day)?.fullLabel ?? day
+  );
 }
 
 function roomName(roomId: string) {
@@ -40,13 +28,20 @@ function roomName(roomId: string) {
 }
 
 function timeLabel(session: ScheduledSessionView) {
-  return agendaTimes[session.slot - 1] ?? "Time pending";
+  return (
+    agendaDays.find((day) => day.date === session.day)?.times[
+      session.slot - 1
+    ] ?? "Time pending"
+  );
 }
 
 function sortSessions(sessions: ScheduledSessionView[]) {
   return [...sessions].sort((left, right) => {
     if (left.day !== right.day) {
-      return left.day === "tuesday" ? -1 : 1;
+      return (
+        agendaDays.findIndex((day) => day.date === left.day) -
+        agendaDays.findIndex((day) => day.date === right.day)
+      );
     }
     return left.slot - right.slot;
   });
@@ -61,7 +56,7 @@ function SessionRow({
 }) {
   return (
     <button
-      className={`agenda-view-session is-${trackTone[session.track]}`}
+      className={`agenda-view-session is-${session.tone}`}
       onClick={onSelect}
       type="button"
     >
@@ -148,13 +143,15 @@ export function AgendaPresentation({
   if (view === "list") {
     return (
       <div className="agenda-view-stack" data-view="list">
-        {(["tuesday", "wednesday"] as AgendaDay[]).map((agendaDay) => (
+        {agendaDays.map((agendaDay) => (
           <Group
             eyebrow="Chronological list"
-            key={agendaDay}
+            key={agendaDay.date}
             onSelect={onSelect}
-            sessions={scheduled.filter((session) => session.day === agendaDay)}
-            title={dayLabel(agendaDay)}
+            sessions={scheduled.filter(
+              (session) => session.day === agendaDay.date,
+            )}
+            title={agendaDay.fullLabel}
           />
         ))}
       </div>
@@ -164,13 +161,15 @@ export function AgendaPresentation({
   if (view === "week") {
     return (
       <div className="agenda-week-view" data-view="week">
-        {(["tuesday", "wednesday"] as AgendaDay[]).map((agendaDay) => (
+        {agendaDays.map((agendaDay) => (
           <Group
             eyebrow="Week overview"
-            key={agendaDay}
+            key={agendaDay.date}
             onSelect={onSelect}
-            sessions={scheduled.filter((session) => session.day === agendaDay)}
-            title={dayLabel(agendaDay)}
+            sessions={scheduled.filter(
+              (session) => session.day === agendaDay.date,
+            )}
+            title={agendaDay.fullLabel}
           />
         ))}
       </div>
@@ -180,15 +179,15 @@ export function AgendaPresentation({
   if (view === "track") {
     return (
       <div className="agenda-view-stack" data-view="track">
-        {tracks.map((track) => (
+        {agendaTracks.map((track) => (
           <Group
             eyebrow="Track view"
-            key={track}
+            key={track.id}
             onSelect={onSelect}
             sessions={scheduled.filter(
-              (session) => session.day === day && session.track === track,
+              (session) => session.day === day && session.trackId === track.id,
             )}
-            title={track}
+            title={track.name}
           />
         ))}
       </div>

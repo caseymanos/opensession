@@ -12,7 +12,7 @@ export interface SpeakerReadinessView {
   track: "AI Engineering" | "Evaluation" | "Infrastructure" | "Product";
 }
 
-export const speakerReadinessFixture: SpeakerReadinessView[] = [
+const speakerReadinessBaseFixture: SpeakerReadinessView[] = [
   {
     company: "Daybreak Labs",
     completedRequired: 3,
@@ -118,3 +118,48 @@ export const speakerReadinessFixture: SpeakerReadinessView[] = [
     track: "Evaluation",
   },
 ];
+
+export interface SpeakerScheduleFacts {
+  acceptedUnscheduledCount: number;
+  sessionTitlesBySpeakerId: ReadonlyMap<string, string[]>;
+}
+
+export function speakerScheduleFactsFromSnapshot(
+  input: ScheduleSnapshot,
+): SpeakerScheduleFacts {
+  const snapshot = scheduleSnapshotSchema.parse(input);
+  const sessionTitlesBySpeakerId = new Map<string, string[]>();
+  for (const session of snapshot.sessions) {
+    for (const participant of session.participants) {
+      if (participant.role !== "speaker") continue;
+      const titles = sessionTitlesBySpeakerId.get(participant.personId) ?? [];
+      sessionTitlesBySpeakerId.set(participant.personId, [
+        ...titles,
+        session.title,
+      ]);
+    }
+  }
+  return {
+    acceptedUnscheduledCount: snapshot.sessions.filter(
+      ({ state }) => state === "accepted_unscheduled",
+    ).length,
+    sessionTitlesBySpeakerId,
+  };
+}
+
+export const agendaSpeakerScheduleFacts = speakerScheduleFactsFromSnapshot(
+  agendaScheduleSnapshotFixture,
+);
+
+export const speakerReadinessFixture: SpeakerReadinessView[] =
+  speakerReadinessBaseFixture.map((speaker) => ({
+    ...speaker,
+    sessions:
+      agendaSpeakerScheduleFacts.sessionTitlesBySpeakerId.get(speaker.id) ?? [],
+  }));
+import {
+  scheduleSnapshotSchema,
+  type ScheduleSnapshot,
+} from "@sessionbox-killer/contracts";
+
+import { agendaScheduleSnapshotFixture } from "../agenda/agendaModel";

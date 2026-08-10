@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type DragEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+} from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -18,6 +24,8 @@ import {
   Users,
 } from "lucide-react";
 
+import type { ScheduleCommandPort } from "@sessionbox-killer/contracts";
+
 import {
   Button,
   Dialog,
@@ -32,9 +40,14 @@ import {
 } from "@sessionbox-killer/ui";
 
 import {
+  agendaDays,
+  agendaLocalDateTimeToUtc,
   agendaRooms,
+  agendaScheduleView,
   agendaTimes,
+  agendaTracks,
   publishableScheduledSessionFixture,
+  scheduleSnapshotToAgendaView,
   scheduledSessionFixture,
   unscheduledSessionFixture,
   type AgendaDay,
@@ -50,13 +63,6 @@ import {
 
 import "./agenda-builder.css";
 import "./agenda-publish-views.css";
-
-const trackTone: Record<AgendaSessionView["track"], string> = {
-  "AI Engineering": "ai",
-  Evaluation: "eval",
-  Infrastructure: "infra",
-  Product: "product",
-};
 
 interface AgendaUrlState {
   day: AgendaDay;
@@ -84,6 +90,12 @@ function getAgendaUrlState(): AgendaUrlState {
   const candidateView = params.get("view");
   const candidateRoom = params.get("room");
   const candidateTrack = params.get("track");
+  const candidateDay = params.get("day");
+  const matchedDay = agendaDays.find(
+    (day) =>
+      day.date === candidateDay ||
+      day.fullLabel.toLowerCase().startsWith(candidateDay?.toLowerCase() ?? ""),
+  );
   const view: AgendaView =
     candidateView === "list" ||
     candidateView === "week" ||
@@ -93,18 +105,24 @@ function getAgendaUrlState(): AgendaUrlState {
       : "day";
 
   return {
-    day: params.get("day") === "wednesday" ? "wednesday" : "tuesday",
+    day: matchedDay?.date ?? agendaDays[0]?.date ?? "",
     room:
       candidateRoom && agendaRooms.some((room) => room.id === candidateRoom)
         ? candidateRoom
         : "all",
     track:
       candidateTrack &&
-      Object.prototype.hasOwnProperty.call(trackTone, candidateTrack)
+      agendaTracks.some((track) => track.name === candidateTrack)
         ? candidateTrack
         : "all",
     view,
   };
+}
+
+function agendaDay(day: AgendaDay) {
+  return (
+    agendaDays.find((candidate) => candidate.date === day) ?? agendaDays[0]
+  );
 }
 
 function replaceAgendaUrl(patch: Partial<AgendaUrlState>) {
@@ -137,7 +155,7 @@ function UnscheduledCard({
 }) {
   return (
     <article
-      className={`agenda-unscheduled-card is-${trackTone[session.track]}`}
+      className={`agenda-unscheduled-card is-${session.tone}`}
       draggable
       onDragEnd={onDragEnd}
       onDragStart={onDragStart}
@@ -173,13 +191,14 @@ function ScheduledCard({
 }) {
   return (
     <button
-      className={`agenda-scheduled-card is-${trackTone[session.track]} ${session.status ? `is-${session.status}` : ""} ${saving ? "is-saving" : ""}`}
+      className={`agenda-scheduled-card is-${session.tone} ${session.status ? `is-${session.status}` : ""} ${saving ? "is-saving" : ""}`}
       onClick={onSelect}
       style={{ gridRow: `${session.slot} / span ${session.span}` }}
       type="button"
     >
       <span>
-        {agendaTimes[session.slot - 1]} · {session.durationMinutes}m
+        {agendaDay(session.day)?.times[session.slot - 1]} ·{" "}
+        {session.durationMinutes}m
       </span>
       <strong>{session.title}</strong>
       <small>{session.speakers.join(" · ")}</small>
@@ -198,8 +217,10 @@ function ScheduledCard({
 }
 
 export function AgendaBuilder({
+  commandPort,
   fixtureState = "default",
 }: {
+  commandPort?: Pick<ScheduleCommandPort, "execute"> | undefined;
   fixtureState?: AgendaFixtureState | undefined;
 } = {}) {
   const initialUrlState = getAgendaUrlState();
@@ -233,6 +254,9 @@ export function AgendaBuilder({
   const [publishedVersion, setPublishedVersion] = useState(
     readyFixture ? 3 : 2,
   );
+  const [scheduleVersion, setScheduleVersion] = useState(
+    agendaScheduleView.version,
+  );
   const [published, setPublished] = useState(fixtureState === "published");
   const [hasUnpublishedChanges, setHasUnpublishedChanges] = useState(false);
   const [savingPlacementIds, setSavingPlacementIds] = useState<string[]>([]);
@@ -247,6 +271,16 @@ export function AgendaBuilder({
   const [dragTarget, setDragTarget] = useState<AgendaDragTarget | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [placementError, setPlacementError] = useState("");
+  const activeDay = agendaDay(day);
+  const activeTimes = activeDay?.times ?? agendaTimes;
+  const gridStyle = {
+    "--agenda-room-count": agendaRooms.length,
+    "--agenda-slot-count": activeTimes.length,
+  } as CSSProperties;
+  const timeLabelStride = Math.max(
+    1,
+    Math.ceil(30 / agendaScheduleView.snapMinutes),
+  );
 
   const unscheduled = useMemo(
     () =>
@@ -272,8 +306,8 @@ export function AgendaBuilder({
     () => filteredScheduled.filter((session) => session.day === day),
     [day, filteredScheduled],
   );
-  const hasWednesdaySessions = scheduled.some(
-    (session) => session.day === "wednesday",
+  const hasSessionsOnEveryDay = agendaDays.every((agendaDay) =>
+    scheduled.some((session) => session.day === agendaDay.date),
   );
   const hardConflictCount = scheduled.filter(
     (session) => session.status === "conflict",
@@ -283,12 +317,12 @@ export function AgendaBuilder({
   const publishable =
     hardConflictCount === 0 &&
     missingPlacementCount === 0 &&
-    hasWednesdaySessions &&
+    hasSessionsOnEveryDay &&
     !conflictValidationPending;
   const blockerCategoryCount =
     Number(hardConflictCount > 0) +
     Number(missingPlacementCount > 0) +
-    Number(!hasWednesdaySessions) +
+    Number(!hasSessionsOnEveryDay) +
     Number(conflictValidationPending);
 
   useEffect(() => {
@@ -315,7 +349,10 @@ export function AgendaBuilder({
     roomId: string,
     slot: number,
   ) {
-    const span = Math.max(1, Math.round(session.durationMinutes / 30));
+    const span = Math.max(
+      1,
+      Math.round(session.durationMinutes / agendaScheduleView.snapMinutes),
+    );
     return visibleScheduled.some(
       (placed) =>
         placed.roomId === roomId &&
@@ -368,7 +405,7 @@ export function AgendaBuilder({
     setDraggedSession(session);
     setDragTarget({ conflict, roomId, slot });
     setAnnouncement(
-      `${agendaTimes[slot - 1]} in ${agendaRooms.find((item) => item.id === roomId)?.name}${conflict ? ". Possible overlap." : ". Available placement."}`,
+      `${activeTimes[slot - 1]} in ${agendaRooms.find((item) => item.id === roomId)?.name}${conflict ? ". Possible overlap." : ". Available placement."}`,
     );
   }
 
@@ -384,14 +421,14 @@ export function AgendaBuilder({
     }
     setSelectedSession(session);
     setRoom(roomId);
-    setStart(agendaTimes[slot - 1] ?? "9:00 AM");
+    setStart(activeTimes[slot - 1] ?? activeTimes[0] ?? "9:00 AM");
     setDuration(String(session.durationMinutes));
     setDraggedSession(null);
     setDragTarget(null);
     setPlacementError("");
     setScheduleOpen(true);
     setAnnouncement(
-      `${session.title} targeted for ${agendaTimes[slot - 1]} in ${agendaRooms.find((item) => item.id === roomId)?.name}. Review and save the placement.`,
+      `${session.title} targeted for ${activeTimes[slot - 1]} in ${agendaRooms.find((item) => item.id === roomId)?.name}. Review and save the placement.`,
     );
   }
 
@@ -402,11 +439,19 @@ export function AgendaBuilder({
     setScheduleOpen(true);
   }
 
-  function placeSession() {
+  async function placeSession() {
     if (!selectedSession) {
       return;
     }
-    const slot = Math.max(1, agendaTimes.indexOf(start) + 1);
+    const slot = Math.max(1, activeTimes.indexOf(start) + 1);
+    const startAt = agendaLocalDateTimeToUtc(
+      day,
+      start,
+      agendaScheduleView.timezone,
+    );
+    const endAt = new Date(
+      Date.parse(startAt) + Number(duration) * 60_000,
+    ).toISOString();
     const previousPlacement = scheduled.find(
       (session) => session.id === selectedSession.id,
     );
@@ -414,9 +459,16 @@ export function AgendaBuilder({
       ...selectedSession,
       day,
       durationMinutes: Number(duration),
+      endAt,
+      publicationVersion: 0,
       roomId: room,
       slot,
-      span: Math.max(1, Math.round(Number(duration) / 30)),
+      slotVersion: scheduleVersion + 1,
+      span: Math.max(
+        1,
+        Math.round(Number(duration) / agendaScheduleView.snapMinutes),
+      ),
+      startAt,
       ...(previousPlacement?.status === "conflict"
         ? { status: "conflict" as const }
         : {}),
@@ -455,38 +507,81 @@ export function AgendaBuilder({
         tone: "success",
       },
     ]);
-    window.setTimeout(() => {
+    try {
+      if (!commandPort || placementShouldFail) {
+        await new Promise((resolve) => window.setTimeout(resolve, 700));
+      }
+      if (placementShouldFail) {
+        throw new Error("Fixture placement failure");
+      }
+      if (commandPort) {
+        const result = await commandPort.execute({
+          commandId: crypto.randomUUID(),
+          eventId: agendaScheduleView.eventId,
+          expectedVersion: scheduleVersion,
+          roomId: room,
+          sessionId: selectedSession.id,
+          startAt,
+          type: existingPlacement ? "reschedule_session" : "place_session",
+        });
+        const conflictIds = previousScheduled
+          .filter((session) => session.status === "conflict")
+          .map((session) => session.id);
+        const authoritative = scheduleSnapshotToAgendaView(
+          result.snapshot,
+          conflictIds,
+        );
+        setScheduled(authoritative.scheduled);
+        setPlacedIds(
+          authoritative.scheduled
+            .filter((session) =>
+              unscheduledSessionFixture.some(
+                (candidate) => candidate.id === session.id,
+              ),
+            )
+            .map((session) => session.id),
+        );
+        setPublishedVersion(authoritative.publicationVersion);
+        setScheduleVersion(authoritative.version);
+      } else {
+        setScheduleVersion((current) => current + 1);
+      }
       setSavingPlacementIds((current) =>
         current.filter((sessionId) => sessionId !== next.id),
       );
-      if (placementShouldFail) {
-        setScheduled(previousScheduled);
-        setPlacedIds(previousPlacedIds);
-        setConflictValidationPending(false);
-        setPlacementError(
-          "The placement could not be saved. Your day, time, room, and duration are preserved so you can retry.",
-        );
-        setScheduleOpen(true);
-        setAnnouncement(
-          `Could not save ${next.title}. The attempted placement is still available.`,
-        );
-        setToasts([
-          {
-            id: "agenda-save-failed",
-            message:
-              "No schedule change was committed. Review the preserved values and retry.",
-            title: "Placement not saved",
-            tone: "error",
-          },
-        ]);
-        return;
-      }
       setConflictValidationPending(false);
-    }, 700);
+    } catch {
+      setScheduled(previousScheduled);
+      setPlacedIds(previousPlacedIds);
+      setSavingPlacementIds((current) =>
+        current.filter((sessionId) => sessionId !== next.id),
+      );
+      setConflictValidationPending(false);
+      setPlacementError(
+        "The placement could not be saved. Your day, time, room, and duration are preserved so you can retry.",
+      );
+      setScheduleOpen(true);
+      setAnnouncement(
+        `Could not save ${next.title}. The attempted placement is still available.`,
+      );
+      setToasts([
+        {
+          id: "agenda-save-failed",
+          message:
+            "No schedule change was committed. Review the preserved values and retry.",
+          title: "Placement not saved",
+          tone: "error",
+        },
+      ]);
+    }
   }
 
   function changeDay(nextDay: AgendaDay) {
     setDay(nextDay);
+    const nextTimes = agendaDay(nextDay)?.times ?? agendaTimes;
+    if (!nextTimes.includes(start)) {
+      setStart(nextTimes[0] ?? "9:00 AM");
+    }
     replaceAgendaUrl({ day: nextDay });
   }
 
@@ -508,7 +603,11 @@ export function AgendaBuilder({
     setSelectedSession(selectedScheduled);
     changeDay(selectedScheduled.day);
     setRoom(selectedScheduled.roomId);
-    setStart(agendaTimes[selectedScheduled.slot - 1] ?? "9:00 AM");
+    setStart(
+      agendaDay(selectedScheduled.day)?.times[selectedScheduled.slot - 1] ??
+        agendaTimes[0] ??
+        "9:00 AM",
+    );
     setDuration(String(selectedScheduled.durationMinutes));
     setSessionOpen(false);
     setScheduleOpen(true);
@@ -703,25 +802,21 @@ export function AgendaBuilder({
 
           <div className="agenda-toolbar">
             <div className="agenda-days" aria-label="Agenda day">
-              <button
-                aria-pressed={day === "tuesday"}
-                onClick={() => changeDay("tuesday")}
-                type="button"
-              >
-                <strong>Tue</strong>
-                <span>Aug 18</span>
-              </button>
-              <button
-                aria-pressed={day === "wednesday"}
-                onClick={() => changeDay("wednesday")}
-                type="button"
-              >
-                <strong>Wed</strong>
-                <span>Aug 19</span>
-              </button>
+              {agendaDays.map((agendaDay) => (
+                <button
+                  aria-pressed={day === agendaDay.date}
+                  key={agendaDay.date}
+                  onClick={() => changeDay(agendaDay.date)}
+                  type="button"
+                >
+                  <strong>{agendaDay.shortWeekday}</strong>
+                  <span>{agendaDay.shortDate}</span>
+                </button>
+              ))}
             </div>
             <span className="agenda-timezone">
-              <Clock3 aria-hidden="true" size={15} /> America/Los_Angeles
+              <Clock3 aria-hidden="true" size={15} />{" "}
+              {agendaScheduleView.timezone}
             </span>
             <button
               className="agenda-filter-button"
@@ -785,11 +880,7 @@ export function AgendaBuilder({
               >
                 <div className="agenda-grid-heading">
                   <div>
-                    <p className="overline">
-                      {day === "tuesday"
-                        ? "Tuesday, August 18"
-                        : "Wednesday, August 19"}
-                    </p>
+                    <p className="overline">{activeDay?.fullLabel}</p>
                     <h2 id="agenda-grid-title">Room schedule</h2>
                   </div>
                   <span>
@@ -800,6 +891,7 @@ export function AgendaBuilder({
                 </div>
                 <div
                   className="agenda-grid-scroll"
+                  style={gridStyle}
                   tabIndex={0}
                   aria-label="Room schedule grid, scroll horizontally for more rooms"
                 >
@@ -817,8 +909,10 @@ export function AgendaBuilder({
                   </div>
                   <div className="agenda-grid-body">
                     <div className="agenda-time-axis">
-                      {agendaTimes.map((time) => (
-                        <span key={time}>{time}</span>
+                      {activeTimes.map((time, index) => (
+                        <span key={time}>
+                          {index % timeLabelStride === 0 ? time : ""}
+                        </span>
                       ))}
                     </div>
                     {agendaRooms.map((agendaRoom) => (
@@ -827,7 +921,7 @@ export function AgendaBuilder({
                         data-room={agendaRoom.id}
                         key={agendaRoom.id}
                       >
-                        {agendaTimes.map((time, index) => {
+                        {activeTimes.map((time, index) => {
                           const slot = index + 1;
                           const active =
                             dragTarget?.roomId === agendaRoom.id &&
@@ -838,6 +932,7 @@ export function AgendaBuilder({
                               className={`agenda-drop-slot${active ? " is-active" : ""}${active && dragTarget.conflict ? " has-conflict" : ""}`}
                               data-room={agendaRoom.id}
                               data-slot={slot}
+                              data-time={time}
                               key={`${agendaRoom.id}-${time}`}
                               onDragEnter={(event) =>
                                 updateDragTarget(event, agendaRoom.id, slot)
@@ -921,9 +1016,7 @@ export function AgendaBuilder({
           >
             <div className="agenda-schedule-form">
               <div className="agenda-session-summary">
-                <span
-                  className={`is-${selectedSession ? trackTone[selectedSession.track] : "ai"}`}
-                />
+                <span className={`is-${selectedSession?.tone ?? "ai"}`} />
                 <div>
                   <strong>{selectedSession?.title}</strong>
                   <small>{selectedSession?.speakers.join(" · ")}</small>
@@ -941,10 +1034,10 @@ export function AgendaBuilder({
               <SelectField
                 id="agenda-day"
                 label="Day"
-                options={[
-                  { label: "Tuesday, August 18", value: "tuesday" },
-                  { label: "Wednesday, August 19", value: "wednesday" },
-                ]}
+                options={agendaDays.map((agendaDay) => ({
+                  label: agendaDay.fullLabel,
+                  value: agendaDay.date,
+                }))}
                 value={day}
                 onChange={(event) => changeDay(event.target.value as AgendaDay)}
               />
@@ -952,7 +1045,7 @@ export function AgendaBuilder({
                 <SelectField
                   id="agenda-start"
                   label="Start time"
-                  options={agendaTimes.map((time) => ({
+                  options={activeTimes.map((time) => ({
                     label: time,
                     value: time,
                   }))}
@@ -962,11 +1055,10 @@ export function AgendaBuilder({
                 <SelectField
                   id="agenda-duration"
                   label="Duration"
-                  options={[
-                    { label: "30 minutes", value: "30" },
-                    { label: "45 minutes", value: "45" },
-                    { label: "60 minutes", value: "60" },
-                  ]}
+                  options={agendaScheduleView.formats.map((format) => ({
+                    label: `${format.defaultDurationMinutes} minutes`,
+                    value: String(format.defaultDurationMinutes),
+                  }))}
                   value={duration}
                   onChange={(event) => setDuration(event.target.value)}
                 />
@@ -1019,10 +1111,10 @@ export function AgendaBuilder({
                 }}
                 options={[
                   { label: "All tracks", value: "all" },
-                  { label: "AI Engineering", value: "AI Engineering" },
-                  { label: "Evaluation", value: "Evaluation" },
-                  { label: "Infrastructure", value: "Infrastructure" },
-                  { label: "Product", value: "Product" },
+                  ...agendaTracks.map((track) => ({
+                    label: track.name,
+                    value: track.name,
+                  })),
                 ]}
                 value={trackFilter}
               />
@@ -1044,7 +1136,8 @@ export function AgendaBuilder({
               />
               <p className="agenda-filter-summary">
                 {filteredScheduled.length} placements match this view. Local
-                times remain in America/Los_Angeles across every presentation.
+                times remain in {agendaScheduleView.timezone} across every
+                presentation.
               </p>
               <div className="agenda-filter-actions">
                 <Button
@@ -1080,13 +1173,15 @@ export function AgendaBuilder({
                 <div className="agenda-session-detail-meta">
                   <span>
                     <strong>
-                      {selectedScheduled.day === "tuesday"
-                        ? "Tuesday, August 18"
-                        : "Wednesday, August 19"}
+                      {agendaDay(selectedScheduled.day)?.fullLabel}
                     </strong>
                     <small>
-                      {agendaTimes[selectedScheduled.slot - 1]} ·{" "}
-                      {selectedScheduled.durationMinutes} minutes
+                      {
+                        agendaDay(selectedScheduled.day)?.times[
+                          selectedScheduled.slot - 1
+                        ]
+                      }{" "}
+                      · {selectedScheduled.durationMinutes} minutes
                     </small>
                   </span>
                   <span>
@@ -1238,10 +1333,10 @@ export function AgendaBuilder({
                     or time
                   </li>
                 ) : null}
-                {!hasWednesdaySessions ? (
+                {!hasSessionsOnEveryDay ? (
                   <li>
-                    <CalendarDays aria-hidden="true" size={15} /> Wednesday has
-                    no sessions yet
+                    <CalendarDays aria-hidden="true" size={15} /> One or more
+                    event days have no sessions yet
                   </li>
                 ) : null}
                 {conflictValidationPending ? (

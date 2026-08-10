@@ -7,7 +7,7 @@ test("agenda views and shareable filters stay encoded in the URL", async ({
   page,
 }) => {
   await page.goto(
-    "/fixtures/agenda/ready?view=week&day=wednesday&track=Evaluation&room=gallery",
+    "/fixtures/agenda/ready?view=week&day=2026-08-19&track=Evaluation&room=gallery",
   );
 
   await expect(
@@ -28,7 +28,7 @@ test("agenda views and shareable filters stay encoded in the URL", async ({
   await expect(page.locator('[data-view="track"]')).toBeVisible();
   const url = new URL(page.url());
   expect(url.searchParams.get("view")).toBe("track");
-  expect(url.searchParams.get("day")).toBe("wednesday");
+  expect(url.searchParams.get("day")).toBe("2026-08-19");
   expect(url.searchParams.get("track")).toBe("Evaluation");
   expect(url.searchParams.get("room")).toBe("gallery");
 });
