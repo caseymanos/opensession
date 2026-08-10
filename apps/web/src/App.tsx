@@ -50,8 +50,15 @@ export function App() {
     route = <PublicSchedule fixtureState="empty" />;
   } else if (window.location.pathname === "/fixtures/public-schedule/error") {
     route = <PublicSchedule fixtureState="error" />;
-  } else if (window.location.pathname === "/fixtures/portal-task/failed") {
-    route = <SpeakerPortal fixtureTaskState="failed" />;
+  } else if (window.location.pathname.startsWith("/fixtures/portal-task/")) {
+    route = (
+      <SpeakerPortal
+        fixtureTaskState={
+          window.location.pathname.endsWith("/failed") ? "failed" : "default"
+        }
+        fixtureView="task"
+      />
+    );
   } else if (window.location.pathname.startsWith("/fixtures/agenda/")) {
     const fixtureState = window.location.pathname.split("/").at(-1);
     route =
@@ -73,8 +80,10 @@ export function App() {
       fixtureState === "redeemed" ||
       fixtureState === "revoked" ? (
         <SpeakerPortal fixtureState={fixtureState} />
+      ) : fixtureState === "profile" ? (
+        <SpeakerPortal fixtureView="profile" />
       ) : (
-        <SpeakerPortal />
+        <SpeakerPortal fixtureView="home" />
       );
   } else if (window.location.pathname.startsWith("/fixtures/readiness/")) {
     const fixtureState = window.location.pathname.split("/").at(-1);

@@ -1,5 +1,4 @@
 import {
-  authSessionResponseSchema,
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
   scheduleSnapshotSchema,
@@ -7,6 +6,8 @@ import {
   type ScheduleCommandError,
   type ScheduleCommandPort,
 } from "@sessionbox-killer/contracts";
+
+import { readCsrfToken } from "../auth/authClient";
 
 type Fetch = (
   input: RequestInfo | URL,
@@ -89,36 +90,20 @@ function scheduleUrl(eventId: string) {
 
 export function createScheduleCommandPort(
   fetcher: Fetch = window.fetch.bind(window),
+  csrfReader: () => string | null = () => readCsrfToken(document.cookie),
 ): ScheduleCommandPort {
-  let csrfToken: string | null = null;
-  let csrfRequest: Promise<string> | null = null;
-
-  async function getCsrfToken(refresh = false): Promise<string> {
-    if (refresh) csrfToken = null;
-    if (csrfToken) return csrfToken;
-    if (csrfRequest) return csrfRequest;
-
-    csrfRequest = fetcher("/api/auth/session", {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    })
-      .then(async (response) => {
-        const body = await json(response);
-        if (!response.ok) throw responseError(response, body);
-        const parsed = authSessionResponseSchema.safeParse(body);
-        if (!parsed.success) throw responseError(response, body);
-        csrfToken = parsed.data.csrf_token;
-        return csrfToken;
-      })
-      .finally(() => {
-        csrfRequest = null;
-      });
-
-    return csrfRequest;
+  function getCsrfToken(): string {
+    const token = csrfReader();
+    if (token) return token;
+    throw new ScheduleApiError({
+      code: "missing_csrf",
+      message: "Refresh the page before changing the schedule.",
+      status: 0,
+    });
   }
 
   async function send(command: ScheduleCommand, retryCsrf: boolean) {
-    const token = await getCsrfToken(retryCsrf);
+    const token = getCsrfToken();
     const response = await fetcher(`${scheduleUrl(command.eventId)}/commands`, {
       body: JSON.stringify(command),
       credentials: "same-origin",

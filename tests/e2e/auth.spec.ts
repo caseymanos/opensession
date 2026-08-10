@@ -55,7 +55,16 @@ test("magic token leaves the address bar before the exchange request", async ({
     expect(route.request().postDataJSON()).toEqual({ token });
     expect(page.url()).not.toContain(token);
     await route.fulfill({
-      body: JSON.stringify({ redirect_path: "/" }),
+      body: JSON.stringify({
+        csrf_token: "browser-csrf-token-that-is-at-least-forty-characters",
+        expires_at: "2026-08-11T00:00:00.000Z",
+        redirect_path: "/",
+        user: {
+          display_name: "Casey Manos",
+          email: "casey@example.com",
+          id: "person_casey",
+        },
+      }),
       contentType: "application/json",
       status: 200,
     });
@@ -65,6 +74,31 @@ test("magic token leaves the address bar before the exchange request", async ({
   await expect(page).toHaveURL(/\/$/);
   expect(exchanged).toBe(true);
   expect(page.url()).not.toContain(token);
+});
+
+test("sign-in preserves a validated portal return path", async ({ page }) => {
+  await page.route("**/api/auth/magic-links", async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({
+      redirect_path: "/portal/ai-engineer-summit/profile",
+    });
+    await route.fulfill({
+      body: JSON.stringify({
+        accepted: true,
+        message: "If that address can sign in, a private link is on its way.",
+      }),
+      contentType: "application/json",
+      status: 202,
+    });
+  });
+
+  await page.goto(
+    "/auth/sign-in?return_to=%2Fportal%2Fai-engineer-summit%2Fprofile",
+  );
+  await page.getByLabel("Email address").fill("speaker@example.com");
+  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Check your inbox." }),
+  ).toBeVisible();
 });
 
 test("used or malformed links recover without a dead end", async ({ page }) => {

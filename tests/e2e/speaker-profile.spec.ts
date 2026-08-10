@@ -1,7 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-const profilePath = "/portal/ai-engineer-summit/profile";
+import { mockPortalAuth } from "./portal-auth";
+
+const profilePath = "/fixtures/portal/profile";
+
+test.beforeEach(async ({ page }) => mockPortalAuth(page));
 
 test("speaker profile exposes reusable fields and an unpublished public preview", async ({
   page,

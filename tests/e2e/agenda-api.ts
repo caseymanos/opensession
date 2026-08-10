@@ -1,7 +1,6 @@
 import type { Page } from "@playwright/test";
 
 import {
-  authSessionResponseSchema,
   scheduleCommandSchema,
   scheduleSnapshotSchema,
 } from "../../packages/contracts/src/index";
@@ -9,22 +8,16 @@ import { agendaScheduleSnapshotFixture } from "../../apps/web/src/agenda/agendaM
 
 export async function mockAgendaApi(page: Page) {
   let snapshot = structuredClone(agendaScheduleSnapshotFixture);
-
-  await page.route("**/api/auth/session", async (route) => {
-    await route.fulfill({
-      json: authSessionResponseSchema.parse({
-        csrf_token: "agenda-e2e-csrf-token-that-is-at-least-forty-characters",
-        expires_at: "2026-08-11T00:00:00.000Z",
-        redirect_path: "/app/ai-engineer-summit/agenda",
-        user: {
-          display_name: "Casey Manos",
-          email: "casey@example.com",
-          id: "person_casey",
-        },
-      }),
-      status: 200,
-    });
-  });
+  await page.context().addCookies([
+    {
+      httpOnly: false,
+      name: "__Host-opensession-csrf",
+      sameSite: "Lax",
+      secure: true,
+      url: "https://127.0.0.1:8787",
+      value: "agenda-e2e-csrf-token-that-is-at-least-forty-characters",
+    },
+  ]);
 
   await page.route("**/api/events/**", async (route) => {
     const request = route.request();

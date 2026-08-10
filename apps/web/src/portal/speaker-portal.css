@@ -144,6 +144,17 @@
   padding: clamp(2.2rem, 6vw, 5rem) 0 4rem;
 }
 
+.portal-auth-error {
+  margin: 0 0 1rem;
+  padding: 0.8rem 1rem;
+  color: var(--danger-700);
+  border: 1px solid color-mix(in srgb, var(--danger-700) 35%, white);
+  border-radius: var(--radius-md);
+  background: var(--danger-100);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .portal-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   CalendarDays,
@@ -16,6 +16,12 @@ import {
 
 import { Button, StatePanel, StatusPill } from "@sessionbox-killer/ui";
 
+import {
+  AuthApiError,
+  logoutAuthSession,
+  readAuthSession,
+  type AuthSessionIdentity,
+} from "../auth/authClient";
 import { speakerPortalFixture, type PortalTaskView } from "./portalModel";
 import { SpeakerProfileWorkspace } from "./SpeakerProfileWorkspace";
 import {
@@ -28,10 +34,28 @@ import "./speaker-portal.css";
 type PortalState =
   "active" | "empty" | "expired" | "permission" | "redeemed" | "revoked";
 export type PortalFixtureState = Exclude<PortalState, "active"> | "default";
+export type PortalFixtureView = "home" | "profile" | "task";
 
-function PortalBrand() {
+type PortalAuthentication =
+  | { session: AuthSessionIdentity; state: "authenticated" }
+  | { session: null; state: "checking" | "error" | "unauthenticated" };
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toLocaleUpperCase("en-US") ?? "")
+    .join("");
+}
+
+function PortalBrand({
+  href = "/portal/ai-engineer-summit",
+}: {
+  href?: string;
+}) {
   return (
-    <a className="portal-brand" href="/portal/ai-engineer-summit">
+    <a className="portal-brand" href={href}>
       <span className="brand-mark" aria-hidden="true">
         <span />
         <span />
@@ -45,17 +69,27 @@ function PortalBrand() {
   );
 }
 
-function TaskRow({ task }: { task: PortalTaskView }) {
+function TaskRow({
+  fixtureRoute,
+  task,
+}: {
+  fixtureRoute: boolean;
+  task: PortalTaskView;
+}) {
   const complete = task.status === "complete";
   const action =
     task.id === "final-slides"
       ? {
           label: "Review submission",
-          path: "/portal/ai-engineer-summit/tasks/final-slides",
+          path: fixtureRoute
+            ? "/fixtures/portal-task/default"
+            : "/portal/ai-engineer-summit/tasks/final-slides",
         }
       : {
           label: task.id === "headshot" ? "Upload headshot" : "Review profile",
-          path: "/portal/ai-engineer-summit/profile",
+          path: fixtureRoute
+            ? "/fixtures/portal/profile"
+            : "/portal/ai-engineer-summit/profile",
         };
   return (
     <article className={`portal-task is-${task.status}`}>
@@ -84,45 +118,64 @@ function TaskRow({ task }: { task: PortalTaskView }) {
 
 function PortalHeader({
   activeSection,
+  displayName,
+  fixtureRoute,
+  onSignOut,
   openTaskCount,
+  signingOut,
 }: {
   activeSection: "home" | "profile" | "tasks";
+  displayName: string;
+  fixtureRoute: boolean;
+  onSignOut?: (() => void) | undefined;
   openTaskCount: number;
+  signingOut?: boolean | undefined;
 }) {
+  const homePath = fixtureRoute
+    ? "/fixtures/portal/active"
+    : "/portal/ai-engineer-summit";
+  const profilePath = fixtureRoute
+    ? "/fixtures/portal/profile"
+    : "/portal/ai-engineer-summit/profile";
   return (
     <header className="portal-topbar">
-      <PortalBrand />
+      <PortalBrand href={homePath} />
       <nav aria-label="Speaker portal">
         <a
           aria-current={activeSection === "home" ? "page" : undefined}
-          href="/portal/ai-engineer-summit"
+          href={homePath}
         >
           <Home aria-hidden="true" size={16} /> Home
         </a>
         <a
           aria-current={activeSection === "tasks" ? "page" : undefined}
-          href="/portal/ai-engineer-summit#portal-tasks"
+          href={`${homePath}#portal-tasks`}
         >
           <CheckCircle2 aria-hidden="true" size={16} /> Tasks{" "}
           <span>{openTaskCount}</span>
         </a>
-        <a href="/portal/ai-engineer-summit#portal-sessions">
+        <a href={`${homePath}#portal-sessions`}>
           <Mic2 aria-hidden="true" size={16} /> Sessions
         </a>
         <a
           aria-current={activeSection === "profile" ? "page" : undefined}
-          href="/portal/ai-engineer-summit/profile"
+          href={profilePath}
         >
           <UserRound aria-hidden="true" size={16} /> Profile
         </a>
       </nav>
       <div className="portal-profile-chip">
-        <span>MO</span>
+        <span>{initials(displayName)}</span>
         <div>
-          <strong>{speakerPortalFixture.speakerName}</strong>
+          <strong>{displayName}</strong>
           <small>Speaker</small>
         </div>
-        <button aria-label="Sign out" type="button">
+        <button
+          aria-label={signingOut ? "Signing out" : "Sign out"}
+          disabled={signingOut || !onSignOut}
+          onClick={onSignOut}
+          type="button"
+        >
           <LogOut aria-hidden="true" size={17} />
         </button>
       </div>
@@ -231,13 +284,159 @@ function InvitationState({
   );
 }
 
+function PortalAuthenticationState({
+  onRetry,
+  state,
+}: {
+  onRetry: () => void;
+  state: "checking" | "error" | "unauthenticated";
+}) {
+  const returnPath = window.location.pathname;
+  const signInPath = `/auth/sign-in?return_to=${encodeURIComponent(returnPath)}`;
+  const panel =
+    state === "checking"
+      ? {
+          description:
+            "We’re checking your private session before loading any speaker or event information.",
+          panelState: "loading" as const,
+          title: "Opening your speaker portal…",
+        }
+      : state === "unauthenticated"
+        ? {
+            description:
+              "Use the invited email address. We’ll send a private one-time link and return you to this event.",
+            panelState: "permission" as const,
+            title: "Sign in to your speaker portal",
+          }
+        : {
+            description:
+              "Your speaker information remains private. Check your connection and try loading the portal again.",
+            panelState: "error" as const,
+            title: "We couldn’t verify your session",
+          };
+
+  return (
+    <div className="portal-invitation-page">
+      <PortalBrand />
+      <main className="portal-invitation-card">
+        <div className="portal-invitation-event">
+          <span>OS</span>
+          <div>
+            <strong>OpenSession speaker portal</strong>
+            <small>Private event access</small>
+          </div>
+        </div>
+        <StatePanel
+          action={
+            state === "unauthenticated" ? (
+              <Button onClick={() => window.location.assign(signInPath)}>
+                Email me a sign-in link
+              </Button>
+            ) : undefined
+          }
+          description={panel.description}
+          onRetry={state === "error" ? onRetry : undefined}
+          state={panel.panelState}
+          title={panel.title}
+        />
+      </main>
+      <p>Speaker and session details stay hidden until access is verified.</p>
+    </div>
+  );
+}
+
+function PortalVerifiedSessionState({
+  displayName,
+  onSignOut,
+  signOutError,
+  signingOut,
+}: {
+  displayName: string;
+  onSignOut: () => void;
+  signOutError: string;
+  signingOut: boolean;
+}) {
+  return (
+    <div className="portal-invitation-page">
+      <PortalBrand />
+      <main className="portal-invitation-card">
+        <div className="portal-invitation-event">
+          <span>{initials(displayName)}</span>
+          <div>
+            <strong>Signed in as {displayName}</strong>
+            <small>Speaker portal session verified</small>
+          </div>
+        </div>
+        <StatePanel
+          action={
+            <Button
+              disabled={signingOut}
+              onClick={onSignOut}
+              variant="secondary"
+            >
+              {signingOut ? "Signing out…" : "Sign out and use invited link"}
+            </Button>
+          }
+          description="Your sign-in is valid, but this URL cannot yet verify your speaker relationship to the event. No speaker, task, or session data has been shown. Open the event-specific invitation from your email or contact the program team."
+          state="permission"
+          title="We couldn’t verify access to this event"
+        />
+        {signOutError ? (
+          <p className="portal-auth-error" role="alert">
+            {signOutError}
+          </p>
+        ) : null}
+      </main>
+      <p>
+        Event-scoped access is checked before private portal data is loaded.
+      </p>
+    </div>
+  );
+}
+
 export function SpeakerPortal({
   fixtureState = "default",
   fixtureTaskState,
+  fixtureView = "home",
 }: {
   fixtureState?: PortalFixtureState | undefined;
   fixtureTaskState?: TaskFixtureState;
+  fixtureView?: PortalFixtureView | undefined;
 } = {}) {
+  const fixtureRoute = window.location.pathname.startsWith("/fixtures/");
+  const [authenticationAttempt, setAuthenticationAttempt] = useState(0);
+  const [authentication, setAuthentication] = useState<PortalAuthentication>({
+    session: null,
+    state: "checking",
+  });
+  const [signOutState, setSignOutState] = useState<"idle" | "signing-out">(
+    "idle",
+  );
+  const [signOutError, setSignOutError] = useState("");
+
+  useEffect(() => {
+    if (fixtureRoute) return;
+    const controller = new AbortController();
+    void readAuthSession(window.fetch.bind(window), controller.signal)
+      .then((session) => {
+        setAuthentication({ session, state: "authenticated" });
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setAuthentication({
+          session: null,
+          state:
+            error instanceof AuthApiError &&
+            (error.status === 401 || error.status === 403)
+              ? "unauthenticated"
+              : "error",
+        });
+      });
+    return () => controller.abort();
+  }, [authenticationAttempt, fixtureRoute]);
+
   const state: PortalState =
     fixtureState === "default" ? "active" : fixtureState;
   if (
@@ -249,12 +448,59 @@ export function SpeakerPortal({
     return <InvitationState state={state} />;
   }
 
+  if (authentication.state !== "authenticated" && !fixtureRoute) {
+    return (
+      <PortalAuthenticationState
+        onRetry={() => {
+          setAuthentication({ session: null, state: "checking" });
+          setAuthenticationAttempt((attempt) => attempt + 1);
+        }}
+        state={authentication.state}
+      />
+    );
+  }
+
+  const authenticatedDisplayName =
+    authentication.state === "authenticated"
+      ? (authentication.session.user.display_name ??
+        authentication.session.user.email)
+      : speakerPortalFixture.speakerName;
+  const signOut = async () => {
+    setSignOutError("");
+    setSignOutState("signing-out");
+    try {
+      await logoutAuthSession(document.cookie);
+      const returnPath = encodeURIComponent(window.location.pathname);
+      window.location.assign(`/auth/sign-in?return_to=${returnPath}`);
+    } catch (error) {
+      setSignOutError(
+        error instanceof Error
+          ? error.message
+          : "We couldn’t sign you out. Refresh and try again.",
+      );
+      setSignOutState("idle");
+    }
+  };
+
+  if (!fixtureRoute && authentication.state === "authenticated") {
+    return (
+      <PortalVerifiedSessionState
+        displayName={authenticatedDisplayName}
+        onSignOut={signOut}
+        signOutError={signOutError}
+        signingOut={signOutState === "signing-out"}
+      />
+    );
+  }
+
   const sessions = state === "empty" ? [] : speakerPortalFixture.sessions;
   const openTasks = speakerPortalFixture.tasks.filter(
     (task) => task.status !== "complete",
   );
-  const profileActive = window.location.pathname.endsWith("/profile");
+  const profileActive =
+    fixtureView === "profile" || window.location.pathname.endsWith("/profile");
   const taskActive =
+    fixtureView === "task" ||
     Boolean(fixtureTaskState) ||
     window.location.pathname.endsWith("/tasks/final-slides");
 
@@ -263,6 +509,8 @@ export function SpeakerPortal({
       <div className="speaker-portal">
         <PortalHeader
           activeSection="profile"
+          displayName={authenticatedDisplayName}
+          fixtureRoute={fixtureRoute}
           openTaskCount={openTasks.length}
         />
         <SpeakerProfileWorkspace />
@@ -273,7 +521,12 @@ export function SpeakerPortal({
   if (taskActive) {
     return (
       <div className="speaker-portal">
-        <PortalHeader activeSection="tasks" openTaskCount={openTasks.length} />
+        <PortalHeader
+          activeSection="tasks"
+          displayName={authenticatedDisplayName}
+          fixtureRoute={fixtureRoute}
+          openTaskCount={openTasks.length}
+        />
         <SpeakerTaskWorkspace fixtureState={fixtureTaskState ?? "default"} />
       </div>
     );
@@ -281,9 +534,19 @@ export function SpeakerPortal({
 
   return (
     <div className="speaker-portal">
-      <PortalHeader activeSection="home" openTaskCount={openTasks.length} />
+      <PortalHeader
+        activeSection="home"
+        displayName={authenticatedDisplayName}
+        fixtureRoute={fixtureRoute}
+        openTaskCount={openTasks.length}
+      />
 
       <main className="portal-main">
+        {signOutError ? (
+          <p className="portal-auth-error" role="alert">
+            {signOutError}
+          </p>
+        ) : null}
         <section className="portal-hero">
           <div>
             <p className="overline">Your speaker home</p>
@@ -382,7 +645,11 @@ export function SpeakerPortal({
             </div>
             <div className="portal-task-list">
               {speakerPortalFixture.tasks.map((task) => (
-                <TaskRow key={task.id} task={task} />
+                <TaskRow
+                  fixtureRoute={fixtureRoute}
+                  key={task.id}
+                  task={task}
+                />
               ))}
             </div>
           </section>
