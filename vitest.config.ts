@@ -21,13 +21,15 @@ export default defineConfig({
       include: [
         "apps/web/src/demo/demoClient.ts",
         "apps/web/src/email-templates/{emailTemplateClient,emailTemplateRoute}.ts",
-        "packages/contracts/src/{demo,index,portal,schedule}.ts",
+        "packages/calendar/src/{canonical,invitation,render,time}.ts",
+        "packages/contracts/src/{calendar,demo,index,portal,schedule}.ts",
         "packages/data/src/airtable/{client,command-store,config,demo-root,errors,rate-limiter,schema-definition,schema-manager}.ts",
         "packages/domain/src/{conflicts,demo,schedule}.ts",
         "packages/email/src/{campaign,contracts,identity,merge,preview,render,seeds,versioning}.ts",
         "scripts/cloudflare/{demo-bootstrap,provision,public-performance,release}.ts",
         "workers/app/src/auth/{authorization,crypto,http,routes,service}.ts",
         "workers/app/src/cfp/{policy,routes,submission-authority,submission-compiler}.ts",
+        "workers/app/src/calendar/outbox.ts",
         "workers/app/src/demo/{bootstrap,compiler,reset,routes}.ts",
         "workers/app/src/email/{config,delivery,messages,provider,routes,webhook}.ts",
         "workers/app/src/email-templates/{repository,routes,service}.ts",
@@ -56,6 +58,12 @@ export default defineConfig({
           functions: 95,
           lines: 82,
         },
+        "packages/calendar/src/**.ts": {
+          statements: 85,
+          branches: 77,
+          functions: 95,
+          lines: 85,
+        },
         "workers/app/src/auth/crypto.ts": {
           statements: 100,
           branches: 80,
@@ -67,6 +75,12 @@ export default defineConfig({
           branches: 70,
           functions: 65,
           lines: 75,
+        },
+        "workers/app/src/calendar/outbox.ts": {
+          statements: 85,
+          branches: 75,
+          functions: 90,
+          lines: 85,
         },
         "workers/app/src/observability.ts": {
           statements: 85,

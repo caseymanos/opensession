@@ -4,6 +4,7 @@ export * from "./schedule";
 export * from "./schedule-fixture";
 export * from "./demo";
 export * from "./organizer-submissions";
+export * from "./calendar";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),

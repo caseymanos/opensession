@@ -1,0 +1,26 @@
+BEGIN:VCALENDAR
+PRODID:-//OpenSession//Calendar Invitations 1.0//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:evt_077b496ea6c0281faf7efd43ce7e99975cbf08ade9311629@calendar.example.t
+ est
+DTSTAMP:20260810T190000Z
+DTSTART:20260915T180000Z
+DTEND:20260915T183000Z
+SEQUENCE:1
+STATUS:CONFIRMED
+ORGANIZER;CN="OpenSession Program Team":mailto:program@example.test
+ATTENDEE;CN="Alex Chen";CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACC
+ EPTED;RSVP=FALSE:mailto:alex@example.test
+SUMMARY:Opening the reliable-agent stack
+LOCATION:Cowell Theater\, Fort Mason Center\, San Francisco
+DESCRIPTION:Event: AI Engineer World's Fair\nWhen: Tuesday\, September 15\,
+  2026 at 11:00 AM - Tuesday\, September 15\, 2026 at 11:30 AM (America/Los
+ _Angeles\; UTC-07:00)\nWhere: Cowell Theater\, Fort Mason Center\, San Fra
+ ncisco\n\nA practical opening tour of the systems behind reliable agents.\
+ n\nDetails: https://events.example.test/ai-engineering-summit
+URL:https://events.example.test/ai-engineering-summit
+END:VEVENT
+END:VCALENDAR
