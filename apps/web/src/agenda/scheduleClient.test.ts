@@ -71,9 +71,9 @@ describe("schedule HTTP command port", () => {
     );
     const port = createScheduleCommandPort(fetcher);
 
-    await expect(
-      port.previewPublication(command.eventId),
-    ).resolves.toEqual(preview);
+    await expect(port.previewPublication(command.eventId)).resolves.toEqual(
+      preview,
+    );
     expect(fetcher).toHaveBeenCalledWith(
       `/api/events/${command.eventId}/schedule/publication-preview`,
       {

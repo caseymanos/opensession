@@ -800,8 +800,8 @@ describe("passwordless authentication runtime", () => {
 
     await env.DB.batch([
       env.DB.prepare(
-        `UPDATE p_sessions SET status = 'scheduled'
-         WHERE id = 'session_other'`,
+        `UPDATE p_sessions SET status = 'scheduled', is_public = 1
+         WHERE id IN ('session_own', 'session_other')`,
       ),
       env.DB.prepare(
         `INSERT INTO p_schedule_slots (
@@ -840,6 +840,24 @@ describe("passwordless authentication runtime", () => {
       ]),
     });
 
+    const publicationPreview = await server.fetch(
+      "/api/events/event-one/schedule/publication-preview",
+      { headers: { Cookie: owner.cookie } },
+    );
+    expect(publicationPreview.status).toBe(200);
+    expect(publicationPreview.headers.get("ETag")).toBe('"schedule-v1"');
+    await expect(publicationPreview.json()).resolves.toMatchObject({
+      canPublish: false,
+      counts: {
+        hardConflicts: 2,
+        missingRoomOrTime: 0,
+        unscheduled: 0,
+      },
+      currentPublicationVersion: 0,
+      nextPublicationVersion: 2,
+      scheduleVersion: 1,
+    });
+
     const publish = await server.fetch(
       "/api/events/event-one/schedule/commands",
       {
@@ -872,7 +890,8 @@ describe("passwordless authentication runtime", () => {
          WHERE id = 'participant_schedule_conflict'`,
       ),
       env.DB.prepare(
-        `UPDATE p_sessions SET status = 'accepted', expected_attendance = NULL
+        `UPDATE p_sessions SET status = 'accepted', expected_attendance = NULL,
+           is_public = 0
          WHERE id IN ('session_own', 'session_other')`,
       ),
       env.DB.prepare(

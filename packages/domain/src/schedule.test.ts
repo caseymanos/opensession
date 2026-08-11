@@ -7,9 +7,9 @@ import {
   isIanaTimezone,
   previewSchedulePublication,
   SchedulePublicationBlockedError,
-  ScheduleValidationError,
   ScheduleVersionConflictError,
   type ScheduleSnapshot,
+  type ScheduleValidationError,
   type ScheduleValidationReason,
 } from "./schedule";
 
