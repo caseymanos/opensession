@@ -150,6 +150,8 @@ Run: `ID, Integration, Trigger, Mode, Cursor, Counts, Status, Started/finished, 
 
 Token tables store hashes, prefix, expiry/use/revoke timestamps, never plaintext.
 
+`portal_grants` is operational authorization evidence, not a second copy of the speaker business domain. A grant binds one hashed magic-link capability to an organization, event, and contact; active uniqueness, expiry, consumption, revocation, supersession, and audit rows enforce the one-time lifecycle. The current `p_event_contacts` relationship remains the authority gate at exchange and on every portal bootstrap, so deleting or revoking the Airtable-owned relationship fails closed immediately.
+
 ### Delivery and consistency
 
 - `idempotency_keys`

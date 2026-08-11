@@ -129,7 +129,8 @@ Every message has deterministic ID and dedupe record in D1.
 
 - Organizer/reviewer: emailed one-time magic link → short-lived exchange → `HttpOnly`, `Secure`, `SameSite=Lax` session cookie; rotate session on privilege changes.
 - CFP applicant: after IP/event abuse limits and a valid Turnstile challenge, an active projected CFP may create a D1-only unprivileged identity and send the same browser-bound magic link. Identity creation grants no organization/event membership; draft and submit routes still require session, origin, CSRF, and server-resolved CFP policy.
-- Speaker: event-scoped portal invitation/magic link with explicit expiry and one-time exchange; subsequent cookie scoped by authorization checks, not URL secrecy.
+- Speaker: event-scoped portal invitation/magic link with explicit expiry and one-time exchange. The initial acceptance capability may cross into a clean/incognito browser; self-service recovery links remain bound to the requesting browser. A queued replacement transactionally supersedes the prior `portal_grants` row, and command-triggered issuance has a stable versioned delivery/idempotency identity.
+- Portal bootstrap: the URL slug resolves server-side to exactly one ready tenant and non-deleted event. A generic authenticated cookie is never sufficient: every request joins the active user email to the exact projected contact/event speaker relationship before and after reading that speaker's tasks and session assignments. Responses expose stable product IDs and a bounded read model, never provider record IDs or private object keys.
 - API: opaque random token shown once; store salted hash, prefix, scopes, event/org, created/last-used/revoked.
 - Roles: owner, organizer, reviewer, viewer. Speaker authorization is relationship-based.
 - Every query filters organization/event before entity ID; cross-tenant test matrix is mandatory.

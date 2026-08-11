@@ -113,3 +113,42 @@ test("used or malformed links recover without a dead end", async ({ page }) => {
     page.getByRole("link", { name: "Request a new link" }),
   ).toHaveAttribute("href", "/auth/sign-in");
 });
+
+test("expired speaker invitation preserves only safe recovery context", async ({
+  page,
+}) => {
+  const token = `expired-portal-${"e".repeat(40)}`;
+  await page.route("**/api/auth/magic-links/exchange", async (route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "invalid_magic_link",
+          message: "This speaker invitation is no longer available.",
+          recovery: {
+            email_hint: "m***@example.com",
+            event: {
+              brand: {
+                accent: "#cde878",
+                background: "#f5f2ea",
+                ink: "#10201d",
+              },
+              name: "AI Engineer Summit",
+              slug: "ai-engineer-summit",
+            },
+            reason: "expired",
+          },
+        },
+      },
+      status: 400,
+    });
+  });
+
+  await page.goto(`/auth/magic#token=${token}`);
+  await expect(page.getByText("AI Engineer Summit")).toBeVisible();
+  await expect(page.getByText("Invitation for m***@example.com")).toBeVisible();
+  await expect(page.getByText("mina@example.com")).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Request a new link" }),
+  ).toHaveAttribute("href", "/portal/ai-engineer-summit");
+  await expect(page).not.toHaveURL(new RegExp(token));
+});

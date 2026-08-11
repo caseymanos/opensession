@@ -21,7 +21,7 @@ export default defineConfig({
       include: [
         "apps/web/src/demo/demoClient.ts",
         "apps/web/src/email-templates/{emailTemplateClient,emailTemplateRoute}.ts",
-        "packages/contracts/src/{demo,index,schedule}.ts",
+        "packages/contracts/src/{demo,index,portal,schedule}.ts",
         "packages/data/src/airtable/{client,command-store,config,demo-root,errors,rate-limiter,schema-definition,schema-manager}.ts",
         "packages/domain/src/{conflicts,demo,schedule}.ts",
         "packages/email/src/{campaign,contracts,identity,merge,preview,render,seeds,versioning}.ts",
@@ -32,6 +32,7 @@ export default defineConfig({
         "workers/app/src/email/{config,delivery,messages,provider,routes,webhook}.ts",
         "workers/app/src/email-templates/{repository,routes,service}.ts",
         "workers/app/src/public-schedule/{cache,projection}.ts",
+        "workers/app/src/portal/{brand,routes,service}.ts",
         "workers/app/src/schedule/d1-repository.ts",
         "workers/app/src/uploads/{policy,pptx,routes,service}.ts",
         "workers/app/src/{features,observability}.ts",

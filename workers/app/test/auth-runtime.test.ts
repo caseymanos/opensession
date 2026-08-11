@@ -56,7 +56,7 @@ async function seedMagicLink(
   rawToken: string,
   userId: string,
   options: {
-    browserBindingToken?: string;
+    browserBindingToken?: string | null;
     expiresAt?: string;
     id?: string;
     purpose?: "portal" | "sign_in";
@@ -66,7 +66,9 @@ async function seedMagicLink(
   const env = await server.getWorker<Env>().getEnv();
   const id = options.id ?? crypto.randomUUID();
   const browserBindingToken =
-    options.browserBindingToken ?? `binding-${rawToken}`;
+    options.browserBindingToken === undefined
+      ? `binding-${rawToken}`
+      : options.browserBindingToken;
   const purpose = options.purpose ?? "sign_in";
   const user = await env.DB.prepare(
     "SELECT email_normalized FROM users WHERE id = ?1",
@@ -91,7 +93,7 @@ async function seedMagicLink(
       await sha256Hex(rawToken),
       timestamp,
       options.expiresAt ?? future,
-      await sha256Hex(browserBindingToken),
+      browserBindingToken ? await sha256Hex(browserBindingToken) : null,
     ),
   ];
   if (options.scope) {
@@ -108,6 +110,24 @@ async function seedMagicLink(
         timestamp,
       ),
     );
+    if (purpose === "portal") {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO portal_grants
+            (id, organization_id, event_id, contact_id, token_hash,
+             created_at, expires_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+        ).bind(
+          id,
+          options.scope.organizationId,
+          options.scope.eventId,
+          options.scope.contactId,
+          await sha256Hex(rawToken),
+          timestamp,
+          options.expiresAt ?? future,
+        ),
+      );
+    }
   }
   await env.DB.batch(statements);
 }
@@ -977,6 +997,18 @@ describe("passwordless authentication runtime", () => {
       scope,
     });
     expect((await exchange(validPortalToken)).status).toBe(200);
+    const replay = await exchange(validPortalToken);
+    expect(replay.status).toBe(400);
+    await expect(replay.json()).resolves.toMatchObject({
+      error: {
+        code: "invalid_magic_link",
+        recovery: {
+          email_hint: "s***@example.test",
+          event: { name: "Event One", slug: "event-one" },
+          reason: "redeemed",
+        },
+      },
+    });
 
     const env = await server.getWorker<Env>().getEnv();
     await seedMagicLink(suspendedPortalToken, "usr_speaker", {
@@ -1006,7 +1038,429 @@ describe("passwordless authentication runtime", () => {
       purpose: "portal",
       scope,
     });
-    expect((await exchange(revokedPortalToken)).status).toBe(400);
+    const revoked = await exchange(revokedPortalToken);
+    expect(revoked.status).toBe(400);
+    await expect(revoked.json()).resolves.toMatchObject({
+      error: {
+        recovery: {
+          email_hint: "s***@example.test",
+          event: { name: "Event One", slug: "event-one" },
+          reason: "revoked",
+        },
+      },
+    });
+    await env.DB.prepare(
+      `UPDATE p_event_contacts
+       SET portal_state = 'active'
+       WHERE id = 'event_contact_speaker'`,
+    ).run();
+  });
+
+  it("issues an idempotent event-scoped invitation that opens in incognito once", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const rawToken = `portal-incognito-${"i".repeat(40)}`;
+    const replacementToken = `portal-replacement-${"j".repeat(40)}`;
+    const tokens = [rawToken, replacementToken];
+    const messages: unknown[] = [];
+    const authService = new AuthService({
+      database: env.DB,
+      emailEnabled: true,
+      emailQueue: {
+        send: async (message: unknown) => {
+          messages.push(message);
+        },
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      now: () => new Date("2027-08-09T05:00:00.000Z"),
+      tokenFactory: () => tokens.shift() ?? replacementToken,
+    });
+    const command = {
+      commandId: "cmd_portal_invitation_one",
+      email: "speaker@example.test",
+      eventId: "evt_one",
+      eventSlug: "event-one",
+      organizationId: "org_one",
+    };
+
+    const first = await authService.issuePortalInvitation(
+      command,
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_invitation_one",
+    );
+    const replay = await authService.issuePortalInvitation(
+      command,
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_invitation_retry",
+    );
+
+    expect(first).toMatchObject({ outcome: "queued" });
+    expect(replay).toEqual(first);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      delivery_id: first.deliveryId,
+      link: `${origin}/auth/magic#token=${encodeURIComponent(rawToken)}`,
+      purpose: "portal",
+      to: "speaker@example.test",
+      version: 1,
+    });
+    const grant = await env.DB.prepare(
+      `SELECT organization_id, event_id, contact_id, consumed_at, revoked_at
+       FROM portal_grants WHERE id = ?1`,
+    )
+      .bind(first.deliveryId)
+      .first<Record<string, unknown>>();
+    expect(grant).toMatchObject({
+      contact_id: "contact_speaker",
+      consumed_at: null,
+      event_id: "evt_one",
+      organization_id: "org_one",
+      revoked_at: null,
+    });
+
+    const accepted = await exchange(rawToken, undefined, null);
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({
+      redirect_path: "/portal/event-one",
+      user: { email: "speaker@example.test" },
+    });
+    const acceptedGrant = await env.DB.prepare(
+      `SELECT consumed_at, revoked_at FROM portal_grants WHERE id = ?1`,
+    )
+      .bind(first.deliveryId)
+      .first<{ consumed_at: string | null; revoked_at: string | null }>();
+    const audits = await env.DB.prepare(
+      `SELECT action FROM audit_events WHERE entity_id = ?1 ORDER BY action`,
+    )
+      .bind(first.deliveryId)
+      .all<{ action: string }>();
+    expect(acceptedGrant?.consumed_at).toBeTruthy();
+    expect(acceptedGrant?.revoked_at).toBeNull();
+    expect(audits.results.map(({ action }) => action)).toEqual([
+      "portal.invitation.issued",
+      "portal.invitation.redeemed",
+    ]);
+
+    await expect(
+      authService.issuePortalInvitation(
+        { ...command, email: "viewer@example.test" },
+        { ipAddress: null, userAgent: null },
+        origin,
+        "req_portal_invitation_conflict",
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    const replacement = await authService.issuePortalInvitation(
+      { ...command, commandId: "cmd_portal_invitation_two" },
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_invitation_two",
+    );
+    expect(replacement.deliveryId).not.toBe(first.deliveryId);
+    expect(messages).toHaveLength(2);
+    expect((await exchange(replacementToken, undefined, null)).status).toBe(
+      200,
+    );
+  });
+
+  it("repairs a delivered portal invitation after finalization fails", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const rawToken = `portal-finalization-repair-${"r".repeat(40)}`;
+    const messages: unknown[] = [];
+    let batchCalls = 0;
+    const finalizationFailureDatabase = {
+      batch: async (statements: D1PreparedStatement[]) => {
+        batchCalls += 1;
+        if (batchCalls === 2) {
+          throw new Error("simulated portal finalization outage");
+        }
+        return env.DB.batch(statements);
+      },
+      prepare: env.DB.prepare.bind(env.DB),
+    } as unknown as D1Database;
+    const service = new AuthService({
+      database: finalizationFailureDatabase,
+      emailEnabled: true,
+      emailQueue: {
+        send: async (message: unknown) => {
+          messages.push(message);
+        },
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      now: () => new Date("2027-08-09T05:10:00.000Z"),
+      tokenFactory: () => rawToken,
+    });
+    const command = {
+      commandId: "cmd_portal_finalization_repair",
+      email: "speaker@example.test",
+      eventId: "evt_one",
+      eventSlug: "event-one",
+      organizationId: "org_one",
+    };
+
+    const failed = await service.issuePortalInvitation(
+      command,
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_finalization_failed",
+    );
+    const repaired = await service.issuePortalInvitation(
+      command,
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_finalization_repair",
+    );
+
+    expect(failed).toMatchObject({ outcome: "finalization_failed" });
+    expect(repaired).toMatchObject({
+      deliveryId: failed.deliveryId,
+      outcome: "queued",
+    });
+    expect(messages).toHaveLength(1);
+    expect((await exchange(rawToken, undefined, null)).status).toBe(200);
+  });
+
+  it("resumes an expired command lease when no delivery was created", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const command = {
+      commandId: "cmd_portal_orphan_reservation",
+      email: "speaker@example.test",
+      eventId: "evt_one",
+      eventSlug: "event-one",
+      organizationId: "org_one",
+    };
+    const interrupted = new AuthService({
+      database: {
+        batch: async () => {
+          throw new Error("simulated interruption before delivery creation");
+        },
+        prepare: env.DB.prepare.bind(env.DB),
+      } as unknown as D1Database,
+      emailEnabled: true,
+      emailQueue: {
+        send: async () => undefined,
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      now: () => new Date("2027-08-09T05:15:00.000Z"),
+      tokenFactory: () => `portal-orphan-first-${"f".repeat(40)}`,
+    });
+    await expect(
+      interrupted.issuePortalInvitation(
+        command,
+        { ipAddress: null, userAgent: null },
+        origin,
+        "req_portal_orphan_first",
+      ),
+    ).rejects.toThrow("interruption before delivery creation");
+
+    const messages: unknown[] = [];
+    const resumedToken = `portal-orphan-resumed-${"s".repeat(40)}`;
+    const resumed = new AuthService({
+      database: env.DB,
+      emailEnabled: true,
+      emailQueue: {
+        send: async (message: unknown) => {
+          messages.push(message);
+        },
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      now: () => new Date("2027-08-09T05:15:31.000Z"),
+      tokenFactory: () => resumedToken,
+    });
+    const result = await resumed.issuePortalInvitation(
+      command,
+      { ipAddress: null, userAgent: null },
+      origin,
+      "req_portal_orphan_resumed",
+    );
+
+    expect(result.outcome).toBe("queued");
+    expect(messages).toHaveLength(1);
+    expect((await exchange(resumedToken, undefined, null)).status).toBe(200);
+  });
+
+  it("replays one result for simultaneous copies of the same invitation command", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const rawToken = `portal-concurrent-command-${"c".repeat(40)}`;
+    const messages: unknown[] = [];
+    const service = new AuthService({
+      database: env.DB,
+      emailEnabled: true,
+      emailQueue: {
+        send: async (message: unknown) => {
+          messages.push(message);
+        },
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      now: () => new Date("2027-08-09T05:20:00.000Z"),
+      tokenFactory: () => rawToken,
+    });
+    const command = {
+      commandId: "cmd_portal_concurrent_same",
+      email: "speaker@example.test",
+      eventId: "evt_one",
+      eventSlug: "event-one",
+      organizationId: "org_one",
+    };
+
+    const [first, second] = await Promise.all([
+      service.issuePortalInvitation(
+        command,
+        { ipAddress: null, userAgent: null },
+        origin,
+        "req_portal_concurrent_first",
+      ),
+      service.issuePortalInvitation(
+        command,
+        { ipAddress: null, userAgent: null },
+        origin,
+        "req_portal_concurrent_second",
+      ),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(first.outcome).toBe("queued");
+    expect(messages).toHaveLength(1);
+    expect((await exchange(rawToken, undefined, null)).status).toBe(200);
+  });
+
+  it("keeps the newer portal grant authoritative when an older resend finalizes last", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const olderToken = `portal-out-of-order-old-${"o".repeat(40)}`;
+    const newerToken = `portal-out-of-order-new-${"n".repeat(40)}`;
+    let releaseOlder!: () => void;
+    let olderHandoffStarted!: () => void;
+    const olderHandoff = new Promise<void>((resolve) => {
+      olderHandoffStarted = resolve;
+    });
+    const olderRelease = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    const invitation = (
+      commandId: string,
+      token: string,
+      now: string,
+      send: () => Promise<void>,
+    ) =>
+      new AuthService({
+        database: env.DB,
+        emailEnabled: true,
+        emailQueue: { send } as unknown as Env["EMAIL_QUEUE"],
+        hashPepper: pepper,
+        now: () => new Date(now),
+        tokenFactory: () => token,
+      }).issuePortalInvitation(
+        {
+          commandId,
+          email: "speaker@example.test",
+          eventId: "evt_one",
+          eventSlug: "event-one",
+          organizationId: "org_one",
+        },
+        { ipAddress: null, userAgent: null },
+        origin,
+        `req_${commandId}`,
+      );
+
+    const older = invitation(
+      "cmd_portal_out_of_order_old",
+      olderToken,
+      "2027-08-09T05:30:00.000Z",
+      async () => {
+        olderHandoffStarted();
+        await olderRelease;
+      },
+    );
+    await olderHandoff;
+    const newer = await invitation(
+      "cmd_portal_out_of_order_new",
+      newerToken,
+      "2027-08-09T05:30:00.001Z",
+      async () => undefined,
+    );
+    releaseOlder();
+    const olderResult = await older;
+    const activeGrant = await env.DB.prepare(
+      `SELECT id FROM portal_grants
+       WHERE organization_id = 'org_one' AND event_id = 'evt_one'
+         AND contact_id = 'contact_speaker'
+         AND consumed_at IS NULL AND revoked_at IS NULL`,
+    ).first<{ id: string }>();
+
+    expect(newer.outcome).toBe("queued");
+    expect(olderResult.outcome).toBe("finalization_failed");
+    expect(activeGrant?.id).toBe(newer.deliveryId);
+    expect((await exchange(olderToken, undefined, null)).status).toBe(400);
+    expect((await exchange(newerToken, undefined, null)).status).toBe(200);
+  });
+
+  it("rejects an invitation slug that does not belong to the exact event scope", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const messages: unknown[] = [];
+    const service = new AuthService({
+      database: env.DB,
+      emailEnabled: true,
+      emailQueue: {
+        send: async (message: unknown) => {
+          messages.push(message);
+        },
+      } as unknown as Env["EMAIL_QUEUE"],
+      hashPepper: pepper,
+      tokenFactory: () => `portal-wrong-slug-${"w".repeat(40)}`,
+    });
+
+    await expect(
+      service.issuePortalInvitation(
+        {
+          commandId: "cmd_portal_wrong_slug",
+          email: "speaker@example.test",
+          eventId: "evt_one",
+          eventSlug: "event-two",
+          organizationId: "org_one",
+        },
+        { ipAddress: null, userAgent: null },
+        origin,
+        "req_portal_wrong_slug",
+      ),
+    ).rejects.toThrow("does not match its canonical scope");
+    expect(messages).toHaveLength(0);
+  });
+
+  it("returns only safe event and masked-email recovery context for an expired invitation", async () => {
+    const rawToken = `portal-expired-${"x".repeat(40)}`;
+    await seedMagicLink(rawToken, "usr_speaker", {
+      expiresAt: past,
+      purpose: "portal",
+      scope: {
+        contactId: "contact_speaker",
+        eventId: "evt_one",
+        organizationId: "org_one",
+      },
+    });
+
+    const response = await exchange(rawToken);
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      error: {
+        code: "invalid_magic_link",
+        recovery: {
+          email_hint: "s***@example.test",
+          event: {
+            brand: {
+              accent: "#cde878",
+              background: "#f5f2ea",
+              ink: "#10201d",
+            },
+            name: "Event One",
+            slug: "event-one",
+          },
+          reason: "expired",
+        },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("rec_evt_one");
+    expect(JSON.stringify(body)).not.toContain("base_one");
   });
 
   it("preserves the previously delivered link when a resend cannot queue", async () => {
@@ -1166,7 +1620,7 @@ describe("passwordless authentication runtime", () => {
       .first<{ delivery_state: string; revoked_at: string | null }>();
 
     expect(outcome).toMatchObject({ outcome: "finalization_failed" });
-    expect(pending).toEqual({ delivery_state: "pending", revoked_at: null });
+    expect(pending).toEqual({ delivery_state: "queued", revoked_at: null });
     expect((await exchange(priorToken)).status).toBe(200);
     expect((await exchange(replacementToken)).status).toBe(400);
   });

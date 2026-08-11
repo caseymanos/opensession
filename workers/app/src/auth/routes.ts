@@ -30,7 +30,7 @@ import {
 import type { CreatedSession } from "./service";
 
 const csrfCookieName = "opensession-csrf";
-const authAttemptCookieName = "opensession-auth-init";
+export const authAttemptCookieName = "opensession-auth-init";
 const genericMagicLinkMessage =
   "If that address can sign in, a private link is on its way.";
 const authBodyLimitBytes = 8 * 1024;
@@ -45,7 +45,7 @@ async function waitForMagicLinkResponseFloor(
   }
 }
 
-function setAuthAttemptCookie(
+export function setAuthAttemptCookie(
   context: Context<AppContext>,
   token: string,
   maxAge = 15 * 60,

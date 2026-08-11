@@ -1,10 +1,18 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { SpeakerPortalInvitationRecovery } from "@sessionbox-killer/contracts/portal";
 
 import {
   TurnstileWidget,
   type TurnstileWidgetHandle,
 } from "../security/TurnstileWidget";
 import {
+  AuthApiError,
   exchangeMagicLink,
   requestMagicLink,
   safeAuthRedirectPath,
@@ -183,6 +191,8 @@ function MagicExchange() {
   const [state, setState] = useState<ExchangeState>(
     token ? "checking" : "error",
   );
+  const [recovery, setRecovery] =
+    useState<SpeakerPortalInvitationRecovery | null>(null);
 
   useEffect(() => {
     window.history.replaceState(
@@ -202,6 +212,7 @@ function MagicExchange() {
       })
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
+          if (error instanceof AuthApiError) setRecovery(error.recovery);
           setState("error");
         }
       });
@@ -226,10 +237,48 @@ function MagicExchange() {
             !
           </span>
           <p className="auth-kicker">Link unavailable</p>
-          <h1>This link has expired or was already used.</h1>
-          <p>Request a fresh link to continue. Your account is still safe.</p>
-          <a className="auth-primary" href="/auth/sign-in">
-            Request a new link <span aria-hidden="true">→</span>
+          <h1>
+            {recovery?.reason === "revoked"
+              ? "This portal invitation is no longer active."
+              : "This link has expired or was already used."}
+          </h1>
+          {recovery ? (
+            <div
+              className="auth-recovery-event"
+              style={
+                {
+                  "--recovery-accent": recovery.event.brand.accent,
+                  "--recovery-background": recovery.event.brand.background,
+                  "--recovery-ink": recovery.event.brand.ink,
+                } as CSSProperties
+              }
+            >
+              <span aria-hidden="true">
+                {recovery.event.name.slice(0, 2).toLocaleUpperCase("en-US")}
+              </span>
+              <div>
+                <strong>{recovery.event.name}</strong>
+                <small>Invitation for {recovery.email_hint}</small>
+              </div>
+            </div>
+          ) : null}
+          <p>
+            {recovery?.reason === "revoked"
+              ? "No event or speaker data was opened. Contact the program team if you think access ended by mistake."
+              : "Request a fresh event-scoped link to continue. Your account is still safe."}
+          </p>
+          <a
+            className="auth-primary"
+            href={
+              recovery
+                ? `/portal/${encodeURIComponent(recovery.event.slug)}`
+                : "/auth/sign-in"
+            }
+          >
+            {recovery?.reason === "revoked"
+              ? "Return to the speaker portal"
+              : "Request a new link"}{" "}
+            <span aria-hidden="true">→</span>
           </a>
         </>
       )}

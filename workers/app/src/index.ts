@@ -36,6 +36,7 @@ import { D1PublicScheduleProjectionReader } from "./public-schedule/projection.j
 import { registerUploadRoutes } from "./uploads/routes";
 import { registerScheduleRoutes } from "./schedule/routes.js";
 import { registerDemoRoutes } from "./demo/routes.js";
+import { registerSpeakerPortalRoutes } from "./portal/routes";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
 import { validTurnstileConfiguration } from "./security/turnstile";
@@ -296,6 +297,7 @@ app.get("/api/v1/public/events/:slug/schedule", async (context) => {
 });
 
 registerAuthRoutes(app);
+registerSpeakerPortalRoutes(app);
 registerUploadRoutes(app);
 registerScheduleRoutes(app);
 registerDemoRoutes(app);

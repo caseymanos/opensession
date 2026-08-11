@@ -517,6 +517,12 @@
   cursor: pointer;
 }
 
+.portal-session-speakers {
+  margin: 0.75rem 0 0;
+  color: var(--ink-600);
+  font-size: 0.68rem;
+}
+
 .portal-help {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -543,6 +549,13 @@
   color: var(--ink-700);
   font-size: 0.68rem;
   font-weight: 750;
+}
+
+.portal-help > span:last-child {
+  max-width: 16rem;
+  color: var(--ink-600);
+  font-size: 0.68rem;
+  line-height: 1.45;
 }
 
 .portal-invitation-page {
@@ -614,6 +627,38 @@
   color: var(--success-700);
   font-size: 0.72rem;
   line-height: 1.45;
+}
+
+.portal-link-form {
+  width: min(100%, 25rem);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.portal-link-form label {
+  color: var(--ink-700);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.portal-link-form input {
+  min-height: 2.75rem;
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  color: var(--ink-950);
+  border: 1px solid var(--ink-300);
+  border-radius: var(--radius-md);
+  background: var(--paper-50);
+  font: inherit;
+}
+
+.portal-link-form input:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--blue-600) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.portal-link-form .portal-auth-error {
+  margin: 0;
 }
 
 .portal-invitation-page > p {

@@ -329,6 +329,40 @@
   margin-top: 2rem;
 }
 
+.auth-recovery-event {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding: 0.85rem;
+  color: var(--recovery-ink);
+  border: 1px solid color-mix(in srgb, var(--recovery-ink) 18%, transparent);
+  border-radius: 0.85rem;
+  background: var(--recovery-background);
+}
+
+.auth-recovery-event > span {
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 0.65rem;
+  background: var(--recovery-accent);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.auth-recovery-event strong,
+.auth-recovery-event small {
+  display: block;
+}
+
+.auth-recovery-event small {
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
+}
+
 .auth-footnote {
   margin: 0;
   color: var(--ink-500);
