@@ -445,6 +445,18 @@ describe.sequential("RAL-34 completed authority data plane", () => {
   }, 120_000);
 
   it("projects every table and commits only a complete webhook roster", async () => {
+    const initialPlan = await post("/reconcile-plan", {
+      organizationId: demoOrganizationId,
+    });
+    expect(initialPlan.status, await initialPlan.clone().text()).toBe(200);
+    await expect(initialPlan.json()).resolves.toMatchObject({
+      counts: {
+        create: plan.operations.length,
+        missing: 0,
+        unchanged: 0,
+        update: 0,
+      },
+    });
     const scan = await post("/reconcile", {
       organizationId: demoOrganizationId,
     });
@@ -452,6 +464,20 @@ describe.sequential("RAL-34 completed authority data plane", () => {
     await expect(scan.json()).resolves.toMatchObject({
       deleted: 0,
       projected: plan.operations.length,
+    });
+    await expect(
+      (
+        await post("/reconcile-plan", {
+          organizationId: demoOrganizationId,
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      counts: {
+        create: 0,
+        missing: 0,
+        unchanged: plan.operations.length,
+        update: 0,
+      },
     });
 
     const sourceResponse = await fixtureFetch(
@@ -616,6 +642,12 @@ describe.sequential("RAL-34 completed authority data plane", () => {
         );
       }),
     ).toBe(true);
+    const confirmedRoomPlan = (await (
+      await post("/reconcile-plan", {
+        organizationId: demoOrganizationId,
+        tables: ["rooms"],
+      })
+    ).json()) as { fingerprint: string };
     expect(
       (
         await post("/mutate-provider", {
@@ -625,6 +657,24 @@ describe.sequential("RAL-34 completed authority data plane", () => {
         })
       ).status,
     ).toBe(204);
+    const staleConfirmedPlan = await post("/reconcile-planned", {
+      fingerprint: confirmedRoomPlan.fingerprint,
+      organizationId: demoOrganizationId,
+    });
+    expect(staleConfirmedPlan.status).toBe(500);
+    await expect(staleConfirmedPlan.json()).resolves.toMatchObject({
+      error: "ReconciliationPlanChangedError",
+    });
+    await expect(
+      (
+        await post("/reconcile-plan", {
+          organizationId: demoOrganizationId,
+          tables: ["rooms"],
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      counts: { create: 0, missing: 0, unchanged: 2, update: 1 },
+    });
     const edited = await post("/reconcile", {
       organizationId: demoOrganizationId,
       tables: ["rooms"],
@@ -683,6 +733,35 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       table: "rooms",
     });
 
+    const staleSourceHash = await hashAirtableContent(
+      managedAirtableContent("rooms", editedRoom?.fields ?? {}),
+      1,
+    );
+    await post("/mutate-provider", {
+      fields: {
+        "Applied content hash": staleSourceHash,
+        "Source version": 1,
+      },
+      id: roomOperation.entityId,
+      table: "rooms",
+    });
+    const staleSourcePlan = await post("/reconcile-plan", {
+      organizationId: demoOrganizationId,
+      tables: ["rooms"],
+    });
+    expect(staleSourcePlan.status).toBe(500);
+    await expect(staleSourcePlan.json()).resolves.toMatchObject({
+      error: "AirtableManualEditError",
+    });
+    await post("/mutate-provider", {
+      fields: {
+        "Applied content hash": acceptedHash,
+        "Source version": acceptedVersion,
+      },
+      id: roomOperation.entityId,
+      table: "rooms",
+    });
+
     const staleId = "room_stale_demo";
     const staleFields: AirtableFields = {
       Capacity: 5,
@@ -703,6 +782,16 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       },
       table: "rooms",
     });
+    await expect(
+      (
+        await post("/reconcile-plan", {
+          organizationId: demoOrganizationId,
+          tables: ["rooms"],
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      counts: { create: 1, missing: 0, unchanged: 3, update: 0 },
+    });
     expect(
       (
         await post("/reconcile", {
@@ -712,6 +801,16 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       ).status,
     ).toBe(200);
     await post("/remove-provider", { id: staleId, table: "rooms" });
+    await expect(
+      (
+        await post("/reconcile-plan", {
+          organizationId: demoOrganizationId,
+          tables: ["rooms"],
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      counts: { create: 0, missing: 1, unchanged: 3, update: 0 },
+    });
     const deleted = await post("/reconcile", {
       organizationId: demoOrganizationId,
       tables: ["rooms"],

@@ -70,6 +70,15 @@ export interface PreparedAirtableRecord {
   sourceVersion: number;
 }
 
+export interface ReconciliationInspection {
+  disposition: "create" | "unchanged" | "update";
+  fields: AirtableFields;
+  lifecyclePatch: AirtableFields | null;
+  recordId: string;
+  sourceContentHash: string;
+  sourceVersion: number;
+}
+
 function readVersion(fields: AirtableFields): number {
   const value = fields["Source version"];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
@@ -194,7 +203,28 @@ export class AirtableAuthorityProvider {
     record: AirtableRecord,
     baseline: ReconciliationBaseline | null,
   ): Promise<PreparedAirtableRecord> {
-    let fields = record.fields;
+    const inspection = await this.inspectReconciliationRecord(
+      tableKey,
+      record,
+      baseline,
+    );
+    const fields = inspection.lifecyclePatch
+      ? await this.patchRecord(tableKey, record.id, inspection.lifecyclePatch)
+      : inspection.fields;
+    return {
+      fields,
+      recordId: record.id,
+      sourceContentHash: inspection.sourceContentHash,
+      sourceVersion: inspection.sourceVersion,
+    };
+  }
+
+  async inspectReconciliationRecord(
+    tableKey: AirtableTableKey,
+    record: AirtableRecord,
+    baseline: ReconciliationBaseline | null,
+  ): Promise<ReconciliationInspection> {
+    const fields = record.fields;
     const version = fields["Source version"];
     const storedHash = fields["Applied content hash"];
     const commandId = fields["Last command ID"];
@@ -205,24 +235,53 @@ export class AirtableAuthorityProvider {
       commandId === undefined &&
       commandHash === undefined;
     if (lifecycleEmpty) {
+      if (baseline) {
+        throw new AirtableManualEditError(
+          `Airtable ${tableKey} lifecycle metadata was removed outside the authority.`,
+        );
+      }
       const sourceVersion = 1;
       const sourceContentHash = await hashAirtableContent(
         managedAirtableContent(tableKey, fields),
         sourceVersion,
       );
-      fields = await this.patchRecord(tableKey, record.id, {
-        "Applied content hash": sourceContentHash,
-        "Source version": sourceVersion,
-      });
-      return { fields, recordId: record.id, sourceContentHash, sourceVersion };
+      return {
+        disposition: "create",
+        fields,
+        lifecyclePatch: {
+          "Applied content hash": sourceContentHash,
+          "Source version": sourceVersion,
+        },
+        recordId: record.id,
+        sourceContentHash,
+        sourceVersion,
+      };
     }
     const sourceVersion = readVersion(fields);
+    if (baseline && sourceVersion < baseline.sourceVersion) {
+      throw new AirtableManualEditError(
+        `Airtable ${tableKey} Source version is older than its projection.`,
+      );
+    }
     const sourceContentHash = await hashAirtableContent(
       managedAirtableContent(tableKey, fields),
       sourceVersion,
     );
     if (storedHash === sourceContentHash) {
-      return { fields, recordId: record.id, sourceContentHash, sourceVersion };
+      return {
+        disposition:
+          baseline === null
+            ? "create"
+            : baseline.sourceContentHash === sourceContentHash &&
+                baseline.sourceVersion === sourceVersion
+              ? "unchanged"
+              : "update",
+        fields,
+        lifecyclePatch: null,
+        recordId: record.id,
+        sourceContentHash,
+        sourceVersion,
+      };
     }
     const baselineMarkersMatch =
       baseline !== null &&
@@ -242,12 +301,13 @@ export class AirtableAuthorityProvider {
       managedAirtableContent(tableKey, fields),
       adoptedVersion,
     );
-    fields = await this.patchRecord(tableKey, record.id, {
-      "Applied content hash": adoptedHash,
-      "Source version": adoptedVersion,
-    });
     return {
+      disposition: "update",
       fields,
+      lifecyclePatch: {
+        "Applied content hash": adoptedHash,
+        "Source version": adoptedVersion,
+      },
       recordId: record.id,
       sourceContentHash: adoptedHash,
       sourceVersion: adoptedVersion,

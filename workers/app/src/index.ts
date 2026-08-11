@@ -48,6 +48,7 @@ import {
   registerPublicApiRoutes,
 } from "./public-api/routes.js";
 import { registerTaskRoutes } from "./tasks/routes.js";
+import { registerAirtableIntegrationRoutes } from "./integrations/routes.js";
 import { registerPrivacyRoutes } from "./privacy/routes.js";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
@@ -316,6 +317,7 @@ app.get("/api/v1/public/events/:slug/schedule", async (context) => {
 
 registerAuthRoutes(app);
 registerApiKeyManagementRoutes(app);
+registerAirtableIntegrationRoutes(app);
 registerOrganizerCfpFormRoutes(app);
 registerSpeakerPortalRoutes(app);
 registerSpeakerProfileRoutes(app);

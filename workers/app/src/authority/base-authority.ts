@@ -24,6 +24,7 @@ import {
 } from "./projector.js";
 import {
   AirtableReconciliationService,
+  type ReconciliationPlan,
   type ReconciliationResult,
 } from "./reconciliation.js";
 import {
@@ -62,6 +63,13 @@ import {
 } from "./types.js";
 
 type CommandState = AuthorityCommandInspection["state"];
+
+export class ReconciliationPlanChangedError extends Error {
+  constructor() {
+    super("Airtable changed after the reconciliation dry run.");
+    this.name = "ReconciliationPlanChangedError";
+  }
+}
 
 interface AuthorityCommandRow extends Record<string, SqlStorageValue> {
   attempt_count: number;
@@ -534,6 +542,46 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         ...(tables ? { tables } : {}),
       }),
     );
+  }
+
+  planReconcile(
+    organizationId: string,
+    tables?: readonly BaseAuthorityCommand["table"][],
+  ): Promise<ReconciliationPlan> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(organizationId)) {
+      throw new Error("Reconciliation requires a stable organization ID.");
+    }
+    if (
+      tables &&
+      (tables.length === 0 || new Set(tables).size !== tables.length)
+    ) {
+      throw new Error("Reconciliation table selection is invalid.");
+    }
+    return this.serializeBase(() =>
+      this.reconciliation.plan({
+        organizationId,
+        ...(tables ? { tables } : {}),
+      }),
+    );
+  }
+
+  reconcilePlanned(
+    organizationId: string,
+    expectedFingerprint: string,
+  ): Promise<ReconciliationResult> {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(organizationId) ||
+      !/^[0-9a-f]{64}$/.test(expectedFingerprint)
+    ) {
+      throw new Error("Planned reconciliation input is invalid.");
+    }
+    return this.serializeBase(async () => {
+      const current = await this.reconciliation.plan({ organizationId });
+      if (current.fingerprint !== expectedFingerprint) {
+        throw new ReconciliationPlanChangedError();
+      }
+      return this.reconcileTenant({ organizationId });
+    });
   }
 
   configureWebhook(webhookId: string, cursor = 1): Promise<void> {

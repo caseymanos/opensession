@@ -60,8 +60,10 @@ The demo should show a coherent operating system, not a checklist of disconnecte
 
 - Open `/docs/api`, create/show-once scoped key, run a seeded read curl example.
 - Show webhook delivery log/replay if green.
-- Open Airtable and point to the just-created submission/session/task records.
-- Show projection health and reconciliation rather than obscuring the dual-store design.
+- Open **Integrations & API** as an organization owner. Read the redacted base suffix, schema v10, provider activity, oldest projection watermark/lag, repair backlog, and latest reconciliation result.
+- Follow the named proposal, accepted-session, and task-assignment table paths in the panel, then open Airtable and point to those same intelligibly named tables/links without exposing participant fields on camera.
+- Run **Review reconcile** first. State that it is organization-wide and non-mutating, read the create/update/missing/unchanged counts, and apply only if the frozen-demo lease permits provider mutation and the exact confirmation is visible. Otherwise stop after dry run and say why.
+- Say explicitly: Airtable is business authority; D1 is the operational/read projection and is repaired from Airtable. The panel and deterministic fixture are not substitutes for timestamped live-provider evidence.
 
 ### 10:30–11:15 — Accelevents/bonuses
 
