@@ -44,9 +44,11 @@ interface FieldRow {
     | "file"
     | "multiselect"
     | "participant"
+    | "section"
     | "select"
     | "text"
-    | "textarea";
+    | "textarea"
+    | "url";
   help_text: string | null;
   id: string;
   label: string;
@@ -190,9 +192,11 @@ function publicFieldType(blockType: FieldRow["block_type"]): CfpRuleFieldType {
     file: "file",
     multiselect: "multi_select",
     participant: "participant",
+    section: "section",
     select: "single_select",
     text: "short_text",
     textarea: "long_text",
+    url: "url",
   };
   return types[blockType];
 }
@@ -256,7 +260,16 @@ export class D1PublicCfpPolicyReader {
   async readBySlug(
     slug: string,
     at = new Date(),
+    formVersion?: number,
   ): Promise<PublicCfpPolicy | null> {
+    if (
+      formVersion !== undefined &&
+      (!Number.isSafeInteger(formVersion) || formVersion < 1)
+    ) {
+      throw new PublicCfpConfigurationError(
+        "The requested CFP form version is invalid.",
+      );
+    }
     const eventResult = await this.#database
       .prepare(
         `SELECT event.id, event.organization_id, event.name, event.slug,
@@ -291,21 +304,30 @@ export class D1PublicCfpPolicyReader {
          FROM p_forms
          WHERE organization_id = ?1 AND event_id = ?2
            AND status IN ('published', 'closed')
+           AND (?3 IS NULL OR version = ?3)
            AND source_deleted_at IS NULL
          ORDER BY CASE status WHEN 'published' THEN 0 ELSE 1 END, version DESC, id
          LIMIT 3`,
       )
-      .bind(event.organization_id, event.id)
+      .bind(event.organization_id, event.id, formVersion ?? null)
       .all<FormRow>();
     const publishedForms = formResult.results.filter(
       (form) => form.status === "published",
     );
-    if (publishedForms.length > 1) {
+    if (
+      (formVersion === undefined && publishedForms.length > 1) ||
+      (formVersion !== undefined && formResult.results.length > 1)
+    ) {
       throw new PublicCfpConfigurationError(
-        "The event has more than one published CFP form.",
+        formVersion === undefined
+          ? "The event has more than one published CFP form."
+          : "The event has more than one CFP form for the requested version.",
       );
     }
-    const form = publishedForms[0] ?? formResult.results[0];
+    const form =
+      formVersion === undefined
+        ? (publishedForms[0] ?? formResult.results[0])
+        : formResult.results[0];
     if (!form) return null;
 
     const [fieldResult, ruleResult, trackResult, formatResult] =
@@ -525,7 +547,7 @@ export class D1PublicCfpPolicyReader {
     const acceptingSubmissions =
       Number.isFinite(now) &&
       event.status !== "closed" &&
-      form.status === "published" &&
+      (form.status === "published" || formVersion !== undefined) &&
       (opensAt === null || opensAt <= now) &&
       now < closesAt;
 
@@ -555,6 +577,7 @@ export class D1PublicCfpPolicyReader {
             validation: validationByKey.get(field.key) ?? {},
           })),
           name: form.name,
+          status: form.status,
           submissionLimit: form.submission_limit,
           version: form.version,
           welcomeContent: form.welcome_content ?? "",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlignLeft,
   ArrowDown,
@@ -28,6 +28,7 @@ import {
   Drawer,
   LiveRegion,
   SelectField,
+  StatePanel,
   StatusPill,
   SwitchField,
   TextAreaField,
@@ -41,17 +42,29 @@ import {
   visibleFieldTransitions,
   type CfpConditionalRule,
 } from "@sessionbox-killer/domain";
+import type {
+  CfpFormDiagnostic,
+  OrganizerCfpFormReadResponse,
+} from "@sessionbox-killer/contracts";
 
 import {
   cfpBlockLabels,
-  cfpBuilderFixture,
+  cfpBuilderBlocksFromForm,
+  cfpBuilderEditableForm,
   type CfpBlockType,
   type CfpBlockView,
 } from "./cfpModel";
+import {
+  CfpFormApiError,
+  publishCfpForm,
+  readCfpForm,
+  saveCfpForm,
+} from "./cfpClient";
 
-const storageKey = "opensession.cfp-builder.visual-draft";
+const storageNamespace = "opensession.cfp-builder.visual-draft";
 
 const blockTypes = new Set<CfpBlockType>([
+  "checkbox",
   "file",
   "long_text",
   "multi_select",
@@ -67,6 +80,7 @@ const palette: {
   type: CfpBlockType;
 }[] = [
   { description: "Heading and supporting copy", icon: Rows3, type: "section" },
+  { description: "Required confirmation", icon: Check, type: "checkbox" },
   { description: "One-line response", icon: Type, type: "short_text" },
   { description: "Paragraph response", icon: AlignLeft, type: "long_text" },
   { description: "Validated web address", icon: Link2, type: "url" },
@@ -79,20 +93,81 @@ const palette: {
   { description: "Private supporting file", icon: FileUp, type: "file" },
 ];
 
-function readStoredBlocks() {
+interface StoredCfpBuilderDraft {
+  blocks: CfpBlockView[];
+  formId: string;
+  publishCommandId?: string;
+  saveCommandId?: string;
+  sourceVersion: number;
+}
+
+function storageKey(eventKey: string): string {
+  return `${storageNamespace}.${eventKey}`;
+}
+
+function clearStoredDraft(eventKey: string): void {
   try {
-    const value = window.localStorage.getItem(storageKey);
-    if (!value) {
-      return cfpBuilderFixture.blocks;
-    }
+    window.localStorage.removeItem(storageKey(eventKey));
+  } catch {
+    // The authoritative form remains current when browser storage is blocked.
+  }
+}
+
+function readStoredDraft(
+  eventKey: string,
+  formId: string,
+  sourceVersion: number,
+): StoredCfpBuilderDraft | null {
+  try {
+    const value = window.localStorage.getItem(storageKey(eventKey));
+    if (!value) return null;
 
     const result: unknown = JSON.parse(value);
-    if (!Array.isArray(result) || !result.every(isStoredBlock)) {
-      return cfpBuilderFixture.blocks;
+    if (!result || typeof result !== "object") return null;
+    const draft = result as Partial<StoredCfpBuilderDraft>;
+    if (
+      draft.formId !== formId ||
+      draft.sourceVersion !== sourceVersion ||
+      !Array.isArray(draft.blocks) ||
+      !draft.blocks.every(isStoredBlock) ||
+      (draft.publishCommandId !== undefined &&
+        !/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/.test(draft.publishCommandId)) ||
+      (draft.saveCommandId !== undefined &&
+        !/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/.test(draft.saveCommandId))
+    ) {
+      return null;
     }
-    return result;
+    return {
+      blocks: draft.blocks,
+      formId,
+      ...(draft.publishCommandId
+        ? { publishCommandId: draft.publishCommandId }
+        : {}),
+      ...(draft.saveCommandId ? { saveCommandId: draft.saveCommandId } : {}),
+      sourceVersion,
+    };
   } catch {
-    return cfpBuilderFixture.blocks;
+    return null;
+  }
+}
+
+function storeDraft(
+  eventKey: string,
+  formId: string,
+  sourceVersion: number,
+  blocks: readonly CfpBlockView[],
+  commands: Pick<
+    StoredCfpBuilderDraft,
+    "publishCommandId" | "saveCommandId"
+  > = {},
+): void {
+  try {
+    window.localStorage.setItem(
+      storageKey(eventKey),
+      JSON.stringify({ blocks, formId, sourceVersion, ...commands }),
+    );
+  } catch {
+    // The authoritative save still protects the draft when storage is blocked.
   }
 }
 
@@ -134,7 +209,7 @@ function createBlock(type: CfpBlockType, index: number): CfpBlockView {
 
   return {
     help: type === "section" ? "Explain what applicants should include." : "",
-    id: `block-${type}-${Date.now()}`,
+    id: `block-${type}-${window.crypto.randomUUID()}`,
     key: `${type}_${index + 1}`,
     label,
     ...(selectable ? { options: ["Option one", "Option two"] } : {}),
@@ -216,6 +291,14 @@ function BlockPreview({
         </fieldset>
       ) : block.type === "file" ? (
         <div className="cfp-preview-upload">Choose a private file</div>
+      ) : block.type === "checkbox" ? (
+        <input
+          aria-label={block.label}
+          checked={answer === true}
+          onChange={(event) => onAnswer(event.target.checked)}
+          required={required}
+          type="checkbox"
+        />
       ) : (
         <input
           aria-label={block.label}
@@ -308,32 +391,45 @@ function CanvasBlock({
   );
 }
 
-export function CfpBuilder() {
-  const [blocks, setBlocks] = useState<CfpBlockView[]>(readStoredBlocks);
+type BuilderSaveState = "failed" | "saved" | "saving" | "unsaved";
+
+export function CfpBuilder({ eventKey }: { eventKey: string }) {
+  const [blocks, setBlocks] = useState<CfpBlockView[]>([]);
+  const [formResponse, setFormResponse] =
+    useState<OrganizerCfpFormReadResponse | null>(null);
+  const [loadState, setLoadState] = useState<
+    "error" | "loading" | "ready" | "unsupported"
+  >("loading");
   const [selectedId, setSelectedId] = useState(
     () => blocks[1]?.id ?? blocks[0]?.id ?? "",
   );
-  const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">(
-    "saved",
-  );
+  const [saveState, setSaveState] = useState<BuilderSaveState>("saved");
+  const [saveError, setSaveError] = useState("");
+  const [serverDiagnostics, setServerDiagnostics] = useState<
+    readonly CfpFormDiagnostic[]
+  >([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDevice, setPreviewDevice] = useState<"desktop" | "mobile">(
     "desktop",
   );
   const [publishOpen, setPublishOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [publishedVersion, setPublishedVersion] = useState(
-    cfpBuilderFixture.publishedVersion,
-  );
-  const [draftVersion, setDraftVersion] = useState(
-    cfpBuilderFixture.draftVersion,
-  );
+  const [publishedVersion, setPublishedVersion] = useState(0);
+  const [draftVersion, setDraftVersion] = useState(0);
   const [currentVersionPublished, setCurrentVersionPublished] = useState(false);
   const [previewAnswers, setPreviewAnswers] = useState<Record<string, unknown>>(
-    { session_format: "Talk" },
+    {},
   );
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [announcement, setAnnouncement] = useState("");
+  const latestBlocks = useRef(blocks);
+  const saveInFlight = useRef(false);
+  const publishCommand = useRef<{
+    formId: string;
+    id: string;
+    sourceVersion: number;
+  } | null>(null);
+  const saveCommand = useRef<{ fingerprint: string; id: string } | null>(null);
   const selected = blocks.find((block) => block.id === selectedId) ?? blocks[0];
   const selectedIndex = selected
     ? blocks.findIndex((block) => block.id === selected.id)
@@ -359,35 +455,155 @@ export function CfpBuilder() {
   );
 
   useEffect(() => {
-    if (saveState === "saved") {
+    latestBlocks.current = blocks;
+  }, [blocks]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void readCfpForm(window.fetch.bind(window), eventKey, controller.signal)
+      .then((response) => {
+        const authoritative = cfpBuilderBlocksFromForm(response.form);
+        const recovered = readStoredDraft(
+          eventKey,
+          response.form.id,
+          response.form.sourceVersion,
+        );
+        const next = recovered?.blocks ?? authoritative;
+        if (recovered?.saveCommandId) {
+          saveCommand.current = {
+            fingerprint: JSON.stringify(cfpBuilderEditableForm(response, next)),
+            id: recovered.saveCommandId,
+          };
+        }
+        if (recovered?.publishCommandId) {
+          publishCommand.current = {
+            formId: response.form.id,
+            id: recovered.publishCommandId,
+            sourceVersion: response.form.sourceVersion,
+          };
+        }
+        setFormResponse(response);
+        setBlocks(next);
+        latestBlocks.current = next;
+        setSelectedId(next[1]?.id ?? next[0]?.id ?? "");
+        setPublishedVersion(response.publishedVersion ?? 0);
+        setDraftVersion(response.form.version);
+        setCurrentVersionPublished(response.form.status !== "draft");
+        setServerDiagnostics(response.diagnostics);
+        setSaveState(recovered?.saveCommandId ? "unsaved" : "saved");
+        setLoadState("ready");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
+        setSaveError(
+          error instanceof CfpFormApiError
+            ? error.message
+            : "The authoritative CFP form could not be loaded.",
+        );
+        setLoadState(
+          error instanceof Error && error.message.includes("not supported")
+            ? "unsupported"
+            : "error",
+        );
+      });
+    return () => controller.abort();
+  }, [eventKey]);
+
+  useEffect(() => {
+    if (
+      loadState !== "ready" ||
+      saveState !== "unsaved" ||
+      !formResponse ||
+      saveInFlight.current
+    ) {
       return;
     }
-
-    const timer = window.setTimeout(
-      () => {
-        if (saveState === "unsaved") {
-          setSaveState("saving");
-          return;
-        }
-
-        window.localStorage.setItem(storageKey, JSON.stringify(blocks));
-        setSaveState("saved");
-      },
-      saveState === "unsaved" ? 350 : 500,
+    const fingerprint = JSON.stringify(
+      cfpBuilderEditableForm(formResponse, blocks),
     );
+    const command =
+      saveCommand.current?.fingerprint === fingerprint
+        ? saveCommand.current
+        : { fingerprint, id: window.crypto.randomUUID() };
+    saveCommand.current = command;
+    storeDraft(
+      eventKey,
+      formResponse.form.id,
+      formResponse.form.sourceVersion,
+      blocks,
+      { saveCommandId: command.id },
+    );
+    const timer = window.setTimeout(() => {
+      saveInFlight.current = true;
+      setSaveState("saving");
+      setSaveError("");
+      void saveCfpForm(window.fetch.bind(window), eventKey, {
+        commandId: command.id,
+        expectedFormId: formResponse.form.id,
+        expectedSourceVersion: formResponse.form.sourceVersion,
+        form: cfpBuilderEditableForm(formResponse, blocks),
+      })
+        .then(({ result }) => {
+          saveInFlight.current = false;
+          const currentFingerprint = JSON.stringify(
+            cfpBuilderEditableForm(result, latestBlocks.current),
+          );
+          setFormResponse(result);
+          setPublishedVersion(result.publishedVersion ?? 0);
+          setDraftVersion(result.form.version);
+          setCurrentVersionPublished(result.form.status === "published");
+          setServerDiagnostics(result.diagnostics);
+          const currentSaved = currentFingerprint === fingerprint;
+          if (currentSaved) {
+            saveCommand.current = null;
+            clearStoredDraft(eventKey);
+          } else {
+            const nextCommand = {
+              fingerprint: currentFingerprint,
+              id: window.crypto.randomUUID(),
+            };
+            saveCommand.current = nextCommand;
+            storeDraft(
+              eventKey,
+              result.form.id,
+              result.form.sourceVersion,
+              latestBlocks.current,
+              { saveCommandId: nextCommand.id },
+            );
+          }
+          setSaveState(currentSaved ? "saved" : "unsaved");
+        })
+        .catch((error: unknown) => {
+          saveInFlight.current = false;
+          setSaveError(
+            error instanceof CfpFormApiError
+              ? error.message
+              : "The draft is safe on this device but has not synced yet.",
+          );
+          if (error instanceof CfpFormApiError) {
+            setServerDiagnostics(error.diagnostics);
+          }
+          setSaveState("failed");
+        });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [blocks, eventKey, formResponse, loadState, saveState]);
 
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [blocks, saveState]);
+  useEffect(() => {
+    const retry = () =>
+      setSaveState((state) => (state === "failed" ? "unsaved" : state));
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, []);
 
   const changeSummary = useMemo(
     () => [
       `${blocks.length} blocks in this version`,
       `${blocks.reduce((count, block) => count + (block.rules?.length ?? 0), 0)} conditional rules validated`,
-      "Existing version 1 drafts keep their original field snapshot",
+      `Existing version ${publishedVersion || 1} drafts keep their original field snapshot`,
     ],
-    [blocks],
+    [blocks, publishedVersion],
   );
 
   function commitBlocks(nextBlocks: CfpBlockView[], message: string) {
@@ -437,7 +653,7 @@ export function CfpBuilder() {
     }
     const rule: CfpConditionalRule = {
       effect: "show",
-      id: `rule-${selected.id}-${Date.now()}`,
+      id: `rule-${selected.id}-${window.crypto.randomUUID()}`,
       operator: source.type === "multi_select" ? "includes" : "equals",
       sourceKey: source.key,
       value: source.options?.[0] ?? "",
@@ -524,25 +740,103 @@ export function CfpBuilder() {
     commitBlocks(next, `${block?.label ?? "Block"} deleted.`);
   }
 
-  function publish() {
-    if (ruleDiagnostics.length) {
+  async function publish() {
+    if (
+      ruleDiagnostics.length ||
+      serverDiagnostics.length ||
+      saveState !== "saved" ||
+      formResponse?.form.status !== "draft"
+    ) {
       return;
     }
-
-    window.localStorage.setItem(storageKey, JSON.stringify(blocks));
-    setPublishedVersion(draftVersion);
-    setCurrentVersionPublished(true);
-    setPublishOpen(false);
-    setSaveState("saved");
-    setToasts([
-      {
-        id: "cfp-published",
-        message: `Version ${draftVersion} is live. Existing version 1 drafts remain valid.`,
-        title: "CFP published",
-        tone: "success",
-      },
-    ]);
+    setSaveState("saving");
+    setSaveError("");
+    try {
+      const command =
+        publishCommand.current?.formId === formResponse.form.id &&
+        publishCommand.current.sourceVersion === formResponse.form.sourceVersion
+          ? publishCommand.current
+          : {
+              formId: formResponse.form.id,
+              id: window.crypto.randomUUID(),
+              sourceVersion: formResponse.form.sourceVersion,
+            };
+      publishCommand.current = command;
+      storeDraft(
+        eventKey,
+        formResponse.form.id,
+        formResponse.form.sourceVersion,
+        blocks,
+        { publishCommandId: command.id },
+      );
+      const { result } = await publishCfpForm(
+        window.fetch.bind(window),
+        eventKey,
+        {
+          commandId: command.id,
+          expectedFormId: formResponse.form.id,
+          expectedSourceVersion: formResponse.form.sourceVersion,
+        },
+      );
+      publishCommand.current = null;
+      setFormResponse(result);
+      setPublishedVersion(result.publishedVersion ?? result.form.version);
+      setDraftVersion(result.form.version);
+      setCurrentVersionPublished(true);
+      setServerDiagnostics(result.diagnostics);
+      setPublishOpen(false);
+      setSaveState("saved");
+      clearStoredDraft(eventKey);
+      setToasts([
+        {
+          id: "cfp-published",
+          message: `Version ${result.form.version} is live. Existing older drafts retain their original form snapshot.`,
+          title: "CFP published",
+          tone: "success",
+        },
+      ]);
+    } catch (error) {
+      setSaveError(
+        error instanceof CfpFormApiError
+          ? error.message
+          : "The CFP version could not be published.",
+      );
+      if (error instanceof CfpFormApiError) {
+        setServerDiagnostics(error.diagnostics);
+      }
+      setSaveState("saved");
+    }
   }
+
+  if (loadState !== "ready" || !formResponse) {
+    return (
+      <StatePanel
+        description={
+          loadState === "loading"
+            ? "Loading the current authoritative form and publication state."
+            : saveError ||
+              "This form contains a field that the visual builder cannot edit safely."
+        }
+        state={loadState === "loading" ? "loading" : "error"}
+        title={
+          loadState === "loading"
+            ? "Loading CFP builder"
+            : loadState === "unsupported"
+              ? "This form needs a supported editor"
+              : "CFP form unavailable"
+        }
+      />
+    );
+  }
+  const publicUrl = new URL(
+    formResponse.publicUrl,
+    window.location.origin,
+  ).toString();
+  const closesLabel = new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: formResponse.event.timezone,
+  }).format(new Date(formResponse.event.cfpClosesAt));
 
   return (
     <div className="cfp-builder-page">
@@ -550,9 +844,21 @@ export function CfpBuilder() {
         <div>
           <p className="overline">Collect · CFP builder</p>
           <div className="cfp-title-line">
-            <h1>{cfpBuilderFixture.formName}</h1>
-            <StatusPill tone={currentVersionPublished ? "success" : "warning"}>
-              {currentVersionPublished ? "Published" : `Draft v${draftVersion}`}
+            <h1>{formResponse.form.name}</h1>
+            <StatusPill
+              tone={
+                formResponse.form.status === "published"
+                  ? "success"
+                  : formResponse.form.status === "closed"
+                    ? "neutral"
+                    : "warning"
+              }
+            >
+              {formResponse.form.status === "published"
+                ? `Published v${draftVersion}`
+                : formResponse.form.status === "closed"
+                  ? `Closed v${draftVersion}`
+                  : `Draft v${draftVersion}`}
             </StatusPill>
           </div>
           <p>
@@ -564,10 +870,12 @@ export function CfpBuilder() {
           <span className={`cfp-save-state is-${saveState}`} role="status">
             <i aria-hidden="true" />
             {saveState === "saved"
-              ? "Saved locally"
+              ? "Saved securely"
               : saveState === "saving"
                 ? "Saving…"
-                : "Unsaved changes"}
+                : saveState === "failed"
+                  ? "Saved on this device"
+                  : "Unsaved changes"}
           </span>
           <Button variant="secondary" onClick={() => setHistoryOpen(true)}>
             <History aria-hidden="true" size={16} /> Version history
@@ -575,11 +883,21 @@ export function CfpBuilder() {
           <Button variant="secondary" onClick={() => setPreviewOpen(true)}>
             <Monitor aria-hidden="true" size={16} /> Preview
           </Button>
-          <Button onClick={() => setPublishOpen(true)}>
+          <Button
+            disabled={
+              saveState !== "saved" || formResponse.form.status !== "draft"
+            }
+            onClick={() => setPublishOpen(true)}
+          >
             <Sparkles aria-hidden="true" size={16} /> Publish changes
           </Button>
         </div>
       </header>
+      {saveError ? (
+        <p className="cfp-publish-error" role="alert">
+          {saveError} Your device copy remains available for recovery.
+        </p>
+      ) : null}
 
       <div className="cfp-builder-layout">
         <aside className="cfp-palette" aria-labelledby="palette-title">
@@ -627,11 +945,11 @@ export function CfpBuilder() {
           <div className="cfp-form-intro">
             <span>AS</span>
             <div>
-              <small>{cfpBuilderFixture.eventName}</small>
-              <h3>Share the session only you can give.</h3>
+              <small>{formResponse.event.name}</small>
+              <h3>{formResponse.form.name}</h3>
               <p>
-                We value specific ideas, useful lessons, and a point of view.
-                Drafts are private until submitted.
+                {formResponse.form.welcomeContent ||
+                  "Drafts are private until applicants submit them."}
               </p>
             </div>
           </div>
@@ -931,9 +1249,9 @@ export function CfpBuilder() {
         </div>
         <div className={`cfp-public-preview is-${previewDevice}`}>
           <div className="cfp-public-preview-header">
-            <span>AI ENGINEER SUMMIT</span>
-            <small>Applications close {cfpBuilderFixture.closesAt}</small>
-            <h2>Share the session only you can give.</h2>
+            <span>{formResponse.event.name.toLocaleUpperCase("en-US")}</span>
+            <small>Applications close {closesLabel}</small>
+            <h2>{formResponse.form.name}</h2>
             <p>
               Drafts save as you go. Nothing is submitted until your final
               review.
@@ -967,21 +1285,42 @@ export function CfpBuilder() {
               <Clock3 aria-hidden="true" size={17} />
             </span>
             <div>
-              <strong>Version {draftVersion} · Current draft</strong>
-              <small>{blocks.length} blocks · Saved in this browser</small>
+              <strong>
+                Version {draftVersion} ·{" "}
+                {formResponse.form.status === "draft"
+                  ? "Current draft"
+                  : "Current publication"}
+              </strong>
+              <small>{blocks.length} blocks · Authoritative snapshot</small>
             </div>
-            <StatusPill tone="warning">Draft</StatusPill>
+            <StatusPill
+              tone={
+                formResponse.form.status === "published"
+                  ? "success"
+                  : formResponse.form.status === "closed"
+                    ? "neutral"
+                    : "warning"
+              }
+            >
+              {formResponse.form.status === "published"
+                ? "Live"
+                : formResponse.form.status === "closed"
+                  ? "Closed"
+                  : "Draft"}
+            </StatusPill>
           </li>
-          <li>
-            <span>
-              <Check aria-hidden="true" size={17} />
-            </span>
-            <div>
-              <strong>Version {publishedVersion} · Published</strong>
-              <small>August 6 at 2:14 PM · Casey Manos</small>
-            </div>
-            <StatusPill tone="success">Live</StatusPill>
-          </li>
+          {formResponse.form.status === "draft" && publishedVersion ? (
+            <li>
+              <span>
+                <Check aria-hidden="true" size={17} />
+              </span>
+              <div>
+                <strong>Version {publishedVersion} · Published</strong>
+                <small>Immutable applicant snapshot</small>
+              </div>
+              <StatusPill tone="success">Live</StatusPill>
+            </li>
+          ) : null}
         </ol>
       </Drawer>
 
@@ -994,14 +1333,14 @@ export function CfpBuilder() {
         <div className="cfp-publish-summary">
           <div className="cfp-public-url">
             <span>Public URL</span>
-            <strong>{cfpBuilderFixture.publicUrl}</strong>
+            <strong>{publicUrl}</strong>
             <button
               aria-label="Copy public CFP URL"
               onClick={() => {
                 setToasts([
                   {
                     id: "url-copied",
-                    message: cfpBuilderFixture.publicUrl,
+                    message: publicUrl,
                     title: "URL copied",
                   },
                 ]);
@@ -1013,10 +1352,9 @@ export function CfpBuilder() {
           </div>
           <div className="cfp-publish-meta">
             <span>
-              <Clock3 aria-hidden="true" size={16} /> Closes{" "}
-              {cfpBuilderFixture.closesAt}
+              <Clock3 aria-hidden="true" size={16} /> Closes {closesLabel}
             </span>
-            <span>{cfpBuilderFixture.timezone}</span>
+            <span>{formResponse.event.timezone}</span>
           </div>
           <ul>
             {changeSummary.map((item) => (
@@ -1025,16 +1363,22 @@ export function CfpBuilder() {
               </li>
             ))}
           </ul>
-          {ruleDiagnostics.length ? (
+          {ruleDiagnostics.length || serverDiagnostics.length ? (
             <div className="cfp-publish-errors" role="alert">
               <strong>
-                Resolve {ruleDiagnostics.length} rule issue before publishing
+                Resolve {ruleDiagnostics.length + serverDiagnostics.length} form
+                issue before publishing
               </strong>
               <ul>
                 {ruleDiagnostics.map((diagnostic, index) => (
                   <li
                     key={`${diagnostic.code}-${diagnostic.ruleId ?? diagnostic.fieldKey}-${index}`}
                   >
+                    {diagnostic.message}
+                  </li>
+                ))}
+                {serverDiagnostics.map((diagnostic, index) => (
+                  <li key={`${diagnostic.path}-${diagnostic.code}-${index}`}>
                     {diagnostic.message}
                   </li>
                 ))}
@@ -1046,8 +1390,12 @@ export function CfpBuilder() {
               Keep editing
             </Button>
             <Button
-              disabled={Boolean(ruleDiagnostics.length)}
-              onClick={publish}
+              disabled={Boolean(
+                ruleDiagnostics.length ||
+                serverDiagnostics.length ||
+                saveState !== "saved",
+              )}
+              onClick={() => void publish()}
             >
               Publish version {draftVersion}
             </Button>

@@ -62,11 +62,13 @@ import {
   publicCfpDraftContent,
   publicCfpDraftForConfiguration,
   publicCfpDraftFromServer,
+  publicCfpDraftWithRuleAnswers,
   publicCfpConfigurationSupportsFlow,
   publicCfpEventFixture,
   publicCfpEventFromConfiguration,
   publicCfpRuleFields,
   publicCfpRuleFieldsFromConfiguration,
+  publicCfpRuleAnswers,
   publicCfpSteps,
   publicCfpTrackRoutes,
   resumedPublicCfpDraft,
@@ -94,7 +96,6 @@ const idempotencyStorageKey = `${storageNamespace}.idempotency`;
 const serverDraftStorageKey = `${storageNamespace}.server-draft`;
 const unsyncedDraftStorageKey = `${storageNamespace}.unsynced-draft`;
 const conflictBackupStorageKey = `${storageNamespace}.conflict-backup`;
-const cfpFormVersion = 2;
 
 interface ServerDraftMetadata {
   friendlyId: string;
@@ -208,6 +209,13 @@ function meaningfulLocalDraft(draft: PublicCfpDraft): boolean {
     draft.abstract.trim() ||
     draft.outcomes.trim() ||
     draft.workshopPrerequisites.trim() ||
+    Object.values(draft.additionalAnswers).some((answer) =>
+      Array.isArray(answer)
+        ? answer.length > 0
+        : typeof answer === "string"
+          ? Boolean(answer.trim())
+          : answer,
+    ) ||
     draft.speakers.length > 1 ||
     draft.speakers.some((speaker) => speaker.role.trim()),
   );
@@ -231,6 +239,7 @@ function apiErrorCode(payload: unknown): string | null {
 
 type StoredPublicCfpDraft = Omit<
   PublicCfpDraft,
+  | "additionalAnswers"
   | "defaultReviewerGroupId"
   | "routeKey"
   | "submissionTrack"
@@ -239,6 +248,7 @@ type StoredPublicCfpDraft = Omit<
   Partial<
     Pick<
       PublicCfpDraft,
+      | "additionalAnswers"
       | "defaultReviewerGroupId"
       | "routeKey"
       | "submissionTrack"
@@ -268,12 +278,25 @@ function isDraft(value: unknown): value is StoredPublicCfpDraft {
         "role" in speaker &&
         typeof speaker.role === "string",
     );
+  const validAdditionalAnswers =
+    candidate.additionalAnswers === undefined ||
+    (candidate.additionalAnswers !== null &&
+      typeof candidate.additionalAnswers === "object" &&
+      !Array.isArray(candidate.additionalAnswers) &&
+      Object.values(candidate.additionalAnswers).every(
+        (answer) =>
+          typeof answer === "string" ||
+          typeof answer === "boolean" ||
+          (Array.isArray(answer) &&
+            answer.every((value) => typeof value === "string")),
+      ));
   return (
     typeof candidate.abstract === "string" &&
     typeof candidate.consent === "boolean" &&
     typeof candidate.email === "string" &&
     typeof candidate.format === "string" &&
     typeof candidate.outcomes === "string" &&
+    validAdditionalAnswers &&
     validSpeakers &&
     validStep &&
     typeof candidate.title === "string" &&
@@ -284,27 +307,24 @@ function isDraft(value: unknown): value is StoredPublicCfpDraft {
 
 function normalizeDraft(draft: StoredPublicCfpDraft): PublicCfpDraft {
   const route = resolveCfpTrackRoute(publicCfpTrackRoutes, draft.track);
-  const evaluation = evaluateCfpRules(publicCfpRuleFields, {
-    abstract: draft.abstract,
-    format: draft.format,
-    outcomes: draft.outcomes,
-    title: draft.title,
-    track: draft.track,
-    workshopPrerequisites:
-      typeof draft.workshopPrerequisites === "string"
-        ? draft.workshopPrerequisites
-        : "",
-  });
-
-  return {
+  const hydrated: PublicCfpDraft = {
     ...draft,
+    additionalAnswers: draft.additionalAnswers ?? {},
     defaultReviewerGroupId: route?.defaultReviewerGroupId ?? "",
     routeKey: route?.routeKey ?? "",
     submissionTrack: route?.submissionTrack ?? "",
     workshopPrerequisites:
-      typeof evaluation.answers.workshopPrerequisites === "string"
-        ? evaluation.answers.workshopPrerequisites
+      typeof draft.workshopPrerequisites === "string"
+        ? draft.workshopPrerequisites
         : "",
+  };
+  const evaluation = evaluateCfpRules(
+    publicCfpRuleFields,
+    publicCfpRuleAnswers(hydrated),
+  );
+
+  return {
+    ...publicCfpDraftWithRuleAnswers(hydrated, evaluation.answers),
   };
 }
 
@@ -809,6 +829,23 @@ interface SubmissionProps extends StepProps {
   ruleFields: typeof publicCfpRuleFields;
 }
 
+const corePublicCfpFieldKeys = new Set([
+  "abstract",
+  "format",
+  "outcomes",
+  "title",
+  "track",
+  "workshop_prerequisites",
+]);
+
+function publicCfpRuleKey(key: string) {
+  return key === "workshop_prerequisites" ? "workshopPrerequisites" : key;
+}
+
+function publicCfpFieldId(key: string) {
+  return `proposal-${key.replaceAll("_", "-")}`;
+}
+
 function Submission({
   configuration,
   draft,
@@ -829,54 +866,63 @@ function Submission({
   const formatField = configuredField("format");
   const workshopField = configuredField("workshop_prerequisites");
   const ruleEvaluation = evaluateCfpRules(ruleFields, {
-    abstract: draft.abstract,
-    format: draft.format,
-    outcomes: draft.outcomes,
-    title: draft.title,
-    track: draft.track,
-    workshopPrerequisites: draft.workshopPrerequisites,
+    ...publicCfpRuleAnswers(draft),
   });
+  const fieldStateByKey = new Map(
+    ruleEvaluation.fields.map((field) => [field.key, field]),
+  );
   const workshopState = ruleEvaluation.fields.find(
     (field) => field.key === "workshopPrerequisites",
   );
 
-  function changeFormat(format: string) {
+  function changeAnswer(
+    key: string,
+    value: string | boolean | string[],
+    additionalAnnouncement?: string,
+  ) {
     const nextEvaluation = evaluateCfpRules(ruleFields, {
       ...ruleEvaluation.answers,
-      format,
-      workshopPrerequisites: draft.workshopPrerequisites,
+      [key]: value,
     });
-    const transition = visibleFieldTransitions(
+    const transitions = visibleFieldTransitions(
       ruleEvaluation.fields,
       nextEvaluation.fields,
-    ).find((item) => item.key === "workshopPrerequisites");
-    onChange({
-      ...draft,
-      format,
-      workshopPrerequisites:
-        typeof nextEvaluation.answers.workshopPrerequisites === "string"
-          ? nextEvaluation.answers.workshopPrerequisites
-          : "",
-    });
-    if (transition?.visible) {
-      onAnnounce("Workshop prerequisites is now visible and required.");
-    } else if (transition) {
-      onAnnounce(
-        "Workshop prerequisites is now hidden. Its saved answer was cleared.",
+    );
+    let next = publicCfpDraftWithRuleAnswers(draft, nextEvaluation.answers);
+    if (key === "track") {
+      const route = resolveCfpTrackRoute(event.tracks, next.track);
+      next = {
+        ...next,
+        defaultReviewerGroupId: route?.defaultReviewerGroupId ?? "",
+        routeKey: route?.routeKey ?? "",
+        submissionTrack: route?.submissionTrack ?? "",
+      };
+    }
+    onChange(next);
+    const messages = transitions.map((transition) => {
+      const field = ruleFields.find(
+        (candidate) => candidate.key === transition.key,
       );
+      const nextState = nextEvaluation.fields.find(
+        (candidate) => candidate.key === transition.key,
+      );
+      return `${field?.label ?? transition.key} is now ${
+        transition.visible
+          ? `visible${nextState?.required ? " and required" : ""}`
+          : "hidden. Its saved answer was cleared"
+      }.`;
+    });
+    if (additionalAnnouncement) messages.push(additionalAnnouncement);
+    if (messages.length) {
+      onAnnounce(messages.join(" "));
     }
   }
 
   function changeTrack(track: string) {
     const route = resolveCfpTrackRoute(event.tracks, track);
-    onChange({
-      ...draft,
-      defaultReviewerGroupId: route?.defaultReviewerGroupId ?? "",
-      routeKey: route?.routeKey ?? "",
-      submissionTrack: route?.submissionTrack ?? "",
+    changeAnswer(
+      "track",
       track,
-    });
-    onAnnounce(
       route
         ? `${track} routes to ${route.submissionTrack}.`
         : `${track} does not have a reviewer route.`,
@@ -966,7 +1012,7 @@ function Submission({
             error={errors["proposal-format"] ?? ""}
             id="proposal-format"
             label={formatField?.label ?? "Format"}
-            onChange={(event) => changeFormat(event.target.value)}
+            onChange={(event) => changeAnswer("format", event.target.value)}
             options={event.formats.map((format) => ({
               label: format,
               value: format,
@@ -989,16 +1035,164 @@ function Submission({
             label={workshopField?.label ?? "Workshop prerequisites"}
             maxLength={workshopField?.validation.maxLength}
             onChange={(event) =>
-              onChange({
-                ...draft,
-                workshopPrerequisites: event.target.value,
-              })
+              changeAnswer("workshopPrerequisites", event.target.value)
             }
             required={workshopState.required}
             rows={5}
             value={draft.workshopPrerequisites}
           />
         ) : null}
+        {configuration?.form.fields
+          .filter((field) => !corePublicCfpFieldKeys.has(field.key))
+          .map((field) => {
+            const key = publicCfpRuleKey(field.key);
+            const state = fieldStateByKey.get(key);
+            if (!state?.visible || field.type === "participant") return null;
+            const id = publicCfpFieldId(field.key);
+            const value = ruleEvaluation.answers[key];
+            const error = errors[id] ?? "";
+            if (field.type === "section") {
+              return (
+                <section className="public-cfp-form-section" key={field.key}>
+                  <h2>{field.label}</h2>
+                  {field.helpText ? <p>{field.helpText}</p> : null}
+                </section>
+              );
+            }
+            if (field.type === "long_text") {
+              return (
+                <TextAreaField
+                  {...(field.helpText ? { description: field.helpText } : {})}
+                  error={error}
+                  id={id}
+                  key={field.key}
+                  label={field.label}
+                  {...(field.validation.maxLength === undefined
+                    ? {}
+                    : { maxLength: field.validation.maxLength })}
+                  onChange={(event) => changeAnswer(key, event.target.value)}
+                  required={state.required}
+                  rows={5}
+                  value={typeof value === "string" ? value : ""}
+                />
+              );
+            }
+            if (field.type === "single_select") {
+              return (
+                <SelectField
+                  {...(field.helpText ? { description: field.helpText } : {})}
+                  error={error}
+                  id={id}
+                  key={field.key}
+                  label={field.label}
+                  onChange={(event) => changeAnswer(key, event.target.value)}
+                  options={[
+                    { label: "Choose one", value: "" },
+                    ...field.options.map((option) => ({
+                      label: option,
+                      value: option,
+                    })),
+                  ]}
+                  required={state.required}
+                  value={typeof value === "string" ? value : ""}
+                />
+              );
+            }
+            if (field.type === "multi_select") {
+              const selections = Array.isArray(value) ? value : [];
+              return (
+                <fieldset
+                  aria-describedby={error ? `${id}-error` : undefined}
+                  aria-invalid={Boolean(error)}
+                  className="public-cfp-choice-field"
+                  id={id}
+                  key={field.key}
+                >
+                  <legend>
+                    {field.label}
+                    {state.required ? <span aria-hidden="true"> *</span> : null}
+                  </legend>
+                  {field.helpText ? <p>{field.helpText}</p> : null}
+                  {field.options.map((option) => (
+                    <label key={option}>
+                      <input
+                        checked={selections.includes(option)}
+                        onChange={(event) =>
+                          changeAnswer(
+                            key,
+                            event.target.checked
+                              ? [...selections, option]
+                              : selections.filter(
+                                  (selection) => selection !== option,
+                                ),
+                          )
+                        }
+                        type="checkbox"
+                      />
+                      <span>{option}</span>
+                    </label>
+                  ))}
+                  {error ? (
+                    <span
+                      className="public-cfp-inline-error"
+                      id={`${id}-error`}
+                    >
+                      {error}
+                    </span>
+                  ) : null}
+                </fieldset>
+              );
+            }
+            if (field.type === "checkbox") {
+              return (
+                <label
+                  className="public-cfp-checkbox-field"
+                  htmlFor={id}
+                  key={field.key}
+                >
+                  <input
+                    aria-describedby={error ? `${id}-error` : undefined}
+                    aria-invalid={Boolean(error)}
+                    checked={value === true}
+                    id={id}
+                    onChange={(event) =>
+                      changeAnswer(key, event.target.checked)
+                    }
+                    required={state.required}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{field.label}</strong>
+                    {field.helpText ? <small>{field.helpText}</small> : null}
+                    {error ? (
+                      <small
+                        className="public-cfp-inline-error"
+                        id={`${id}-error`}
+                      >
+                        {error}
+                      </small>
+                    ) : null}
+                  </span>
+                </label>
+              );
+            }
+            return (
+              <TextField
+                {...(field.helpText ? { description: field.helpText } : {})}
+                error={error}
+                id={id}
+                key={field.key}
+                label={field.label}
+                {...(field.validation.maxLength === undefined
+                  ? {}
+                  : { maxLength: field.validation.maxLength })}
+                onChange={(event) => changeAnswer(key, event.target.value)}
+                required={state.required}
+                type={field.type === "url" ? "url" : "text"}
+                value={typeof value === "string" ? value : ""}
+              />
+            );
+          })}
       </div>
       <StepActions onBack={onBack} onContinue={onContinue} />
     </section>
@@ -1164,6 +1358,7 @@ function ReviewSection({
 interface ReviewProps extends Omit<StepProps, "onContinue"> {
   canSubmit: boolean;
   challengeRequired: boolean;
+  configuration: PublicCfpConfigurationResponse | null;
   onEdit: (step: PublicCfpStep) => void;
   onSubmit: () => void;
   onTurnstileTokenChange: (token: string | null) => void;
@@ -1176,6 +1371,7 @@ interface ReviewProps extends Omit<StepProps, "onContinue"> {
 function Review({
   canSubmit,
   challengeRequired,
+  configuration,
   draft,
   errors,
   onBack,
@@ -1255,6 +1451,39 @@ function Review({
             <p>{draft.workshopPrerequisites}</p>
           </>
         ) : null}
+        {configuration?.form.fields
+          .filter(
+            (field) =>
+              !corePublicCfpFieldKeys.has(field.key) &&
+              field.type !== "participant" &&
+              field.type !== "section" &&
+              Object.hasOwn(draft.additionalAnswers, field.key),
+          )
+          .map((field) => {
+            const answer = draft.additionalAnswers[field.key];
+            if (
+              answer === undefined ||
+              answer === false ||
+              answer === "" ||
+              (Array.isArray(answer) && answer.length === 0)
+            ) {
+              return null;
+            }
+            return (
+              <div className="public-cfp-review-answer" key={field.key}>
+                <h3>{field.label}</h3>
+                {Array.isArray(answer) ? (
+                  <ul>
+                    {answer.map((selection) => (
+                      <li key={selection}>{selection}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>{answer === true ? "Yes" : answer}</p>
+                )}
+              </div>
+            );
+          })}
       </ReviewSection>
       <ReviewSection
         disabled={submitting}
@@ -1492,14 +1721,13 @@ function validationFor(
         "Choose a track with a configured reviewer route.";
     if (!event.formats.includes(draft.format))
       errors["proposal-format"] = "Choose a format offered for this event.";
-    const evaluation = evaluateCfpRules(ruleFields, {
-      abstract: draft.abstract,
-      format: draft.format,
-      outcomes: draft.outcomes,
-      title: draft.title,
-      track: draft.track,
-      workshopPrerequisites: draft.workshopPrerequisites,
-    });
+    const evaluation = evaluateCfpRules(
+      ruleFields,
+      publicCfpRuleAnswers(draft),
+    );
+    const stateByKey = new Map(
+      evaluation.fields.map((field) => [field.key, field]),
+    );
     const workshopState = evaluation.fields.find(
       (field) => field.key === "workshopPrerequisites",
     );
@@ -1510,6 +1738,70 @@ function validationFor(
     )
       errors["proposal-workshop-prerequisites"] =
         "Add workshop prerequisites before continuing.";
+    for (const field of configuration?.form.fields ?? []) {
+      if (
+        corePublicCfpFieldKeys.has(field.key) ||
+        field.type === "participant" ||
+        field.type === "section"
+      ) {
+        continue;
+      }
+      const key = publicCfpRuleKey(field.key);
+      const state = stateByKey.get(key);
+      if (!state?.visible) continue;
+      const value = evaluation.answers[key];
+      const empty =
+        value === undefined ||
+        value === false ||
+        (typeof value === "string" && !value.trim()) ||
+        (Array.isArray(value) && value.length === 0);
+      const id = publicCfpFieldId(field.key);
+      if (state.required && empty) {
+        errors[id] = `${field.label} is required.`;
+        continue;
+      }
+      if (
+        field.type === "single_select" &&
+        typeof value === "string" &&
+        value &&
+        !field.options.includes(value)
+      ) {
+        errors[id] = `Choose an available option for ${field.label}.`;
+        continue;
+      }
+      if (
+        field.type === "multi_select" &&
+        Array.isArray(value) &&
+        value.some((selection) => !field.options.includes(selection))
+      ) {
+        errors[id] = `Choose only available options for ${field.label}.`;
+        continue;
+      }
+      if (typeof value !== "string" || empty) continue;
+      const length = value.trim().length;
+      if (
+        field.validation.minLength !== undefined &&
+        length < field.validation.minLength
+      ) {
+        errors[id] =
+          `${field.label} must contain at least ${field.validation.minLength} characters.`;
+      } else if (
+        field.validation.maxLength !== undefined &&
+        length > field.validation.maxLength
+      ) {
+        errors[id] =
+          `${field.label} must contain no more than ${field.validation.maxLength} characters.`;
+      } else if (field.type === "url") {
+        try {
+          const parsed = new URL(value);
+          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+            throw new TypeError("Unsupported URL protocol");
+          }
+        } catch {
+          errors[id] = `Enter a complete web address for ${field.label}.`;
+        }
+      }
+    }
   }
   if (step === "participants") {
     const speakers = draft.speakers.length
@@ -1579,7 +1871,10 @@ function InteractivePublicCfpFlow({
           ? "local"
           : "idle",
   );
-  const [formVersion, setFormVersion] = useState(cfpFormVersion);
+  const [formVersion, setFormVersion] = useState(1);
+  const [requestedFormVersion, setRequestedFormVersion] = useState<
+    number | null
+  >(null);
   const [configuration, setConfiguration] =
     useState<PublicCfpConfigurationResponse | null>(null);
   const [configurationState, setConfigurationState] = useState<
@@ -1618,9 +1913,6 @@ function InteractivePublicCfpFlow({
       fixtureState ? null : readUnsyncedDraft(),
     );
   const [authenticatedEmail, setAuthenticatedEmail] = useState("");
-  const [initialServerDraft] = useState<ServerDraftMetadata | null>(() =>
-    fixtureState ? null : readServerDraftMetadata(),
-  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [announcement, setAnnouncement] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1644,7 +1936,7 @@ function InteractivePublicCfpFlow({
   const saveChain = useRef<Promise<boolean>>(Promise.resolve(true));
   const saveEpoch = useRef(0);
   const finalized = useRef(false);
-  const serverDraftRef = useRef<ServerDraftMetadata | null>(initialServerDraft);
+  const serverDraftRef = useRef<ServerDraftMetadata | null>(null);
   const unsyncedLocalDraftRef = useRef<PublicCfpDraft | null>(
     unsyncedLocalDraft,
   );
@@ -1807,6 +2099,8 @@ function InteractivePublicCfpFlow({
           null;
 
         if (remote) {
+          setRequestedFormVersion(remote.form_version);
+          setFormVersion(remote.form_version);
           setHasOwnedDraft(remote.status === "draft");
           const metadata = metadataFromDraft(remote);
           serverDraftRef.current = metadata;
@@ -1887,6 +2181,7 @@ function InteractivePublicCfpFlow({
         }
 
         serverDraftRef.current = null;
+        setRequestedFormVersion(null);
         setHasOwnedDraft(false);
         removeStorage(serverDraftStorageKey);
         const candidate: PublicCfpDraft =
@@ -1947,7 +2242,11 @@ function InteractivePublicCfpFlow({
   useEffect(() => {
     if (fixtureState) return;
     const controller = new AbortController();
-    void fetch(`/api/v1/public/events/${publicCfpSlug}/cfp`, {
+    const versionQuery =
+      requestedFormVersion === null
+        ? ""
+        : `?version=${encodeURIComponent(String(requestedFormVersion))}`;
+    void fetch(`/api/v1/public/events/${publicCfpSlug}/cfp${versionQuery}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -1965,10 +2264,7 @@ function InteractivePublicCfpFlow({
         if (
           supported &&
           !serverDraftRef.current &&
-          !latestDraft.current.title.trim() &&
-          !latestDraft.current.abstract.trim() &&
-          !latestDraft.current.outcomes.trim() &&
-          !latestDraft.current.workshopPrerequisites.trim()
+          !meaningfulLocalDraft(latestDraft.current)
         ) {
           const next = publicCfpDraftForConfiguration(
             latestDraft.current,
@@ -1977,6 +2273,20 @@ function InteractivePublicCfpFlow({
           latestDraft.current = next;
           setDraft(next);
           writeStorage(draftStorageKey, JSON.stringify(next));
+        } else if (supported) {
+          const evaluation = evaluateCfpRules(
+            publicCfpRuleFieldsFromConfiguration(configuration),
+            publicCfpRuleAnswers(latestDraft.current),
+          );
+          const next = publicCfpDraftWithRuleAnswers(
+            latestDraft.current,
+            evaluation.answers,
+          );
+          if (JSON.stringify(next) !== JSON.stringify(latestDraft.current)) {
+            latestDraft.current = next;
+            setDraft(next);
+            writeStorage(draftStorageKey, JSON.stringify(next));
+          }
         }
       })
       .catch((error: unknown) => {
@@ -1986,7 +2296,7 @@ function InteractivePublicCfpFlow({
         }
       });
     return () => controller.abort();
-  }, [fixtureState]);
+  }, [fixtureState, requestedFormVersion]);
 
   useEffect(
     () => () => {
@@ -2195,6 +2505,8 @@ function InteractivePublicCfpFlow({
       draftConflict.local.email,
     );
     const metadata = metadataFromDraft(draftConflict.remote);
+    setRequestedFormVersion(metadata.formVersion);
+    setFormVersion(metadata.formVersion);
     latestDraft.current = next;
     setDraft(next);
     setServerDraftMetadata(metadata);
@@ -2217,6 +2529,13 @@ function InteractivePublicCfpFlow({
       ...(terminal ? { consent: true, step: "confirmation" as const } : {}),
     };
     const metadata = metadataFromDraft(submission);
+    setRequestedFormVersion(
+      requestedFormVersion === null &&
+        configuration?.form.version === metadata.formVersion
+        ? null
+        : metadata.formVersion,
+    );
+    setFormVersion(metadata.formVersion);
     latestDraft.current = next;
     setDraft(next);
     setServerDraftMetadata(metadata);
@@ -2238,6 +2557,15 @@ function InteractivePublicCfpFlow({
 
   function startAnotherProposal() {
     if (submitting) return;
+    if (requestedFormVersion !== null) {
+      setRequestedFormVersion(null);
+      setConfigurationReady(false);
+      setConfigurationState("loading");
+      setAnnouncement(
+        "Loading the current published form before starting another proposal.",
+      );
+      return;
+    }
     if (unsyncedLocalDraftRef.current) {
       setAnnouncement(
         "Open and sync the device proposal before starting another one.",
@@ -2279,6 +2607,7 @@ function InteractivePublicCfpFlow({
     setConfirmationId("");
     setConfirmationStatus(null);
     setServerDraftMetadata(null);
+    setRequestedFormVersion(null);
     lastSavedFingerprint.current = null;
     autosaveRequest.current = null;
     submissionIdentity.current = null;
@@ -2310,6 +2639,7 @@ function InteractivePublicCfpFlow({
     setDraft(next);
     writeStorage(draftStorageKey, JSON.stringify(next));
     setServerDraftMetadata(null);
+    setRequestedFormVersion(null);
     lastSavedFingerprint.current = null;
     finalized.current = false;
     setDraftChoices([]);
@@ -2958,6 +3288,7 @@ function InteractivePublicCfpFlow({
       <Review
         canSubmit={configuration?.acceptingSubmissions !== false}
         challengeRequired={!fixtureState}
+        configuration={configuration}
         draft={draft}
         errors={errors}
         onBack={() => moveTo("participants")}

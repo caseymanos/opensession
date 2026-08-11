@@ -1,3 +1,10 @@
+import type {
+  PublicCfpConfigurationResponse,
+  PublicCfpDraftContent,
+  PublicCfpOwnedDraft,
+} from "@sessionbox-killer/contracts";
+import type { CfpRuleField, CfpTrackRoute } from "@sessionbox-killer/domain";
+
 export type PublicCfpStep =
   | "welcome"
   | "account"
@@ -16,7 +23,10 @@ export interface PublicCfpSpeakerDraft {
   role: string;
 }
 
+export type PublicCfpAnswerValue = string | boolean | string[];
+
 export interface PublicCfpDraft {
+  additionalAnswers: Record<string, PublicCfpAnswerValue>;
   abstract: string;
   consent: boolean;
   defaultReviewerGroupId: string;
@@ -59,6 +69,31 @@ const uiFieldKeyByApiKey: Readonly<Record<string, string>> = {
 
 function uiFieldKey(key: string): string {
   return uiFieldKeyByApiKey[key] ?? key;
+}
+
+const coreUiFieldKeys = new Set([
+  "abstract",
+  "format",
+  "outcomes",
+  "title",
+  "track",
+  "workshopPrerequisites",
+]);
+
+function defaultAnswer(
+  field: PublicCfpConfigurationResponse["form"]["fields"][number],
+): PublicCfpAnswerValue | undefined {
+  if (field.type === "checkbox") return false;
+  if (field.type === "multi_select") return [];
+  if (field.type === "single_select") return "";
+  if (
+    field.type === "long_text" ||
+    field.type === "short_text" ||
+    field.type === "url"
+  ) {
+    return "";
+  }
+  return undefined;
 }
 
 function zonedDateParts(value: string, timezone: string) {
@@ -157,21 +192,23 @@ export function publicCfpRuleFieldsFromConfiguration(
 export function publicCfpConfigurationSupportsFlow(
   configuration: PublicCfpConfigurationResponse,
 ): boolean {
-  const expectedTypes = new Map([
+  const requiredTypes = new Map([
     ["abstract", "long_text"],
     ["format", "single_select"],
     ["outcomes", "long_text"],
     ["title", "short_text"],
     ["track", "single_select"],
-    ["workshop_prerequisites", "long_text"],
   ]);
-  if (configuration.form.fields.length !== expectedTypes.size) return false;
+  const fieldByKey = new Map(
+    configuration.form.fields.map((field) => [field.key, field]),
+  );
   if (
-    configuration.form.fields.some(
-      (field) =>
-        expectedTypes.get(field.key) !== field.type ||
-        field.required !== (field.key !== "workshop_prerequisites"),
-    )
+    [...requiredTypes].some(
+      ([key, type]) =>
+        fieldByKey.get(key)?.type !== type || !fieldByKey.get(key)?.required,
+    ) ||
+    fieldByKey.has("workshopPrerequisites") ||
+    configuration.form.fields.some((field) => field.type === "file")
   ) {
     return false;
   }
@@ -181,29 +218,7 @@ export function publicCfpConfigurationSupportsFlow(
   const formatField = configuration.form.fields.find(
     (field) => field.key === "format",
   );
-  const unrelatedRules = configuration.form.fields.some(
-    (field) => field.key !== "workshop_prerequisites" && field.rules.length > 0,
-  );
-  const workshopField = configuration.form.fields.find(
-    (field) => field.key === "workshop_prerequisites",
-  );
-  const workshopRules = workshopField?.rules ?? [];
-  const supportedWorkshopRules =
-    workshopRules.length === 0 ||
-    (workshopRules.length === 2 &&
-      new Set(workshopRules.map((rule) => rule.effect)).size === 2 &&
-      workshopRules.every(
-        (rule) =>
-          (rule.effect === "show" || rule.effect === "require") &&
-          rule.operator === "equals" &&
-          rule.sourceKey === "format" &&
-          typeof rule.value === "string" &&
-          configuration.formats.includes(rule.value),
-      ) &&
-      workshopRules[0]?.value === workshopRules[1]?.value);
   return (
-    !unrelatedRules &&
-    supportedWorkshopRules &&
     JSON.stringify(trackField?.options) ===
       JSON.stringify(configuration.tracks.map((track) => track.selection)) &&
     JSON.stringify(formatField?.options) ===
@@ -216,8 +231,18 @@ export function publicCfpDraftForConfiguration(
   configuration: PublicCfpConfigurationResponse,
 ): PublicCfpDraft {
   const track = configuration.tracks[0]?.selection ?? "";
+  const additionalAnswers = Object.fromEntries(
+    configuration.form.fields.flatMap((field) => {
+      const key = uiFieldKey(field.key);
+      const value = defaultAnswer(field);
+      return coreUiFieldKeys.has(key) || value === undefined
+        ? []
+        : [[key, value] as const];
+    }),
+  );
   return {
     ...draft,
+    additionalAnswers,
     defaultReviewerGroupId: "",
     format: configuration.formats[0] ?? "",
     routeKey: track,
@@ -342,6 +367,7 @@ export const publicCfpRuleFields: CfpRuleField[] = [
 ];
 
 export const emptyPublicCfpDraft: PublicCfpDraft = {
+  additionalAnswers: {},
   abstract: "",
   consent: false,
   defaultReviewerGroupId: "group-ai-engineering",
@@ -359,6 +385,7 @@ export const emptyPublicCfpDraft: PublicCfpDraft = {
 };
 
 export const resumedPublicCfpDraft: PublicCfpDraft = {
+  additionalAnswers: {},
   abstract:
     "Agent systems fail in production for reasons that rarely appear in benchmarks. This session turns incident patterns into practical architecture and observability techniques.",
   consent: false,
@@ -406,6 +433,7 @@ export function publicCfpDraftContent(
 ): PublicCfpDraftContent {
   return {
     answers: {
+      ...draft.additionalAnswers,
       abstract: draft.abstract,
       format: draft.format,
       outcomes: draft.outcomes,
@@ -417,23 +445,91 @@ export function publicCfpDraftContent(
   };
 }
 
+export function publicCfpRuleAnswers(
+  draft: PublicCfpDraft,
+): Record<string, PublicCfpAnswerValue> {
+  return {
+    ...draft.additionalAnswers,
+    abstract: draft.abstract,
+    format: draft.format,
+    outcomes: draft.outcomes,
+    title: draft.title,
+    track: draft.track,
+    workshopPrerequisites: draft.workshopPrerequisites,
+  };
+}
+
+export function publicCfpRuleAnswersForConfiguration(
+  draft: PublicCfpDraft,
+  configuration: PublicCfpConfigurationResponse,
+): Record<string, PublicCfpAnswerValue> {
+  const configuredKeys = new Set(
+    configuration.form.fields.map((field) => uiFieldKey(field.key)),
+  );
+  return Object.fromEntries(
+    Object.entries(publicCfpRuleAnswers(draft)).filter(([key]) =>
+      configuredKeys.has(key),
+    ),
+  );
+}
+
+export function publicCfpDraftWithRuleAnswers(
+  draft: PublicCfpDraft,
+  answers: Readonly<Record<string, unknown>>,
+): PublicCfpDraft {
+  const text = (key: string) =>
+    typeof answers[key] === "string" ? answers[key] : "";
+  const additionalAnswers = Object.fromEntries(
+    Object.entries(answers).filter(
+      (entry): entry is [string, PublicCfpAnswerValue] =>
+        !coreUiFieldKeys.has(entry[0]) &&
+        (typeof entry[1] === "string" ||
+          typeof entry[1] === "boolean" ||
+          (Array.isArray(entry[1]) &&
+            entry[1].every((value) => typeof value === "string"))),
+    ),
+  );
+  return {
+    ...draft,
+    additionalAnswers,
+    abstract: text("abstract"),
+    format: text("format"),
+    outcomes: text("outcomes"),
+    title: text("title"),
+    track: text("track"),
+    workshopPrerequisites: text("workshopPrerequisites"),
+  };
+}
+
 export function publicCfpDraftFromServer(
   draft: PublicCfpOwnedDraft,
   email: string,
 ): PublicCfpDraft {
   const track = answerText(draft.content.answers, "track");
-  const route = resolveCfpTrackRoute(publicCfpTrackRoutes, track);
+  const coreApiFieldKeys = new Set([
+    "abstract",
+    "format",
+    "outcomes",
+    "title",
+    "track",
+    "workshop_prerequisites",
+  ]);
   return {
+    additionalAnswers: Object.fromEntries(
+      Object.entries(draft.content.answers).filter(
+        ([key]) => !coreApiFieldKeys.has(key),
+      ),
+    ),
     abstract: answerText(draft.content.answers, "abstract"),
     consent: false,
-    defaultReviewerGroupId: route?.defaultReviewerGroupId ?? "",
+    defaultReviewerGroupId: "",
     email,
     format: answerText(draft.content.answers, "format"),
     outcomes: answerText(draft.content.answers, "outcomes"),
-    routeKey: route?.routeKey ?? "",
+    routeKey: track,
     speakers: draft.content.participants,
     step: "submission",
-    submissionTrack: route?.submissionTrack ?? track,
+    submissionTrack: track,
     title: answerText(draft.content.answers, "title"),
     track,
     verified: true,
@@ -443,13 +539,3 @@ export function publicCfpDraftFromServer(
     ),
   };
 }
-import type {
-  PublicCfpConfigurationResponse,
-  PublicCfpDraftContent,
-  PublicCfpOwnedDraft,
-} from "@sessionbox-killer/contracts";
-import {
-  resolveCfpTrackRoute,
-  type CfpRuleField,
-  type CfpTrackRoute,
-} from "@sessionbox-killer/domain";

@@ -1,4 +1,11 @@
+import type {
+  OrganizerCfpForm,
+  OrganizerCfpFormReadResponse,
+} from "@sessionbox-killer/contracts";
+import type { CfpConditionalRule } from "@sessionbox-killer/domain";
+
 export type CfpBlockType =
+  | "checkbox"
   | "section"
   | "short_text"
   | "long_text"
@@ -35,97 +42,8 @@ export interface CfpBuilderView {
   timezone: string;
 }
 
-export const cfpBuilderFixture: CfpBuilderView = {
-  blocks: [
-    {
-      help: "Set expectations before applicants begin.",
-      id: "block-introduction",
-      key: "proposal_details",
-      label: "Proposal details",
-      required: false,
-      type: "section",
-      visibility: "always",
-    },
-    {
-      help: "Make it concise and specific. You can refine this later.",
-      id: "block-title",
-      key: "session_title",
-      label: "Session title",
-      maxLength: 100,
-      minLength: 8,
-      required: true,
-      type: "short_text",
-      visibility: "always",
-    },
-    {
-      help: "What will attendees learn, and why does it matter now?",
-      id: "block-abstract",
-      key: "session_abstract",
-      label: "Session abstract",
-      maxLength: 1200,
-      minLength: 120,
-      required: true,
-      type: "long_text",
-      visibility: "always",
-    },
-    {
-      help: "Choose the format that best supports this material.",
-      id: "block-format",
-      key: "session_format",
-      label: "Session format",
-      options: ["Talk", "Workshop", "Panel"],
-      required: true,
-      type: "single_select",
-      visibility: "always",
-    },
-    {
-      help: "List software, accounts, or experience attendees should bring.",
-      id: "block-prerequisites",
-      key: "workshop_prerequisites",
-      label: "Workshop prerequisites",
-      maxLength: 600,
-      minLength: 20,
-      required: false,
-      rules: [
-        {
-          effect: "show",
-          id: "rule-prerequisites-show",
-          operator: "equals",
-          sourceKey: "session_format",
-          value: "Workshop",
-        },
-        {
-          effect: "require",
-          id: "rule-prerequisites-require",
-          operator: "equals",
-          sourceKey: "session_format",
-          value: "Workshop",
-        },
-      ],
-      type: "long_text",
-      visibility: "conditional",
-    },
-    {
-      help: "Share a representative talk, article, or project.",
-      id: "block-reference",
-      key: "supporting_url",
-      label: "Supporting link",
-      required: false,
-      type: "url",
-      visibility: "always",
-    },
-  ],
-  closesAt: "August 12 at 11:59 PM",
-  draftVersion: 2,
-  eventName: "AI Engineer Summit",
-  formName: "Call for proposals",
-  publicUrl: "opensession.dev/e/ai-engineer-summit/cfp",
-  publishedVersion: 1,
-  status: "draft",
-  timezone: "America/Los_Angeles",
-};
-
 export const cfpBlockLabels: Record<CfpBlockType, string> = {
+  checkbox: "Confirmation checkbox",
   file: "File upload",
   long_text: "Long answer",
   multi_select: "Multiple choice",
@@ -134,4 +52,74 @@ export const cfpBlockLabels: Record<CfpBlockType, string> = {
   single_select: "Single choice",
   url: "URL",
 };
-import type { CfpConditionalRule } from "@sessionbox-killer/domain";
+
+const builderBlockTypes = new Set<CfpBlockType>([
+  "checkbox",
+  "file",
+  "long_text",
+  "multi_select",
+  "section",
+  "short_text",
+  "single_select",
+  "url",
+]);
+
+export function cfpBuilderBlocksFromForm(
+  form: OrganizerCfpForm,
+): CfpBlockView[] {
+  return form.fields.map((field) => {
+    if (!builderBlockTypes.has(field.type as CfpBlockType)) {
+      throw new Error(
+        `The ${field.type} field is not supported by this builder.`,
+      );
+    }
+    return {
+      help: field.helpText,
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      ...(field.validation.maxLength === undefined
+        ? {}
+        : { maxLength: field.validation.maxLength }),
+      ...(field.validation.minLength === undefined
+        ? {}
+        : { minLength: field.validation.minLength }),
+      ...(field.options.length ? { options: [...field.options] } : {}),
+      required: field.required,
+      ...(field.rules.length ? { rules: [...field.rules] } : {}),
+      type: field.type as CfpBlockType,
+      visibility: field.rules.length ? "conditional" : "always",
+    };
+  });
+}
+
+export function cfpBuilderEditableForm(
+  response: OrganizerCfpFormReadResponse,
+  blocks: readonly CfpBlockView[],
+) {
+  return {
+    editAfterClose: response.form.editAfterClose,
+    fields: blocks.map((block, index) => ({
+      helpText: block.help,
+      id: block.id,
+      key: block.key,
+      label: block.label,
+      options: block.options ?? [],
+      order: index + 1,
+      required: block.type === "section" ? false : block.required,
+      rules: block.rules ?? [],
+      type: block.type,
+      validation: {
+        ...(block.maxLength === undefined
+          ? {}
+          : { maxLength: block.maxLength }),
+        ...(block.minLength === undefined
+          ? {}
+          : { minLength: block.minLength }),
+      },
+    })),
+    name: response.form.name,
+    submissionLimit: response.form.submissionLimit,
+    welcomeContent: response.form.welcomeContent,
+  };
+}

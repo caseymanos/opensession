@@ -279,6 +279,8 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
         "checkbox",
         "file",
         "participant",
+        "section",
+        "url",
       ]),
       text("Label"),
       longText("Help"),

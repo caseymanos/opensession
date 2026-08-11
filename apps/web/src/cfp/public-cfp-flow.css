@@ -536,6 +536,84 @@
   color: var(--cfp-green-dark);
 }
 
+.public-cfp-form-section {
+  padding: 22px 0 2px;
+  border-top: 1px solid var(--cfp-line);
+}
+
+.public-cfp-form-section h2,
+.public-cfp-form-section p {
+  margin: 0;
+}
+
+.public-cfp-form-section h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 26px;
+  font-weight: 500;
+}
+
+.public-cfp-form-section p {
+  margin-top: 7px;
+  color: var(--cfp-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.public-cfp-choice-field {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid #cbd2ca;
+  border-radius: 12px;
+}
+
+.public-cfp-choice-field legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.public-cfp-choice-field > p {
+  margin: 0 0 3px;
+  color: var(--cfp-muted);
+  font-size: 12px;
+}
+
+.public-cfp-choice-field > label,
+.public-cfp-checkbox-field {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: var(--cfp-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.public-cfp-choice-field input,
+.public-cfp-checkbox-field input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--cfp-green);
+}
+
+.public-cfp-checkbox-field {
+  padding: 17px 18px;
+  border: 1px solid #cbd2ca;
+  border-radius: 12px;
+}
+
+.public-cfp-checkbox-field > span {
+  display: grid;
+  gap: 3px;
+}
+
+.public-cfp-checkbox-field small {
+  color: var(--cfp-muted);
+  font-size: 12px;
+}
+
 .public-cfp-span-two {
   grid-column: 1 / -1;
 }

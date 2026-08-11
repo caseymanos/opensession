@@ -190,6 +190,34 @@ function submissionResponse(
   });
 }
 
+function requestedCfpFormVersion(
+  context: Context<AppContext>,
+): number | null | undefined {
+  const value = context.req.query("version");
+  if (value === undefined) return undefined;
+  if (!/^[1-9][0-9]*$/.test(value)) return null;
+  const version = Number(value);
+  return Number.isSafeInteger(version) ? version : null;
+}
+
+async function policyForOwnedDraft(
+  reader: D1PublicCfpPolicyReader,
+  slug: string,
+  current: PublicCfpPolicy,
+  formVersion: number,
+): Promise<PublicCfpPolicy> {
+  if (current.formVersion === formVersion) return current;
+  const historical = await reader.readBySlug(slug, new Date(), formVersion);
+  if (!historical) {
+    throw new CfpSubmissionError(
+      "form_version_conflict",
+      "The original CFP form snapshot is no longer available.",
+      409,
+    );
+  }
+  return historical;
+}
+
 async function ensureSubmissionReceipt(
   context: Context<AppContext>,
   policy: PublicCfpPolicy,
@@ -323,11 +351,24 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         404,
       );
     }
+    const formVersion = requestedCfpFormVersion(context);
+    if (formVersion === null) {
+      return context.json(
+        {
+          error: {
+            code: "invalid_form_version",
+            message: "The requested CFP form version is invalid.",
+          },
+          request_id: context.get("requestId"),
+        },
+        400,
+      );
+    }
 
     try {
       const policy = await new D1PublicCfpPolicyReader(
         context.env.DB,
-      ).readBySlug(slug);
+      ).readBySlug(slug, new Date(), formVersion);
       if (!policy) {
         return context.json(
           {
@@ -652,10 +693,9 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
           session,
           context.req.header("X-CSRF-Token") ?? null,
         );
-        const policy = await new D1PublicCfpPolicyReader(
-          context.env.DB,
-        ).readBySlug(slug);
-        if (!policy) {
+        const policyReader = new D1PublicCfpPolicyReader(context.env.DB);
+        const currentPolicy = await policyReader.readBySlug(slug);
+        if (!currentPolicy) {
           return context.json(
             {
               error: {
@@ -669,7 +709,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         }
         const owned = await new D1OwnedCfpDraftReader(
           context.env.DB,
-        ).readForWrite(policy, session, submissionId);
+        ).readForWrite(currentPolicy, session, submissionId);
         if (!owned) {
           return context.json(
             {
@@ -682,6 +722,12 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
             404,
           );
         }
+        const policy = await policyForOwnedDraft(
+          policyReader,
+          slug,
+          currentPolicy,
+          owned.draft.form_version,
+        );
         const coordinates = await cfpSubmissionUpdateCoordinates(
           policy,
           session,

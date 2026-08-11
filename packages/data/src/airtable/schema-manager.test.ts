@@ -151,7 +151,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v5", "schema v1");
+      table.description = table.description?.replace("schema v6", "schema v1");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -159,7 +159,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v5",
+                  "schema v6",
                   "schema v1",
                 ),
               }
@@ -247,7 +247,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v5", "schema v2");
+      table.description = table.description?.replace("schema v6", "schema v2");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -255,7 +255,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v5",
+                  "schema v6",
                   "schema v2",
                 ),
               }
@@ -321,7 +321,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v5", "schema v3");
+      table.description = table.description?.replace("schema v6", "schema v3");
       table.fields = table.fields
         .filter(
           (field) => table.name !== "Events" || !newFields.has(field.name),
@@ -331,7 +331,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v5",
+                  "schema v6",
                   "schema v3",
                 ),
               }
@@ -637,8 +637,8 @@ describe("Airtable schema", () => {
     if (!events || !venue) throw new Error("Fixture is incomplete");
     events.name = "Conference Events";
     venue.name = "Location";
-    events.description = events.description?.replace("schema v5", "schema v6");
-    venue.description = venue.description?.replace("schema v5", "schema v6");
+    events.description = events.description?.replace("schema v6", "schema v7");
+    venue.description = venue.description?.replace("schema v6", "schema v7");
 
     let writes = 0;
     const manager = new AirtableSchemaManager({

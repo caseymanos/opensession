@@ -9,6 +9,7 @@ import type { AppContext } from "./app-context";
 import { authoritySchemaVersion } from "./authority/base-authority.js";
 import { registerAuthRoutes } from "./auth/routes";
 import { getBaseAuthority } from "./authority/binding.js";
+import { registerOrganizerCfpFormRoutes } from "./cfp/organizer-routes.js";
 import { registerPublicCfpRoutes } from "./cfp/routes";
 import { registerCampaignRoutes } from "./campaigns/routes.js";
 import { inspectFeatureFlags, isFeatureEnabled } from "./features";
@@ -301,6 +302,7 @@ app.get("/api/v1/public/events/:slug/schedule", async (context) => {
 });
 
 registerAuthRoutes(app);
+registerOrganizerCfpFormRoutes(app);
 registerSpeakerPortalRoutes(app);
 registerSpeakerProfileRoutes(app);
 registerTaskRoutes(app);
