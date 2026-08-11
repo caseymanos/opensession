@@ -30,7 +30,14 @@ const text = (
   field: string,
   column: string,
   required = false,
-): ProjectionFieldSpec => ({ column, field, kind: "text", required });
+  defaultValue?: string,
+): ProjectionFieldSpec => ({
+  column,
+  field,
+  kind: "text",
+  required,
+  ...(defaultValue === undefined ? {} : { defaultValue }),
+});
 const number = (
   field: string,
   column: string,
@@ -173,7 +180,16 @@ export const projectionSpecs: Readonly<
       text("Company", "company"),
       text("Bio", "bio"),
       text("Headshot object key", "headshot_object_key"),
+      text("Headshot alt text", "headshot_alt_text"),
       json("Social JSON", "social_json", "object", "{}"),
+      text(
+        "Profile publication state",
+        "profile_publication_state",
+        false,
+        "draft",
+      ),
+      text("Profile approved at", "profile_approved_at"),
+      text("Profile approved by", "profile_approved_by"),
     ],
     scope: "organization",
     scopeLinks: [link("Organization", "organization_id", "organizations")],

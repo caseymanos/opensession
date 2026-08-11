@@ -85,6 +85,7 @@ function readMigrationStatements(): string[] {
     "0015_demo_bootstrap_authorization.sql",
     "0016_organizer_submissions.sql",
     "0018_schedule_publication.sql",
+    "0019_speaker_profiles.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
