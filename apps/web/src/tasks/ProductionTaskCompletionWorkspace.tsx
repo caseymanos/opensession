@@ -496,6 +496,37 @@ function ProductionSpeakerTaskReady({
       setMessage(`Response recorded · audit ${receipt.audit.id}`);
       if (inputRef.current) inputRef.current.value = "";
     } catch (error) {
+      if (
+        response.kind !== "file" &&
+        error instanceof TaskCompletionApiError &&
+        error.code === "task_version_conflict"
+      ) {
+        pendingCommand.current = null;
+        try {
+          const refreshed = await port.detail(eventKey, assignmentId);
+          const refreshedResponse = refreshed.current_response;
+          setDetail(refreshed);
+          setAcknowledged(
+            refreshedResponse?.kind === "ack" ||
+              refreshedResponse?.kind === "link" ||
+              refreshedResponse?.kind === "file",
+          );
+          setFormValues(responseValues(refreshedResponse));
+          setPhase("idle");
+          setMessage(
+            "This task changed while you were editing. The latest response is loaded; review it before submitting again.",
+          );
+          return;
+        } catch (refreshError) {
+          setPhase("failed");
+          setMessage(
+            refreshError instanceof Error
+              ? refreshError.message
+              : "The task changed, but the latest response could not be loaded.",
+          );
+          return;
+        }
+      }
       setPhase(checkingSynchronization ? "syncing" : "failed");
       setMessage(
         error instanceof Error
@@ -1187,6 +1218,32 @@ export function ProductionOrganizerTaskReviewWorkspace({
         `${decision === "approve" ? "Approved" : "Changes requested"} · audit ${receipt.audit.id} · readiness ${receipt.detail.readiness.ratio.complete}/${receipt.detail.readiness.ratio.total}`,
       );
     } catch (cause) {
+      if (
+        cause instanceof TaskCompletionApiError &&
+        cause.code === "task_version_conflict"
+      ) {
+        pendingCommand.current = null;
+        setSyncPending(false);
+        try {
+          const refreshed = await port.detail(eventKey, assignmentId);
+          setDetail(refreshed);
+          setDialogOpen(false);
+          setReason("");
+          setMessage("");
+          setError(
+            "This task changed during review. The latest response is loaded; review it before recording a new decision.",
+          );
+          return;
+        } catch (refreshError) {
+          setDialogOpen(false);
+          setError(
+            refreshError instanceof Error
+              ? refreshError.message
+              : "The task changed, but the latest response could not be loaded.",
+          );
+          return;
+        }
+      }
       setError(
         cause instanceof TaskCompletionApiError
           ? cause.message

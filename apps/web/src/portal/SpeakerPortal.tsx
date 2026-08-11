@@ -96,16 +96,21 @@ function TaskRow({
   const action = fixtureRoute
     ? task.id === "final-slides"
       ? {
-          label: "Review submission",
+          label: complete ? "View submission" : "Review submission",
           path: "/fixtures/portal-task/default",
         }
       : {
-          label: task.id === "headshot" ? "Upload headshot" : "Review profile",
+          label: complete
+            ? "View submission"
+            : task.id === "headshot"
+              ? "Upload headshot"
+              : "Review profile",
           path: "/fixtures/portal/profile",
         }
     : {
-        label:
-          task.assignmentState === "submitted"
+        label: complete
+          ? "View submission"
+          : task.assignmentState === "submitted"
             ? "Review submission"
             : task.assignmentState === "rejected"
               ? "Respond to changes"
@@ -124,7 +129,7 @@ function TaskRow({
         <p>{task.description}</p>
       </div>
       <span className="portal-task-due">{task.dueLabel}</span>
-      {!complete && action && fixtureRoute ? (
+      {action && fixtureRoute ? (
         <button
           onClick={() => {
             window.location.href = action.path;
@@ -134,7 +139,7 @@ function TaskRow({
           {action.label}
           <ArrowRight aria-hidden="true" size={15} />
         </button>
-      ) : !complete && action ? (
+      ) : action ? (
         <a className="portal-task-action" href={action.path}>
           {action.label}
           <ArrowRight aria-hidden="true" size={15} />

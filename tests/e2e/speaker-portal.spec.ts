@@ -46,6 +46,25 @@ test("speaker portal makes readiness, tasks, and sessions immediately clear", as
   expect(results.violations).toEqual([]);
 });
 
+test("completed task cards keep their authoritative submission discoverable", async ({
+  page,
+}) => {
+  await page.goto(portalPath);
+
+  await expect(
+    page.getByRole("link", { name: "View submission" }),
+  ).toHaveAttribute(
+    "href",
+    "/portal/ai-engineer-summit/tasks/assignment_agreement",
+  );
+  const completedCard = page.locator(".portal-task", {
+    hasText: "Sign the speaker agreement",
+  });
+  await expect(completedCard.locator(".portal-task-due")).toHaveText(
+    "Complete",
+  );
+});
+
 test("invitation recovery keeps event and invited-email context", async ({
   page,
 }) => {
