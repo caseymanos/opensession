@@ -1,0 +1,138 @@
+name: Provider live readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Read-only provider contract to validate
+        required: true
+        type: choice
+        options:
+          - accelevents
+          - airtable
+          - resend
+      confirm_read_only:
+        description: Authorize read-only requests; no provider mutation or email send
+        required: true
+        default: false
+        type: boolean
+      accelevents_auth_header:
+        description: Header verified for the disposable Accelevents event
+        required: true
+        default: Key
+        type: choice
+        options:
+          - Key
+          - Authorization
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-live-readiness-${{ inputs.provider }}
+  cancel-in-progress: false
+
+jobs:
+  acknowledge:
+    name: Require read-only acknowledgement
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require read-only acknowledgement
+        env:
+          CONFIRMED: ${{ inputs.confirm_read_only }}
+        run: test "$CONFIRMED" = true
+
+  accelevents:
+    name: Validate Accelevents read-only contract
+    if: ${{ inputs.provider == 'accelevents' }}
+    needs: acknowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: provider-live-readonly
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run selected read-only contract
+        run: >-
+          pnpm exec vitest run
+          packages/integrations/src/provider-live.test.ts
+          --reporter=verbose
+        env:
+          LIVE_PROVIDER: accelevents
+          ACCELEVENTS_API_KEY: ${{ secrets.ACCELEVENTS_API_KEY }}
+          ACCELEVENTS_AUTH_HEADER: ${{ inputs.accelevents_auth_header }}
+          ACCELEVENTS_EVENT_ID: ${{ secrets.ACCELEVENTS_EVENT_ID }}
+          ACCELEVENTS_EVENT_URL: ${{ secrets.ACCELEVENTS_EVENT_URL }}
+
+  airtable:
+    name: Validate Airtable read-only contract
+    if: ${{ inputs.provider == 'airtable' }}
+    needs: acknowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: provider-live-readonly
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run Airtable read-only contract
+        run: >-
+          pnpm exec vitest run
+          packages/integrations/src/provider-live.test.ts
+          --reporter=verbose
+        env:
+          LIVE_PROVIDER: airtable
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+
+  resend:
+    name: Validate Resend read-only contract
+    if: ${{ inputs.provider == 'resend' }}
+    needs: acknowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: provider-live-readonly
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run Resend read-only contract
+        run: >-
+          pnpm exec vitest run
+          packages/integrations/src/provider-live.test.ts
+          --reporter=verbose
+        env:
+          LIVE_PROVIDER: resend
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}

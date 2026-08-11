@@ -1,0 +1,17 @@
+{
+  "recordsTotal": 3,
+  "recordsFiltered": 3,
+  "data": [
+    {
+      "sessionId": 3103,
+      "title": "Contract closeout",
+      "startTime": "2026/09/14 11:00",
+      "endTime": "2026/09/14 11:30",
+      "description": "A redacted provider contract fixture.",
+      "location": "Room B",
+      "format": "WORKSHOP",
+      "status": "DRAFT"
+    }
+  ],
+  "error": null
+}

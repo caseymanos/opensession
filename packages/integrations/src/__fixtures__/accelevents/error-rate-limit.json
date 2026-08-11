@@ -1,0 +1,4 @@
+{
+  "code": "rate_limit_exceeded",
+  "message": "Request limit reached. Retry later."
+}

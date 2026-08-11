@@ -1,0 +1,13 @@
+{
+  "recordsTotal": 1,
+  "recordsFiltered": 1,
+  "data": [
+    {
+      "speakerId": 4501,
+      "firstName": "Ada",
+      "lastName": "Example",
+      "email": "ada@example.invalid"
+    }
+  ],
+  "error": null
+}
