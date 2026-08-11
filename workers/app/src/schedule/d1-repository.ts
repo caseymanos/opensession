@@ -77,7 +77,7 @@ function previousCommittedSnapshot(value: string): ScheduleSnapshot | null {
     parsed === null ||
     Array.isArray(parsed) ||
     !("version" in parsed) ||
-    (parsed.version !== 1 && parsed.version !== 2) ||
+    (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) ||
     !("previousSnapshot" in parsed)
   ) {
     return null;

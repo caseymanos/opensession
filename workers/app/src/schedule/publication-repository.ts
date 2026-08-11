@@ -442,7 +442,14 @@ export class D1SchedulePublicationRepository {
       .bind(
         input.command.eventId,
         input.command.commandId,
-        JSON.stringify(result),
+        JSON.stringify({
+          actorId: this.#actorId,
+          command: input.command,
+          previousSnapshot: input.previousSnapshot,
+          requestId: this.#requestId,
+          result,
+          version: 3,
+        }),
         now,
       );
   }

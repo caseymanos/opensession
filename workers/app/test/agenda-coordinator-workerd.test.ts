@@ -858,11 +858,44 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     await environment.DB.prepare(
       "DROP TRIGGER fail_publication_finalization",
     ).run();
+    await waitFor(async () => {
+      const receipt = await environment.DB.prepare(
+        `SELECT state FROM schedule_command_receipts
+         WHERE event_id = ? AND command_id = ?`,
+      )
+        .bind(demoEventId, publishCommand.commandId)
+        .first<{ state: string }>();
+      return receipt?.state === "complete";
+    });
     const repaired = await execute(publishCommand);
     if (!repaired.ok) throw new Error(JSON.stringify(repaired.error));
+    expect(repaired.result.replayed).toBe(true);
     expect(repaired.result.snapshot.event.publicationVersion).toBe(
       preview.nextPublicationVersion,
     );
+    const repairedAudit = await environment.DB.prepare(
+      `SELECT actor_id, request_id FROM audit_events
+       WHERE organization_id = ? AND command_id = ?
+         AND action = 'schedule.publication.committed'`,
+    )
+      .bind(demoOrganizationId, publishCommand.commandId)
+      .first<{ actor_id: string; request_id: string }>();
+    expect(repairedAudit).toEqual({
+      actor_id: "usr_demo_owner",
+      request_id: `req_${publishCommand.commandId}`,
+    });
+    const completedReceipt = await environment.DB.prepare(
+      `SELECT result_json FROM schedule_command_receipts
+       WHERE event_id = ? AND command_id = ? AND state = 'complete'`,
+    )
+      .bind(demoEventId, publishCommand.commandId)
+      .first<{ result_json: string }>();
+    expect(JSON.parse(completedReceipt?.result_json ?? "{}")).toMatchObject({
+      actorId: "usr_demo_owner",
+      command: { commandId: publishCommand.commandId },
+      requestId: `req_${publishCommand.commandId}`,
+      version: 3,
+    });
     const publicAfterRepair = await new D1PublicScheduleProjectionReader(
       environment.DB,
     ).readBySlug(published.event.slug);

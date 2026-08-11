@@ -83,8 +83,10 @@ interface CommandReceiptRow {
 }
 
 interface StoredReceipt {
+  actorId: string | null;
   command: ScheduleCommand | null;
   previousSnapshot: ScheduleSnapshot | null;
+  requestId: string | null;
   result: ScheduleCommandResult;
 }
 
@@ -148,14 +150,38 @@ function parseStoredReceipt(value: unknown): StoredReceipt {
     typeof value === "object" &&
     !Array.isArray(value) &&
     "version" in value &&
+    value.version === 3 &&
+    "actorId" in value &&
+    typeof value.actorId === "string" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "command" in value &&
+    "previousSnapshot" in value &&
+    "result" in value
+  ) {
+    return {
+      actorId: value.actorId,
+      command: scheduleCommandSchema.parse(value.command),
+      previousSnapshot: scheduleSnapshotSchema.parse(value.previousSnapshot),
+      requestId: value.requestId,
+      result: scheduleCommandResultSchema.parse(value.result),
+    };
+  }
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "version" in value &&
     value.version === 2 &&
     "command" in value &&
     "previousSnapshot" in value &&
     "result" in value
   ) {
     return {
+      actorId: null,
       command: scheduleCommandSchema.parse(value.command),
       previousSnapshot: scheduleSnapshotSchema.parse(value.previousSnapshot),
+      requestId: null,
       result: scheduleCommandResultSchema.parse(value.result),
     };
   }
@@ -168,17 +194,25 @@ function parseStoredReceipt(value: unknown): StoredReceipt {
     "result" in value
   ) {
     return {
+      actorId: null,
       command: null,
       previousSnapshot:
         "previousSnapshot" in value
           ? scheduleSnapshotSchema.parse(value.previousSnapshot)
           : null,
+      requestId: null,
       result: scheduleCommandResultSchema.parse(value.result),
     };
   }
   const current = scheduleCommandResultSchema.safeParse(value);
   if (current.success) {
-    return { command: null, previousSnapshot: null, result: current.data };
+    return {
+      actorId: null,
+      command: null,
+      previousSnapshot: null,
+      requestId: null,
+      result: current.data,
+    };
   }
   if (
     value !== null &&
@@ -189,8 +223,10 @@ function parseStoredReceipt(value: unknown): StoredReceipt {
   ) {
     const snapshot = scheduleSnapshotSchema.parse(value.snapshot);
     return {
+      actorId: null,
       command: null,
       previousSnapshot: null,
+      requestId: null,
       result: scheduleCommandResultSchema.parse({
         ...value,
         analysis: evaluateScheduleConflicts(snapshot),
@@ -199,8 +235,10 @@ function parseStoredReceipt(value: unknown): StoredReceipt {
     };
   }
   return {
+    actorId: null,
     command: null,
     previousSnapshot: null,
+    requestId: null,
     result: scheduleCommandResultSchema.parse(value),
   };
 }
@@ -211,7 +249,6 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
   readonly #database: D1Database;
   readonly #onCommitted: ((result: ScheduleCommandResult) => void) | undefined;
   readonly #projection: D1ScheduleProjectionRepository;
-  readonly #publication: D1SchedulePublicationRepository;
   readonly #requestId: string;
 
   constructor(options: ScheduleServiceOptions) {
@@ -220,11 +257,6 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     this.#database = options.database;
     this.#onCommitted = options.onCommitted;
     this.#projection = new D1ScheduleProjectionRepository(options.database);
-    this.#publication = new D1SchedulePublicationRepository({
-      actorId: options.actorId,
-      database: options.database,
-      requestId: options.requestId,
-    });
     this.#requestId = options.requestId;
   }
 
@@ -272,10 +304,10 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       persistence,
     );
     if (command.type === "publish_schedule") {
-      await this.#publication.ensureLegacyBaseline(
-        persistence.event.organization_id,
-        snapshot,
-      );
+      await this.#publication(
+        this.#actorId,
+        this.#requestId,
+      ).ensureLegacyBaseline(persistence.event.organization_id, snapshot);
     }
     const now = new Date().toISOString();
     await this.#database
@@ -291,10 +323,12 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         commandHash,
         JSON.stringify(operations),
         JSON.stringify({
+          actorId: this.#actorId,
           command,
           previousSnapshot: snapshot,
+          requestId: this.#requestId,
           result,
-          version: 2,
+          version: 3,
         }),
         now,
       )
@@ -304,7 +338,13 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       command.eventId,
       command.commandId,
       operations,
-      { command, previousSnapshot: snapshot, result },
+      {
+        actorId: this.#actorId,
+        command,
+        previousSnapshot: snapshot,
+        requestId: this.#requestId,
+        result,
+      },
       false,
       persistence.event.organization_id,
     );
@@ -384,7 +424,10 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     }
     try {
       if (stored.command && stored.previousSnapshot) {
-        await this.#publication.commit({
+        await this.#publication(
+          stored.actorId ?? this.#actorId,
+          stored.requestId ?? this.#requestId,
+        ).commit({
           command: stored.command,
           organizationId,
           previousSnapshot: stored.previousSnapshot,
@@ -412,6 +455,17 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     this.#onCommitted?.(committed);
     await this.#authority.recoverPending();
     return committed;
+  }
+
+  #publication(
+    actorId: string,
+    requestId: string,
+  ): D1SchedulePublicationRepository {
+    return new D1SchedulePublicationRepository({
+      actorId,
+      database: this.#database,
+      requestId,
+    });
   }
 
   async #executeOperation(
