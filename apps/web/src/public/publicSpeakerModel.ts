@@ -1,39 +1,15 @@
 import {
-  publicScheduleProjectionSchema,
-  type PublicScheduleProjection,
-  type PublicSessionView,
+  publicSpeakerProjectionSchema,
+  type PublicSpeakerProfile,
+  type PublicSpeakerProjection as ContractPublicSpeakerProjection,
 } from "@sessionbox-killer/contracts";
 
 import { publicScheduleProjectionFixture } from "./publicScheduleModel";
 import { publicSpeakerSlug } from "./publicSpeakerRoutes";
 
-export interface PublishedSpeakerLinkView {
-  label: "Bluesky" | "LinkedIn" | "Website";
-  url: string;
-}
-
-export interface PublishedSpeakerProfileView {
-  bio?: string;
-  company: string;
-  headshot?: {
-    alt: string;
-    url: string;
-  };
-  links: PublishedSpeakerLinkView[];
-  name: string;
-  pronouns?: string;
-  sessionIds: string[];
-  slug: string;
-  title: string;
-}
-
-export interface PublicSpeakerProjection {
-  event: PublicScheduleProjection["event"];
-  generatedAt: string;
-  sessions: PublicSessionView[];
-  speakers: PublishedSpeakerProfileView[];
-  version: number;
-}
+export type PublishedSpeakerLinkView = PublicSpeakerProfile["links"][number];
+export type PublishedSpeakerProfileView = PublicSpeakerProfile;
+export type PublicSpeakerProjection = ContractPublicSpeakerProjection;
 
 const speakers: PublishedSpeakerProfileView[] = [
   {
@@ -50,7 +26,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "Relay",
     headshot: {
       alt: "Illustrated portrait of Mina Okafor",
-      url: "/speakers/mina-okafor.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/mina-okafor/headshot?v=fixture-1",
     },
     links: [
       { label: "Website", url: "https://mina.example.com" },
@@ -67,7 +43,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "SignalBench",
     headshot: {
       alt: "Illustrated portrait of Sam Rivera",
-      url: "/speakers/sam-rivera.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/sam-rivera/headshot?v=fixture-1",
     },
     links: [
       { label: "Website", url: "https://sam.example.com" },
@@ -84,7 +60,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "Threadline",
     headshot: {
       alt: "Illustrated portrait of Alex Chen",
-      url: "/speakers/alex-chen.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/alex-chen/headshot?v=fixture-1",
     },
     links: [
       { label: "LinkedIn", url: "https://www.linkedin.com/in/alex-chen" },
@@ -100,7 +76,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "Verity Labs",
     headshot: {
       alt: "Illustrated portrait of Priya Nair",
-      url: "/speakers/priya-nair.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/priya-nair/headshot?v=fixture-1",
     },
     links: [{ label: "Website", url: "https://priya.example.com" }],
     name: "Priya Nair",
@@ -114,7 +90,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "Glyph",
     headshot: {
       alt: "Illustrated portrait of Ren Ito",
-      url: "/speakers/ren-ito.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/ren-ito/headshot?v=fixture-1",
     },
     links: [{ label: "Website", url: "https://ren.example.com" }],
     name: "Ren Ito",
@@ -137,7 +113,7 @@ const speakers: PublishedSpeakerProfileView[] = [
     company: "Circuit House",
     headshot: {
       alt: "Illustrated portrait of Elena Vasquez",
-      url: "/speakers/elena-vasquez.svg",
+      url: "/api/v1/public/events/ai-engineer-summit/speakers/elena-vasquez/headshot?v=fixture-1",
     },
     links: [{ label: "Website", url: "https://elena.example.com" }],
     name: "Elena Vasquez",
@@ -192,140 +168,35 @@ export function sessionsForPublishedSpeaker(
     .sort((left, right) => left.startAt.localeCompare(right.startAt));
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]) {
-  const allowedKeys = new Set(allowed);
-  return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isSafePublicAssetPath(value: string) {
-  return (
-    value.startsWith("/") && !value.startsWith("//") && !value.includes("\\")
-  );
-}
-
-function isSafePublicLink(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
-function isPublishedSpeaker(
+export function parsePublicSpeakerProjection(
   value: unknown,
-): value is PublishedSpeakerProfileView {
-  if (!isRecord(value)) return false;
-  if (
-    !hasOnlyKeys(value, [
-      "bio",
-      "company",
-      "headshot",
-      "links",
-      "name",
-      "pronouns",
-      "sessionIds",
-      "slug",
-      "title",
-    ]) ||
-    typeof value.company !== "string" ||
-    typeof value.name !== "string" ||
-    typeof value.slug !== "string" ||
-    typeof value.title !== "string" ||
-    (value.bio !== undefined && typeof value.bio !== "string") ||
-    (value.pronouns !== undefined && typeof value.pronouns !== "string") ||
-    !Array.isArray(value.sessionIds) ||
-    !value.sessionIds.every((id) => typeof id === "string") ||
-    !Array.isArray(value.links)
-  ) {
-    return false;
-  }
-  if (value.slug !== publicSpeakerSlug(value.name)) return false;
-  if (
-    value.headshot !== undefined &&
-    (!isRecord(value.headshot) ||
-      !hasOnlyKeys(value.headshot, ["alt", "url"]) ||
-      typeof value.headshot.alt !== "string" ||
-      !value.headshot.alt.trim() ||
-      typeof value.headshot.url !== "string" ||
-      !isSafePublicAssetPath(value.headshot.url))
-  ) {
-    return false;
-  }
-  return value.links.every(
-    (link) =>
-      isRecord(link) &&
-      hasOnlyKeys(link, ["label", "url"]) &&
-      (link.label === "Bluesky" ||
-        link.label === "LinkedIn" ||
-        link.label === "Website") &&
-      typeof link.url === "string" &&
-      isSafePublicLink(link.url),
-  );
-}
-
-export function isPublicSpeakerProjection(
-  value: unknown,
-): value is PublicSpeakerProjection {
-  if (!isRecord(value)) return false;
-  const schedule = publicScheduleProjectionSchema.safeParse({
-    event: value.event,
-    generatedAt: value.generatedAt,
-    sessions: value.sessions,
-    version: value.version,
-  });
-  if (
-    !hasOnlyKeys(value, [
-      "event",
-      "generatedAt",
-      "sessions",
-      "speakers",
-      "version",
-    ]) ||
-    !isRecord(value.event) ||
-    !hasOnlyKeys(value.event, [
-      "dates",
-      "location",
-      "name",
-      "slug",
-      "summary",
-      "timezone",
-    ]) ||
-    typeof value.event.slug !== "string" ||
-    typeof value.event.name !== "string" ||
-    typeof value.event.dates !== "string" ||
-    typeof value.event.location !== "string" ||
-    typeof value.event.summary !== "string" ||
-    typeof value.event.timezone !== "string" ||
-    typeof value.generatedAt !== "string" ||
-    typeof value.version !== "number" ||
-    !Array.isArray(value.sessions) ||
-    !Array.isArray(value.speakers) ||
-    !value.speakers.every(isPublishedSpeaker) ||
-    !schedule.success
-  ) {
-    return false;
-  }
+): PublicSpeakerProjection | null {
+  const projection = publicSpeakerProjectionSchema.safeParse(value);
+  if (!projection.success) return null;
+  const parsed = projection.data;
   const sessionById = new Map(
-    schedule.data.sessions.map((session) => [session.id, session]),
+    parsed.sessions.map((session) => [session.id, session]),
   );
   const profileByName = new Map(
-    value.speakers.map((speaker) => [speaker.name, speaker]),
+    parsed.speakers.map((speaker) => [speaker.name, speaker]),
   );
-  return (
-    schedule.data.sessions.every(
+  const names = new Set(parsed.speakers.map((speaker) => speaker.name));
+  const slugs = new Set(parsed.speakers.map((speaker) => speaker.slug));
+  const valid =
+    names.size === parsed.speakers.length &&
+    slugs.size === parsed.speakers.length &&
+    parsed.speakers.every(
+      (speaker) => speaker.slug === publicSpeakerSlug(speaker.name),
+    ) &&
+    parsed.sessions.every(
       (session) =>
         session.publicationStatus === "published" &&
-        session.publicationVersion === value.version &&
+        session.publicationVersion === parsed.version &&
         session.speakers.every((speaker) =>
           profileByName.get(speaker.name)?.sessionIds.includes(session.id),
         ),
     ) &&
-    value.speakers.every((speaker) =>
+    parsed.speakers.every((speaker) =>
       speaker.sessionIds.every((sessionId) =>
         sessionById
           .get(sessionId)
@@ -333,6 +204,6 @@ export function isPublicSpeakerProjection(
             (sessionSpeaker) => sessionSpeaker.name === speaker.name,
           ),
       ),
-    )
-  );
+    );
+  return valid ? parsed : null;
 }

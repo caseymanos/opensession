@@ -296,7 +296,7 @@ export const speakerProfileFixture: SpeakerProfileView = {
   displayName: "Mina Okafor",
   headshotAlt: "Mina Okafor smiling against a warm coral background",
   headshotFileName: "mina-okafor-headshot.jpg",
-  headshotUrl: "",
+  headshotUrl: "/speakers/mina-okafor.svg",
   linkedinUrl: "https://www.linkedin.com/in/mina-okafor",
   pronouns: "she/her",
   title: "VP, AI Reliability",

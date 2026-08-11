@@ -18,7 +18,7 @@ import {
 } from "@sessionbox-killer/ui";
 
 import {
-  isPublicSpeakerProjection,
+  parsePublicSpeakerProjection,
   publicSpeakerProjectionFixture,
   sessionsForPublishedSpeaker,
   type PublishedSpeakerProfileView,
@@ -457,15 +457,13 @@ export function PublicSpeakers({
         if (!response.ok)
           throw new Error(`Speaker request failed: ${response.status}`);
         const payload: unknown = await response.json();
-        if (
-          !isPublicSpeakerProjection(payload) ||
-          payload.event.slug !== route.eventSlug
-        ) {
+        const projection = parsePublicSpeakerProjection(payload);
+        if (!projection || projection.event.slug !== route.eventSlug) {
           throw new Error(
             "Speaker response did not match the published view contract.",
           );
         }
-        setLoadState({ projection: payload, status: "ready" });
+        setLoadState({ projection, status: "ready" });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError")
           return;

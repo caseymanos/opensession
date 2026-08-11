@@ -1,9 +1,18 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 
 import { publicSpeakerProjectionFixture } from "../../apps/web/src/public/publicSpeakerModel";
 
 const speakerPath = "/e/ai-engineer-summit/speakers";
+const fixtureHeadshotSlugs = new Set([
+  "alex-chen",
+  "elena-vasquez",
+  "mina-okafor",
+  "priya-nair",
+  "ren-ito",
+  "sam-rivera",
+]);
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/public/events/*/speakers", async (route) => {
@@ -26,11 +35,42 @@ test.beforeEach(async ({ page }) => {
       status: 200,
     });
   });
+  await page.route(
+    "**/api/v1/public/events/*/speakers/*/headshot*",
+    async (route) => {
+      const parts = new URL(route.request().url()).pathname.split("/");
+      const speakerSlug = parts.at(-2) ?? "";
+      if (!fixtureHeadshotSlugs.has(speakerSlug)) {
+        await route.fulfill({ status: 404 });
+        return;
+      }
+      await route.fulfill({
+        contentType: "image/svg+xml",
+        headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+        path: fileURLToPath(
+          new URL(
+            `../../apps/web/public/speakers/${speakerSlug}.svg`,
+            import.meta.url,
+          ),
+        ),
+        status: 200,
+      });
+    },
+  );
 });
 
 test("published gallery searches approved speaker cards with URL state", async ({
   page,
 }) => {
+  const headshotResponses: { contentType: string; status: number }[] = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname.endsWith("/headshot")) {
+      headshotResponses.push({
+        contentType: response.headers()["content-type"] ?? "",
+        status: response.status(),
+      });
+    }
+  });
   await page.goto(speakerPath);
 
   await expect(
@@ -44,6 +84,30 @@ test("published gallery searches approved speaker cards with URL state", async (
   await expect(
     page.getByAltText("Illustrated portrait of Mina Okafor"),
   ).toBeVisible();
+  const fixtureHeadshots = page.locator(".speaker-gallery-card img");
+  await expect(fixtureHeadshots).toHaveCount(fixtureHeadshotSlugs.size);
+  await expect
+    .poll(() => headshotResponses.length)
+    .toBe(fixtureHeadshotSlugs.size);
+  expect(headshotResponses).toEqual(
+    Array.from({ length: fixtureHeadshotSlugs.size }, () => ({
+      contentType: "image/svg+xml",
+      status: 200,
+    })),
+  );
+  const imageDimensions = await fixtureHeadshots.evaluateAll((images) =>
+    images.map((image) => ({
+      complete: (image as HTMLImageElement).complete,
+      naturalHeight: (image as HTMLImageElement).naturalHeight,
+      naturalWidth: (image as HTMLImageElement).naturalWidth,
+    })),
+  );
+  expect(
+    imageDimensions.every(
+      (image) =>
+        image.complete && image.naturalWidth > 0 && image.naturalHeight > 0,
+    ),
+  ).toBe(true);
 
   await page.getByLabel("Search speakers").fill("SignalBench");
   await expect(page).toHaveURL(/q=SignalBench/);

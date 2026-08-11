@@ -33,6 +33,7 @@ import {
   type SpeakerPortalView,
 } from "./portalModel";
 import { SpeakerProfileWorkspace } from "./SpeakerProfileWorkspace";
+import { ProductionSpeakerProfileWorkspace } from "./ProductionSpeakerProfileWorkspace";
 import {
   SpeakerTaskWorkspace,
   type TaskFixtureState,
@@ -166,12 +167,19 @@ function PortalHeader({
   openTaskCount: number;
   signingOut?: boolean | undefined;
 }) {
+  const activeLinkRef = useRef<HTMLAnchorElement>(null);
   const homePath = fixtureRoute
     ? "/fixtures/portal/active"
     : `/portal/${encodeURIComponent(eventSlug)}`;
   const profilePath = fixtureRoute
     ? "/fixtures/portal/profile"
-    : `${homePath}#portal-profile`;
+    : `${homePath}/profile`;
+  useEffect(() => {
+    activeLinkRef.current?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeSection]);
   return (
     <header className="portal-topbar">
       <PortalBrand href={homePath} />
@@ -179,12 +187,14 @@ function PortalHeader({
         <a
           aria-current={activeSection === "home" ? "page" : undefined}
           href={homePath}
+          ref={activeSection === "home" ? activeLinkRef : null}
         >
           <Home aria-hidden="true" size={16} /> Home
         </a>
         <a
           aria-current={activeSection === "tasks" ? "page" : undefined}
           href={`${homePath}#portal-tasks`}
+          ref={activeSection === "tasks" ? activeLinkRef : null}
         >
           <CheckCircle2 aria-hidden="true" size={16} /> Tasks{" "}
           <span>{openTaskCount}</span>
@@ -192,14 +202,13 @@ function PortalHeader({
         <a href={`${homePath}#portal-sessions`}>
           <Mic2 aria-hidden="true" size={16} /> Sessions
         </a>
-        {fixtureRoute ? (
-          <a
-            aria-current={activeSection === "profile" ? "page" : undefined}
-            href={profilePath}
-          >
-            <UserRound aria-hidden="true" size={16} /> Profile
-          </a>
-        ) : null}
+        <a
+          aria-current={activeSection === "profile" ? "page" : undefined}
+          href={profilePath}
+          ref={activeSection === "profile" ? activeLinkRef : null}
+        >
+          <UserRound aria-hidden="true" size={16} /> Profile
+        </a>
       </nav>
       <div className="portal-profile-chip">
         <span>{initials(displayName)}</span>
@@ -584,10 +593,9 @@ export function SpeakerPortal({
     (task) => task.required && task.assignmentState === "submitted",
   );
   const optionalTasks = portal.tasks.filter((task) => !task.required);
-  const profileActive =
-    fixtureRoute &&
-    (fixtureView === "profile" ||
-      window.location.pathname.endsWith("/profile"));
+  const profileActive = fixtureRoute
+    ? fixtureView === "profile" || window.location.pathname.endsWith("/profile")
+    : /^\/portal\/[^/]+\/profile\/?$/.test(window.location.pathname);
   const taskActive =
     (fixtureRoute &&
       (fixtureView === "task" ||
@@ -607,9 +615,18 @@ export function SpeakerPortal({
           displayName={authenticatedDisplayName}
           eventSlug={eventSlug}
           fixtureRoute={fixtureRoute}
+          onSignOut={fixtureRoute ? undefined : signOut}
           openTaskCount={openTasks.length}
+          signingOut={signOutState === "signing-out"}
         />
-        <SpeakerProfileWorkspace />
+        {fixtureRoute ? (
+          <SpeakerProfileWorkspace />
+        ) : (
+          <ProductionSpeakerProfileWorkspace
+            eventName={portal.eventName}
+            eventSlug={eventSlug}
+          />
+        )}
       </div>
     );
   }
