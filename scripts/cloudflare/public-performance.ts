@@ -253,6 +253,7 @@ async function measureRequest(
 ): Promise<InternalMeasurement> {
   const requestHeaders = new Headers(headers);
   requestHeaders.set("Accept", "application/json");
+  requestHeaders.set("Accept-Encoding", "identity");
   const startedAt = performance.now();
   const response = await fetchImplementation(url, {
     headers: requestHeaders,

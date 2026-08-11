@@ -17,6 +17,7 @@ function createCacheFetch({ changeEtag = false } = {}) {
   let request = 0;
   return async (_input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
+    expect(headers.get("accept-encoding")).toBe("identity");
     if (headers.has("if-none-match")) {
       return new Response(null, {
         headers: { "CF-Cache-Status": "HIT", ETag: entityTag },
