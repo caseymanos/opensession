@@ -467,7 +467,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     });
     await waitFor(() => messages.length === 1);
     expect(await providerMutationCount()).toBe(beforeMutations + 3);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     expect(scheduleCommittedEventSchema.parse(messages[0])).toMatchObject({
       commandId: command.commandId,
       eventId: demoEventId,
@@ -561,7 +561,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     await waitFor(() => messages.length === 1);
 
     expect(await providerMutationCount()).toBe(beforeMutations + 2);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     expect(scheduleCommittedEventSchema.parse(messages[0])).toMatchObject({
       commandId: command.commandId,
       scheduleVersion: snapshot.event.version + 1,
@@ -569,7 +569,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     const replay = await execute(command);
     expect(replay).toMatchObject({ ok: true, result: { replayed: true } });
     expect(await providerMutationCount()).toBe(beforeMutations + 2);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     socket.close(1000, "Fixture complete");
   }, 60_000);
 
@@ -875,16 +875,71 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
       `UPDATE schedule_publications SET published_at = published_at
        WHERE organization_id = ? AND event_id = ? AND publication_version = ?`,
     )
-      .bind(
-        demoOrganizationId,
-        demoEventId,
-        preview.nextPublicationVersion,
-      )
+      .bind(demoOrganizationId, demoEventId, preview.nextPublicationVersion)
       .run()
       .then(
         () => false,
         () => true,
       );
     expect(immutable).toBe(true);
+  }, 60_000);
+
+  it("serializes a concurrent publication and move to exactly one winner", async () => {
+    const coordinator = environment.AGENDA_COORDINATOR.getByName(demoEventId);
+    const preview = await coordinator.previewPublication(demoEventId);
+    expect(preview.canPublish).toBe(true);
+    const snapshot = await new D1ScheduleProjectionRepository(
+      environment.DB,
+    ).read(demoEventId);
+    const session = snapshot?.sessions.find(
+      (candidate) => candidate.state === "published" && candidate.slot,
+    );
+    if (!snapshot || !session?.slot) {
+      throw new Error("Fixture has no published session to race.");
+    }
+    const publication = {
+      commandId: "cmd_concurrent_publication",
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      ...(preview.softWarnings.length > 0
+        ? {
+            softWarningOverride: {
+              reason: "Organizer reviewed every named publication warning",
+              warningKeys: preview.softWarnings.map(({ key }) => key),
+            },
+          }
+        : {}),
+      type: "publish_schedule" as const,
+    };
+    const move = {
+      commandId: "cmd_concurrent_public_move",
+      durationMinutes: session.durationMinutes,
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      roomId: session.slot.roomId,
+      sessionId: session.id,
+      startAt: session.slot.startAt,
+      type: "reschedule_session" as const,
+    };
+
+    const responses = await Promise.all([execute(publication), execute(move)]);
+    expect(responses.filter((response) => response.ok)).toHaveLength(1);
+    expect(responses.filter((response) => !response.ok)).toHaveLength(1);
+    expect(responses.find((response) => !response.ok)).toMatchObject({
+      error: {
+        actualVersion: preview.scheduleVersion + 1,
+        code: "schedule_version_conflict",
+        expectedVersion: preview.scheduleVersion,
+      },
+      ok: false,
+    });
+    const receipts = await environment.DB.prepare(
+      `SELECT command_id, state FROM schedule_command_receipts
+       WHERE event_id = ? AND command_id IN (?, ?) ORDER BY command_id`,
+    )
+      .bind(demoEventId, publication.commandId, move.commandId)
+      .all<{ command_id: string; state: string }>();
+    expect(receipts.results).toHaveLength(1);
+    expect(receipts.results[0]?.state).toBe("complete");
   }, 60_000);
 });

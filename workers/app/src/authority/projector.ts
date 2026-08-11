@@ -95,9 +95,7 @@ const updatedAtTables = new Set<AirtableTableKey>([
 export function shouldInvalidatePublicSchedule(
   command: Pick<BaseAuthorityCommand, "operation" | "table">,
 ): boolean {
-  return (
-    !command.operation.startsWith("schedule.") || command.table === "events"
-  );
+  return !command.operation.startsWith("schedule.");
 }
 
 function isoTimestamp(milliseconds = Date.now()): string {

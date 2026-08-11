@@ -46,7 +46,7 @@ describe("public schedule cache contract", () => {
         operation: "schedule.place_session.events",
         table: "events",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldInvalidatePublicSchedule({
         operation: "rooms.update",
