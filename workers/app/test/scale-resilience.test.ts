@@ -426,24 +426,26 @@ describe("RAL-80 production-like scale and budget acceptance", () => {
           track: "all",
         }),
     };
-    const latencies = Object.fromEntries(
-      await Promise.all(
-        Object.entries(operations).map(async ([name, operation]) => [
-          name,
-          percentile(await samples(operation), 0.95),
-        ]),
-      ),
-    );
-    expect(
-      Math.max(
-        latencies.apiSessions,
-        latencies.apiSpeakers,
-        latencies.apiSubmissions,
-        latencies.apiTasks,
-        latencies.organizer,
-      ),
-    ).toBeLessThanOrEqual(commonReadBudgetMilliseconds);
-    expect(latencies.readiness).toBeLessThanOrEqual(
+    const latencyEntries: [string, number][] = [];
+    for (const [name, operation] of Object.entries(operations)) {
+      latencyEntries.push([name, percentile(await samples(operation), 0.95)]);
+    }
+    const latencies = Object.fromEntries(latencyEntries) as Record<
+      keyof typeof operations,
+      number
+    >;
+    for (const name of [
+      "apiSessions",
+      "apiSpeakers",
+      "apiSubmissions",
+      "apiTasks",
+      "organizer",
+    ] as const) {
+      expect(latencies[name], `${name} p95`).toBeLessThanOrEqual(
+        commonReadBudgetMilliseconds,
+      );
+    }
+    expect(latencies.readiness, "readiness p95").toBeLessThanOrEqual(
       readinessBudgetMilliseconds,
     );
 
