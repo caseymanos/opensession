@@ -20,6 +20,9 @@ export type CampaignExclusionReason =
   | "duplicate_email"
   | "invalid_email"
   | "invalid_merge_values"
+  | "portal_state_mismatch"
+  | "readiness_mismatch"
+  | "role_mismatch"
   | CampaignSuppressionReason;
 
 export interface CampaignAudienceFilter {
@@ -34,6 +37,9 @@ export interface CampaignAudienceCandidate {
   readonly email: string;
   readonly eventId: string;
   readonly mergeValues: EmailMergeValues;
+  readonly portalState: CampaignPortalState;
+  readonly readiness: Exclude<CampaignReadiness, "all">;
+  readonly roles: readonly CampaignAudienceRole[];
   readonly suppressionReason?: CampaignSuppressionReason;
 }
 
@@ -216,6 +222,18 @@ export function createCampaignPlan(options: {
     ) {
       throw new CampaignPlanError("Candidate suppression reason is invalid.");
     }
+    if (!portalStates.has(candidate.portalState)) {
+      throw new CampaignPlanError("Candidate portal state is invalid.");
+    }
+    if (
+      candidate.readiness !== "outstanding" &&
+      candidate.readiness !== "ready"
+    ) {
+      throw new CampaignPlanError("Candidate readiness is invalid.");
+    }
+    if (candidate.roles.some((role) => !roles.has(role))) {
+      throw new CampaignPlanError("Candidate roles are invalid.");
+    }
     if (candidate.eventId !== options.eventId || !candidate.suppressionReason) {
       continue;
     }
@@ -238,6 +256,24 @@ export function createCampaignPlan(options: {
     contactIds.add(candidate.contactId);
     if (candidate.eventId !== options.eventId) {
       exclusion(excluded, candidate.contactId, "cross_event");
+      continue;
+    }
+    if (!candidate.roles.some((role) => filter.roles.includes(role))) {
+      exclusion(excluded, candidate.contactId, "role_mismatch");
+      continue;
+    }
+    if (
+      filter.portalStates.length > 0 &&
+      !filter.portalStates.includes(candidate.portalState)
+    ) {
+      exclusion(excluded, candidate.contactId, "portal_state_mismatch");
+      continue;
+    }
+    if (
+      filter.readiness !== "all" &&
+      candidate.readiness !== filter.readiness
+    ) {
+      exclusion(excluded, candidate.contactId, "readiness_mismatch");
       continue;
     }
     const email = normalizeEmail(candidate.email);

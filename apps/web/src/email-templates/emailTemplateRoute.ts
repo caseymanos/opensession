@@ -1,4 +1,5 @@
-const workspaceCommunicationsPattern = /^\/app\/([^/]+)\/communications\/?$/;
+const workspaceCommunicationsPattern =
+  /^\/app\/([^/]+)\/communications\/templates\/?$/;
 
 export function emailTemplateEventKey(pathname: string): string | null {
   if (pathname.startsWith("/fixtures/email-templates/")) {

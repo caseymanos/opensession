@@ -48,6 +48,22 @@
   white-space: nowrap;
 }
 
+.email-template-campaign-link {
+  padding: 0.56rem 0.72rem;
+  color: var(--ink-700);
+  text-decoration: none;
+  border: 1px solid var(--ink-200);
+  border-radius: 0.65rem;
+  background: rgb(255 255 255 / 72%);
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.email-template-campaign-link:hover {
+  color: var(--ink-950);
+  background: var(--paper-100);
+}
+
 .email-template-save-state {
   display: inline-flex;
   align-items: center;

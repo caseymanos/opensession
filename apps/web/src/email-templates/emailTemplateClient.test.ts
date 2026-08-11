@@ -48,13 +48,16 @@ function response(body: unknown, status = 200) {
 describe("email-template HTTP client", () => {
   it("parses canonical and fixture routes without accepting unsafe keys", () => {
     expect(
-      emailTemplateEventKey("/app/ai-engineer-summit/communications"),
+      emailTemplateEventKey("/app/ai-engineer-summit/communications/templates"),
     ).toBe("ai-engineer-summit");
     expect(emailTemplateEventKey("/fixtures/email-templates/default")).toBe(
       "ai-engineer-summit",
     );
-    expect(emailTemplateEventKey("/app/%2Fetc/communications")).toBeNull();
-    expect(emailTemplateEventKey("/app/x/communications")).toBeNull();
+    expect(
+      emailTemplateEventKey("/app/%2Fetc/communications/templates"),
+    ).toBeNull();
+    expect(emailTemplateEventKey("/app/x/communications/templates")).toBeNull();
+    expect(emailTemplateEventKey("/app/event/communications")).toBeNull();
     expect(emailTemplateEventKey("/app/event/other")).toBeNull();
   });
 

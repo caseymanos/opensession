@@ -511,6 +511,9 @@ describe("campaign plans", () => {
         ...values,
         "recipient.first_name": { type: "text", value: `Recipient ${index}` },
       },
+      portalState: "active",
+      readiness: "ready",
+      roles: ["speaker", "submitter"],
       ...overrides,
     };
   }
@@ -597,6 +600,34 @@ describe("campaign plans", () => {
     await expect(
       createCampaignMessageKey({ ...input, templateVersion: 2 }),
     ).resolves.not.toBe(original);
+  });
+
+  it("fails closed when a repository returns contacts outside the requested filter", () => {
+    const plan = createCampaignPlan({
+      candidates: [
+        candidate(1, { roles: ["reviewer"] }),
+        candidate(2, { portalState: "revoked" }),
+        candidate(3, { readiness: "outstanding" }),
+        candidate(4),
+      ],
+      createdAt: "2026-08-09T21:00:00.000Z",
+      eventId: "evt_demo",
+      filter: {
+        portalStates: ["active"],
+        readiness: "ready",
+        roles: ["speaker"],
+      },
+      schedule: { mode: "now" },
+      template: template("template_submission_receipt"),
+      templateVersions: [template("template_submission_receipt")],
+    });
+
+    expect(plan.audience.includedContactIds).toEqual(["contact_04"]);
+    expect(plan.audience.excluded).toEqual([
+      { contactId: "contact_01", reason: "role_mismatch" },
+      { contactId: "contact_02", reason: "portal_state_mismatch" },
+      { contactId: "contact_03", reason: "readiness_mismatch" },
+    ]);
   });
 
   it("cannot start a campaign from an active version superseded by archive", () => {

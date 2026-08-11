@@ -10,6 +10,7 @@ import { authoritySchemaVersion } from "./authority/base-authority.js";
 import { registerAuthRoutes } from "./auth/routes";
 import { getBaseAuthority } from "./authority/binding.js";
 import { registerPublicCfpRoutes } from "./cfp/routes";
+import { registerCampaignRoutes } from "./campaigns/routes.js";
 import { inspectFeatureFlags, isFeatureEnabled } from "./features";
 import { parseEmailDeliveryConfig } from "./email/config.js";
 import {
@@ -304,6 +305,7 @@ registerTaskRoutes(app);
 registerUploadRoutes(app);
 registerScheduleRoutes(app);
 registerDemoRoutes(app);
+registerCampaignRoutes(app);
 registerEmailTemplateRoutes(app);
 registerOrganizerSubmissionRoutes(app);
 registerEmailWebhookRoutes(app);

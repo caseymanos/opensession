@@ -553,6 +553,12 @@ export function EmailTemplateWorkspace({
           </p>
         </div>
         <div className="email-template-actions">
+          <a
+            className="email-template-campaign-link"
+            href={`/app/${workspace.event.slug}/communications`}
+          >
+            Campaigns
+          </a>
           <span className="email-template-save-state">
             <ShieldCheck size={15} aria-hidden="true" />
             {!selectedIsHead

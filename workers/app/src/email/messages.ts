@@ -21,6 +21,7 @@ export interface CampaignEmailQueueMessage {
   readonly organization_id: string;
   readonly queued_at: string;
   readonly request_id: string;
+  readonly scheduled_at?: string;
   readonly template_id: string;
   readonly template_version: number;
   readonly version: 1;
@@ -141,9 +142,17 @@ function parseCampaign(
     !Number.isInteger(value.template_version) ||
     (value.template_version as number) < 1 ||
     !utcTimestamp(value.queued_at) ||
+    (value.scheduled_at !== undefined && !utcTimestamp(value.scheduled_at)) ||
     !renderedMessage(value.email)
   ) {
     throw new TypeError("Campaign email message is invalid.");
+  }
+  const scheduledAt =
+    typeof value.scheduled_at === "string"
+      ? value.scheduled_at
+      : (value.queued_at as string);
+  if (Date.parse(scheduledAt) < Date.parse(value.queued_at as string)) {
+    throw new TypeError("Campaign schedule precedes its queue timestamp.");
   }
   return value as unknown as CampaignEmailQueueMessage;
 }

@@ -167,6 +167,8 @@ function PrimaryNavigation({
             const Icon = item.icon;
             const current =
               currentPath === item.href ||
+              (item.label === "Communications" &&
+                currentPath.startsWith(`${item.href}/`)) ||
               (item.label === "Home" && currentPath === "/");
 
             return (

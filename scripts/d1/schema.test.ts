@@ -520,6 +520,18 @@ describe("D1 operational foundation", () => {
         "--persist-to",
         migrationPersistence,
         "--file",
+        resolve(root, "migrations", "0017_campaign_delivery_product.sql"),
+        "--config",
+        config,
+      ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
         resolve(root, "migrations", "0018_schedule_publication.sql"),
         "--config",
         config,
@@ -533,6 +545,7 @@ describe("D1 operational foundation", () => {
         migrationPersistence,
         "--command",
         `SELECT id, status, queue_handoff_lease_expires_at,
+                scheduled_at,
                 queue_handed_off_at, queue_payload_json
          FROM provider_messages
          WHERE id IN ('msg_upgrade_queued', 'msg_upgrade_sent')
@@ -553,6 +566,7 @@ describe("D1 operational foundation", () => {
           queue_handed_off_at: null,
           queue_handoff_lease_expires_at: null,
           queue_payload_json: null,
+          scheduled_at: null,
           status: "queued",
         },
         {
@@ -560,6 +574,7 @@ describe("D1 operational foundation", () => {
           queue_handed_off_at: null,
           queue_handoff_lease_expires_at: null,
           queue_payload_json: null,
+          scheduled_at: null,
           status: "sent",
         },
       ]);
@@ -697,6 +712,8 @@ describe("D1 operational foundation", () => {
       "auth_sessions",
       "auth_session_secrets",
       "cfp_submission_reservations",
+      "campaign_command_receipts",
+      "campaign_message_receipts",
       "event_memberships",
       "email_delivery_attempts",
       "email_provider_events",
@@ -781,6 +798,74 @@ describe("D1 operational foundation", () => {
         "schedule_version",
       ]),
     );
+  });
+
+  it("keeps campaign confirmation and message preparation idempotent and event-scoped", () => {
+    const providerColumns = query<{ name: string }>(
+      "PRAGMA table_info(provider_messages);",
+    ).results.map(({ name }) => name);
+    expect(providerColumns).toContain("scheduled_at");
+
+    query(`
+      INSERT INTO campaign_command_receipts (
+        organization_id, event_id, command_id, request_hash, campaign_id,
+        preview_id, plan_json, state, created_at, updated_at
+      ) VALUES (
+        'org_one', 'evt_one', 'campaign_schema_command', '${hash}',
+        'campaign_schema', 'campaign_preview_${hash}', '{}', 'preparing',
+        '${timestamp}', '${timestamp}'
+      ) ON CONFLICT (organization_id, event_id, command_id) DO NOTHING;
+
+      INSERT INTO campaign_message_receipts (
+        organization_id, event_id, command_id, campaign_id, message_id,
+        contact_id, contact_source_record_id, queue_payload_json, state,
+        created_at, updated_at
+      ) VALUES (
+        'org_one', 'evt_one', 'campaign_schema_command', 'campaign_schema',
+        'email_${hash}', 'contact_one', 'rec_contact_one', '{}', 'prepared',
+        '${timestamp}', '${timestamp}'
+      ) ON CONFLICT (organization_id, event_id, command_id, message_id)
+        DO NOTHING;
+
+      INSERT INTO campaign_message_receipts (
+        organization_id, event_id, command_id, campaign_id, message_id,
+        contact_id, contact_source_record_id, queue_payload_json, state,
+        created_at, updated_at
+      ) VALUES (
+        'org_one', 'evt_one', 'campaign_schema_command', 'campaign_schema',
+        'email_${hash}', 'contact_one', 'rec_contact_one', '{}', 'prepared',
+        '${timestamp}', '${timestamp}'
+      ) ON CONFLICT (organization_id, event_id, command_id, message_id)
+        DO NOTHING;
+    `);
+    expect(
+      query<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM campaign_message_receipts
+         WHERE organization_id = 'org_one'
+           AND command_id = 'campaign_schema_command';`,
+      ).results,
+    ).toEqual([{ count: 1 }]);
+    expectSqlFailure(`
+      INSERT INTO campaign_command_receipts (
+        organization_id, event_id, command_id, request_hash, campaign_id,
+        preview_id, plan_json, state, created_at, updated_at
+      ) VALUES (
+        'org_one', 'evt_one', 'campaign_schema_other', '${hash}',
+        'campaign_schema', 'campaign_preview_${hash}', '{}', 'preparing',
+        '${timestamp}', '${timestamp}'
+      );
+    `);
+    expectSqlFailure(`
+      INSERT INTO campaign_message_receipts (
+        organization_id, event_id, command_id, campaign_id, message_id,
+        contact_id, contact_source_record_id, queue_payload_json, state,
+        created_at, updated_at
+      ) VALUES (
+        'org_two', 'evt_two', 'campaign_schema_command', 'campaign_schema',
+        'email_${"d".repeat(64)}', 'contact_two', 'rec_contact_two', '{}',
+        'prepared', '${timestamp}', '${timestamp}'
+      );
+    `);
   });
 
   it("keeps one-time demo bootstrap authorization scoped and state-consistent", () => {
