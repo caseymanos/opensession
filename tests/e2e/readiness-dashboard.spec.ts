@@ -77,13 +77,28 @@ test("readiness filters persist in the URL and narrow the speaker table", async 
   );
 });
 
-test("priority action updates exact metrics and the filtered projection immediately", async ({
+test("submission stays outstanding until the final required approval", async ({
   page,
 }) => {
   await page.goto(`${readinessPath}?filter=overdue`);
 
-  await page.getByRole("button", { name: "Mark received" }).click();
-  await expect(page.locator(".ui-toast")).toContainText("Headshot approved");
+  await page.getByRole("button", { name: "Submit as speaker" }).click();
+  await expect(page.locator(".ui-toast")).toContainText("Headshot submitted");
+  await expect(page.getByText("awaiting required approval")).toBeVisible();
+  await expect(
+    page.locator(".readiness-metric").filter({ hasText: "Speakers ready" }),
+  ).toContainText("3 / 8");
+  await expect(
+    page.locator(".readiness-metric").filter({
+      hasText: "Overdue assignments",
+    }),
+  ).toContainText("3");
+  await expect(page.locator(".ui-table tbody tr")).toHaveCount(2);
+
+  await page.getByRole("button", { name: "Approve as organizer" }).click();
+  await expect(page.locator(".ui-toast")).toContainText(
+    "Final approval recorded",
+  );
   await expect(
     page.locator(".readiness-metric").filter({ hasText: "Speakers ready" }),
   ).toContainText("4 / 8");

@@ -5,6 +5,11 @@ import {
   type SpeakerPortalSession,
   type SpeakerPortalTask,
 } from "@sessionbox-killer/contracts/portal";
+import {
+  taskAssignmentResponseEnvelopeSchema,
+  type TaskAssignmentState,
+} from "@sessionbox-killer/contracts/tasks";
+import { evaluateTaskReadiness } from "@sessionbox-killer/domain/tasks";
 
 import { hasEventPermission, loadEventAccess } from "../auth/authorization";
 import type { AuthenticatedSession } from "../auth/service";
@@ -41,8 +46,10 @@ interface TaskRow {
   description: string | null;
   due_at: string | null;
   id: string;
+  response_json: string;
   required: number;
   session_id: string | null;
+  source_version: number;
   status:
     | "complete"
     | "in_progress"
@@ -167,12 +174,30 @@ function validDate(value: string | null): string | null {
   return value;
 }
 
+function assignmentState(row: TaskRow): TaskAssignmentState {
+  try {
+    const envelope = taskAssignmentResponseEnvelopeSchema.safeParse(
+      JSON.parse(row.response_json) as unknown,
+    );
+    if (envelope.success && envelope.data.version === row.source_version) {
+      return envelope.data.state;
+    }
+  } catch {
+    // Legacy projections are interpreted from their normalized status below.
+  }
+  if (row.status === "waived") return "complete";
+  if (row.approved_at !== null) return "approved";
+  if (row.status === "complete") return "complete";
+  if (row.status === "submitted") return "submitted";
+  if (row.status === "rejected") return "rejected";
+  return "incomplete";
+}
+
 function completeTask(row: TaskRow): boolean {
-  return (
-    row.status === "waived" ||
-    (row.status === "complete" &&
-      (row.approval_required === 0 || row.approved_at !== null))
-  );
+  const state = assignmentState(row);
+  return row.approval_required === 1
+    ? state === "approved"
+    : state === "complete" || state === "approved";
 }
 
 function taskView(row: TaskRow, now: Date): SpeakerPortalTask {
@@ -186,6 +211,7 @@ function taskView(row: TaskRow, now: Date): SpeakerPortalTask {
     Date.parse(dueAt) < now.getTime();
   return {
     approval_required: row.approval_required === 1,
+    assignment_state: assignmentState(row),
     completed_at: completedAt,
     description: row.description ?? "",
     due_at: dueAt,
@@ -344,18 +370,23 @@ export class D1SpeakerPortalService {
 
     const now = this.#now();
     const tasks = taskResult.map((row) => taskView(row, now));
-    const requiredTasks = tasks.filter(({ required }) => required);
-    const incompleteRequired = requiredTasks.filter(
-      ({ status }) => status !== "complete",
+    const readinessPolicy = evaluateTaskReadiness(
+      tasks.map((task) => ({
+        approvalRequired: task.approval_required,
+        assignmentId: task.id,
+        contactId: speaker.contact_id,
+        definitionId: task.id,
+        dueAt: task.due_at,
+        eventId: event.eventId,
+        history: [],
+        required: task.required,
+        sessionId: task.session_id,
+        state: task.assignment_state,
+        version: 1,
+      })),
+      event.timezone,
+      now,
     );
-    const overdueTasks = incompleteRequired.filter(
-      ({ status }) => status === "overdue",
-    );
-    const nextDueAt =
-      incompleteRequired
-        .map(({ due_at: dueAt }) => dueAt)
-        .filter((dueAt): dueAt is string => dueAt !== null)
-        .sort()[0] ?? null;
     const coSpeakersBySession = new Map<string, string[]>();
     for (const row of coSpeakerResult) {
       const current = coSpeakersBySession.get(row.session_id) ?? [];
@@ -398,16 +429,6 @@ export class D1SpeakerPortalService {
         track: row.track_name ?? "General",
       };
     });
-    const requiredComplete = requiredTasks.length - incompleteRequired.length;
-    const readinessStatus =
-      requiredTasks.length === 0
-        ? "not_configured"
-        : overdueTasks.length > 0
-          ? "overdue"
-          : incompleteRequired.length > 0
-            ? "outstanding"
-            : "ready";
-
     return speakerPortalBootstrapResponseSchema.parse({
       event: {
         brand: event.brand,
@@ -424,12 +445,28 @@ export class D1SpeakerPortalService {
       generated_at: now.toISOString(),
       portal_status: speaker.portal_state,
       readiness: {
-        next_due_at: nextDueAt,
-        outstanding_task_count: incompleteRequired.length,
-        overdue_task_count: overdueTasks.length,
-        required_complete: requiredComplete,
-        required_total: requiredTasks.length,
-        status: readinessStatus,
+        next_due_at: readinessPolicy.nextDue?.at ?? null,
+        outstanding_task_count: readinessPolicy.outstandingCount,
+        overdue_task_count: readinessPolicy.overdueCount,
+        policy: {
+          configuration: readinessPolicy.configuration,
+          explanation: readinessPolicy.explanation,
+          next_due: readinessPolicy.nextDue
+            ? {
+                at: readinessPolicy.nextDue.at,
+                local_date: readinessPolicy.nextDue.localDate,
+                local_time: readinessPolicy.nextDue.localTime,
+                timezone: readinessPolicy.nextDue.timezone,
+              }
+            : null,
+          outstanding_count: readinessPolicy.outstandingCount,
+          overdue_count: readinessPolicy.overdueCount,
+          ratio: readinessPolicy.ratio,
+          status: readinessPolicy.status,
+        },
+        required_complete: readinessPolicy.ratio.complete,
+        required_total: readinessPolicy.ratio.total,
+        status: readinessPolicy.status,
       },
       sessions,
       speaker: {
@@ -498,6 +535,7 @@ export class D1SpeakerPortalService {
         `SELECT assignment.id, assignment.session_id, assignment.due_at,
                 assignment.required, assignment.status,
                 assignment.completed_at, assignment.approved_at,
+                assignment.response_json, assignment.source_version,
                 definition.name AS title, definition.description,
                 definition.approval_required
          FROM p_task_assignments assignment

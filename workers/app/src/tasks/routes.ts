@@ -1,0 +1,638 @@
+import {
+  taskAcceptanceMaterializationCommandSchema,
+  taskAssignmentTransitionCommandSchema,
+  taskBackfillPreviewRequestSchema,
+  taskDefinitionCommandSchema,
+  taskStableIdSchema,
+} from "@sessionbox-killer/contracts/tasks";
+import { TaskDomainError } from "@sessionbox-killer/domain/tasks";
+import type { Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+
+import type { AppContext } from "../app-context";
+import { getBaseAuthority } from "../authority/binding.js";
+import {
+  hasEventPermission,
+  loadEventAccess,
+  type EventAccess,
+} from "../auth/authorization";
+import type { AuthenticatedSession } from "../auth/service";
+import {
+  authFailure,
+  authService,
+  requireSameOrigin,
+  sessionToken,
+} from "../auth/http";
+import { isFeatureEnabled } from "../features";
+import {
+  TaskAuthorityPendingError,
+  TaskAuthorityService,
+  TaskIdempotencyConflictError,
+  TaskNotFoundError,
+  TaskPreviewConflictError,
+  TaskReadService,
+  TaskVersionConflictError,
+  type TaskCommandActor,
+  type TaskEventScope,
+} from "./service.js";
+
+const taskBodyLimitBytes = 64 * 1024;
+
+interface EventCandidate {
+  id: string;
+  organization_id: string;
+  slug: string;
+  source_record_id: string;
+  timezone: string;
+}
+
+interface TaskRouteScope {
+  access: EventAccess;
+  event: TaskEventScope;
+  session: AuthenticatedSession;
+}
+
+type TaskScopeResolution =
+  | { kind: "ambiguous" | "forbidden" | "not_found" }
+  | ({ kind: "resolved" } & TaskRouteScope);
+
+async function resolveTaskScope(
+  context: Context<AppContext>,
+  eventKey: string,
+): Promise<TaskScopeResolution> {
+  const session = await authService(context).authenticate(
+    sessionToken(context),
+  );
+  const candidates = await context.env.DB.prepare(
+    `SELECT event.id, event.organization_id, event.slug, event.timezone,
+            event.source_record_id
+     FROM p_events event
+     JOIN tenant_registry tenant
+       ON tenant.organization_id = event.organization_id
+      AND tenant.status = 'active'
+      AND tenant.authority_ready_at IS NOT NULL
+     WHERE (event.id = ?1 OR event.slug = ?1)
+       AND event.source_deleted_at IS NULL
+     ORDER BY CASE WHEN event.id = ?1 THEN 0 ELSE 1 END,
+              event.organization_id LIMIT 33`,
+  )
+    .bind(eventKey)
+    .all<EventCandidate>();
+  if (candidates.results.length === 0) return { kind: "not_found" };
+  const permitted: { access: EventAccess; candidate: EventCandidate }[] = [];
+  for (const candidate of candidates.results) {
+    const access = await loadEventAccess(
+      context.env.DB,
+      session.user,
+      candidate.organization_id,
+      candidate.id,
+    );
+    if (
+      hasEventPermission(access, "event:manage") ||
+      hasEventPermission(access, "portal:write:self")
+    ) {
+      permitted.push({ access, candidate });
+    }
+  }
+  const exact = candidates.results.find(({ id }) => id === eventKey);
+  const selected = exact
+    ? permitted.find(({ candidate }) => candidate.id === exact.id)
+    : permitted.length === 1 && candidates.results.length <= 32
+      ? permitted[0]
+      : null;
+  if (!selected) {
+    if (!exact && (permitted.length > 1 || candidates.results.length > 32)) {
+      return { kind: "ambiguous" };
+    }
+    return { kind: "forbidden" };
+  }
+  return {
+    access: selected.access,
+    event: {
+      eventId: selected.candidate.id,
+      eventRecordId: selected.candidate.source_record_id,
+      organizationId: selected.candidate.organization_id,
+      slug: selected.candidate.slug,
+      timezone: selected.candidate.timezone,
+    },
+    kind: "resolved",
+    session,
+  };
+}
+
+function standardError(
+  context: Context<AppContext>,
+  status: 400 | 403 | 404 | 409 | 413 | 503,
+  code: string,
+  message: string,
+) {
+  return context.json(
+    { error: { code, message }, request_id: context.get("requestId") },
+    status,
+  );
+}
+
+function scopeFailure(
+  context: Context<AppContext>,
+  resolution: Exclude<TaskScopeResolution, { kind: "resolved" }>,
+) {
+  if (resolution.kind === "forbidden") {
+    return standardError(
+      context,
+      403,
+      "forbidden",
+      "You do not have access to tasks for this event.",
+    );
+  }
+  if (resolution.kind === "ambiguous") {
+    return standardError(
+      context,
+      409,
+      "ambiguous_event_slug",
+      "This event slug is ambiguous; use the canonical event ID.",
+    );
+  }
+  return standardError(
+    context,
+    404,
+    "task_event_not_found",
+    "The requested event does not exist.",
+  );
+}
+
+async function parsedJson(context: Context<AppContext>): Promise<unknown> {
+  try {
+    return await context.req.json();
+  } catch {
+    return null;
+  }
+}
+
+function taskError(context: Context<AppContext>, error: unknown) {
+  if (error instanceof TaskAuthorityPendingError) {
+    return context.json(
+      {
+        error: {
+          code: "task_authority_pending",
+          message: error.message,
+          retryable: true,
+        },
+        ok: false,
+      },
+      202,
+    );
+  }
+  if (error instanceof TaskVersionConflictError) {
+    return context.json(
+      {
+        error: {
+          code: "task_version_conflict",
+          message: error.message,
+          retryable: false,
+        },
+        ok: false,
+      },
+      412,
+    );
+  }
+  if (error instanceof TaskIdempotencyConflictError) {
+    return context.json(
+      {
+        error: {
+          code: "task_idempotency_conflict",
+          message: error.message,
+          retryable: false,
+        },
+        ok: false,
+      },
+      409,
+    );
+  }
+  if (error instanceof TaskPreviewConflictError) {
+    return context.json(
+      {
+        error: {
+          code: "task_preview_conflict",
+          message: error.message,
+          retryable: false,
+        },
+        ok: false,
+      },
+      409,
+    );
+  }
+  if (error instanceof TaskNotFoundError) {
+    return context.json(
+      {
+        error: {
+          code: "task_not_found",
+          message: error.message,
+          retryable: false,
+        },
+        ok: false,
+      },
+      404,
+    );
+  }
+  if (error instanceof TaskDomainError) {
+    const invalidRequestCodes = new Set([
+      "ambiguous_local_due",
+      "assignment_limit_exceeded",
+      "invalid_local_due",
+      "invalid_timezone",
+    ]);
+    return context.json(
+      {
+        error: {
+          code:
+            error.code === "version_conflict"
+              ? "task_version_conflict"
+              : invalidRequestCodes.has(error.code)
+                ? "task_invalid_request"
+                : "task_illegal_transition",
+          message: error.message,
+          retryable: false,
+        },
+        ok: false,
+      },
+      error.code === "version_conflict" ? 412 : 422,
+    );
+  }
+  try {
+    return authFailure(context, error);
+  } catch {
+    return context.json(
+      {
+        error: {
+          code: "task_authority_unavailable",
+          message: "Task authority is temporarily unavailable.",
+          retryable: true,
+        },
+        ok: false,
+      },
+      503,
+    );
+  }
+}
+
+function organizerActor(scope: TaskRouteScope): TaskCommandActor {
+  return {
+    actorId: scope.session.user.id,
+    auditActorType: "user",
+    domainActorType: "organizer",
+  };
+}
+
+function writeUnavailable(context: Context<AppContext>) {
+  return context.json(
+    {
+      error: {
+        code: "task_authority_unavailable",
+        message: "Task writes are disabled in this environment.",
+        retryable: true,
+      },
+      ok: false,
+    },
+    503,
+  );
+}
+
+function invalidRequest(context: Context<AppContext>, message: string) {
+  return context.json(
+    {
+      error: {
+        code: "task_invalid_request",
+        message,
+        retryable: false,
+      },
+      ok: false,
+    },
+    400,
+  );
+}
+
+function authorityService(context: Context<AppContext>) {
+  return new TaskAuthorityService({
+    authority: () => getBaseAuthority(context.env),
+    database: context.env.DB,
+  });
+}
+
+export function registerTaskRoutes(app: Hono<AppContext>): void {
+  for (const path of [
+    "/api/events/:eventKey/task-definitions/backfill-preview",
+    "/api/events/:eventKey/task-definitions/commands",
+    "/api/events/:eventKey/task-materializations/commands",
+    "/api/events/:eventKey/task-assignments/:assignmentId/transitions",
+  ]) {
+    app.use(
+      path,
+      bodyLimit({
+        maxSize: taskBodyLimitBytes,
+        onError: (context) =>
+          standardError(
+            context,
+            413,
+            "request_too_large",
+            "The task request body is too large.",
+          ),
+      }),
+    );
+  }
+
+  app.get("/api/events/:eventKey/task-definitions", async (context) => {
+    try {
+      const resolution = await resolveTaskScope(
+        context,
+        context.req.param("eventKey"),
+      );
+      if (resolution.kind !== "resolved") {
+        return scopeFailure(context, resolution);
+      }
+      if (!hasEventPermission(resolution.access, "event:manage")) {
+        return standardError(
+          context,
+          403,
+          "forbidden",
+          "Organizer access is required to manage task definitions.",
+        );
+      }
+      return context.json(
+        await new TaskReadService(context.env.DB).definitions(resolution.event),
+      );
+    } catch (error) {
+      try {
+        return authFailure(context, error);
+      } catch {
+        return standardError(
+          context,
+          503,
+          "task_projection_unavailable",
+          "Task definitions are temporarily unavailable.",
+        );
+      }
+    }
+  });
+
+  app.get("/api/events/:eventKey/readiness", async (context) => {
+    try {
+      const resolution = await resolveTaskScope(
+        context,
+        context.req.param("eventKey"),
+      );
+      if (resolution.kind !== "resolved") {
+        return scopeFailure(context, resolution);
+      }
+      if (!hasEventPermission(resolution.access, "event:manage")) {
+        return standardError(
+          context,
+          403,
+          "forbidden",
+          "Organizer access is required to read event readiness.",
+        );
+      }
+      return context.json(
+        await new TaskReadService(context.env.DB).readiness(resolution.event),
+      );
+    } catch (error) {
+      try {
+        return authFailure(context, error);
+      } catch {
+        return standardError(
+          context,
+          503,
+          "task_projection_unavailable",
+          "Event readiness is temporarily unavailable.",
+        );
+      }
+    }
+  });
+
+  app.post(
+    "/api/events/:eventKey/task-definitions/backfill-preview",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task previews require same-origin JSON requests.",
+        );
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to preview task targeting.",
+          );
+        }
+        const input = taskBackfillPreviewRequestSchema.safeParse(
+          await parsedJson(context),
+        );
+        if (!input.success) {
+          return invalidRequest(
+            context,
+            "The task backfill preview is invalid.",
+          );
+        }
+        return context.json(
+          await authorityService(context).previewBackfill(
+            resolution.event,
+            input.data,
+          ),
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-definitions/commands",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task commands require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to manage task definitions.",
+          );
+        }
+        const input = taskDefinitionCommandSchema.safeParse(
+          await parsedJson(context),
+        );
+        if (!input.success) {
+          return invalidRequest(
+            context,
+            "The task definition command is invalid.",
+          );
+        }
+        const response = await authorityService(context).upsertDefinition(
+          resolution.event,
+          input.data,
+          organizerActor(resolution),
+          context.get("requestId"),
+        );
+        return context.json(
+          response,
+          response.ok && response.repair_pending ? 202 : 200,
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-materializations/commands",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task commands require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to materialize task assignments.",
+          );
+        }
+        const input = taskAcceptanceMaterializationCommandSchema.safeParse(
+          await parsedJson(context),
+        );
+        if (!input.success) {
+          return invalidRequest(
+            context,
+            "The acceptance materialization command is invalid.",
+          );
+        }
+        const response = await authorityService(context).materializeAcceptance(
+          resolution.event,
+          input.data,
+          organizerActor(resolution),
+          context.get("requestId"),
+        );
+        return context.json(
+          response,
+          response.ok && response.repair_pending ? 202 : 200,
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-assignments/:assignmentId/transitions",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task commands require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      const assignmentId = taskStableIdSchema.safeParse(
+        context.req.param("assignmentId"),
+      );
+      const input = taskAssignmentTransitionCommandSchema.safeParse(
+        await parsedJson(context),
+      );
+      if (!assignmentId.success || !input.success) {
+        return invalidRequest(
+          context,
+          "The task transition command is invalid.",
+        );
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        const service = authorityService(context);
+        let actor: TaskCommandActor;
+        if (hasEventPermission(resolution.access, "event:manage")) {
+          actor = organizerActor(resolution);
+        } else if (
+          resolution.access.speakerContactId &&
+          hasEventPermission(resolution.access, "portal:write:self") &&
+          input.data.to === "submitted" &&
+          (await service.assignmentBelongsToContact(
+            resolution.event,
+            assignmentId.data,
+            resolution.access.speakerContactId,
+          ))
+        ) {
+          actor = {
+            actorId: resolution.access.speakerContactId,
+            auditActorType: "portal",
+            domainActorType: "speaker",
+          };
+        } else {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "You cannot transition this task assignment.",
+          );
+        }
+        const response = await service.transitionAssignment(
+          resolution.event,
+          assignmentId.data,
+          input.data,
+          actor,
+          context.get("requestId"),
+        );
+        return context.json(
+          response,
+          response.ok && response.repair_pending ? 202 : 200,
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+}

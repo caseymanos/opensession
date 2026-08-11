@@ -7,6 +7,10 @@
     ".": {
       "sessionbox-operator-runtime": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./tasks": {
+      "sessionbox-operator-runtime": "./dist/tasks.js",
+      "default": "./src/tasks.ts"
     }
   },
   "scripts": {

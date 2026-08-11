@@ -38,6 +38,7 @@ import { registerScheduleRoutes } from "./schedule/routes.js";
 import { registerDemoRoutes } from "./demo/routes.js";
 import { registerSpeakerPortalRoutes } from "./portal/routes";
 import { registerOrganizerSubmissionRoutes } from "./organizer-submissions/routes.js";
+import { registerTaskRoutes } from "./tasks/routes.js";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
 import { validTurnstileConfiguration } from "./security/turnstile";
@@ -299,6 +300,7 @@ app.get("/api/v1/public/events/:slug/schedule", async (context) => {
 
 registerAuthRoutes(app);
 registerSpeakerPortalRoutes(app);
+registerTaskRoutes(app);
 registerUploadRoutes(app);
 registerScheduleRoutes(app);
 registerDemoRoutes(app);
