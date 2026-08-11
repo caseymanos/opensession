@@ -1,5 +1,11 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
+import { vitestCoverageThresholds } from "./scripts/ci/coverage-policy.ts";
+import DurationBalancedSequencer from "./scripts/ci/duration-balanced-sequencer.ts";
+
+const coverageReporters = process.env.CI_COVERAGE_SHARD
+  ? (["json"] as const)
+  : (["text", "json-summary", "json", "html"] as const);
 
 export default defineConfig({
   resolve: {
@@ -15,6 +21,7 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     hookTimeout: 30_000,
+    sequence: { sequencer: DurationBalancedSequencer },
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
@@ -42,74 +49,11 @@ export default defineConfig({
         "workers/app/src/uploads/{policy,pptx,routes,service}.ts",
         "workers/app/src/{features,observability}.ts",
       ],
-      reporter: ["text", "json-summary", "json", "html"],
+      reporter: coverageReporters,
       reportOnFailure: true,
-      thresholds: {
-        statements: 60,
-        branches: 54,
-        functions: 67,
-        lines: 60,
-        "packages/data/src/airtable/**.ts": {
-          statements: 80,
-          branches: 70,
-          functions: 85,
-          lines: 80,
-        },
-        "packages/email/src/**.ts": {
-          statements: 82,
-          branches: 78,
-          functions: 95,
-          lines: 82,
-        },
-        "packages/calendar/src/**.ts": {
-          statements: 85,
-          branches: 77,
-          functions: 95,
-          lines: 85,
-        },
-        "workers/app/src/auth/crypto.ts": {
-          statements: 100,
-          branches: 80,
-          functions: 100,
-          lines: 100,
-        },
-        "workers/app/src/email/{delivery,messages,webhook}.ts": {
-          statements: 75,
-          branches: 70,
-          functions: 65,
-          lines: 75,
-        },
-        "workers/app/src/calendar/outbox.ts": {
-          statements: 85,
-          branches: 75,
-          functions: 90,
-          lines: 85,
-        },
-        "workers/app/src/observability.ts": {
-          statements: 85,
-          branches: 80,
-          functions: 95,
-          lines: 85,
-        },
-        "workers/app/src/public-schedule/cache.ts": {
-          statements: 90,
-          branches: 80,
-          functions: 95,
-          lines: 90,
-        },
-        "workers/app/src/uploads/policy.ts": {
-          statements: 85,
-          branches: 80,
-          functions: 70,
-          lines: 85,
-        },
-        "scripts/cloudflare/release.ts": {
-          statements: 75,
-          branches: 70,
-          functions: 95,
-          lines: 75,
-        },
-      },
+      ...(process.env.CI_COVERAGE_SHARD
+        ? {}
+        : { thresholds: vitestCoverageThresholds }),
     },
     include: [
       "apps/web/src/**/*.test.ts",

@@ -7,10 +7,14 @@
 .wrangler/
 .cloudflare/
 .sbek/
+.vitest-attachments/
+.vitest-reports/
+blob-report*/
 node_modules/
 .pnpm-store/
 dist/
 coverage/
+coverage-shard-*/
 playwright-report/
 test-results/
 *.cpuprofile

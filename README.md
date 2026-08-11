@@ -57,7 +57,7 @@ Use `pnpm dev:web` for UI-only Vite work on port `5173`.
 | `pnpm build` | Build the React assets and dry-run the Worker artifact |
 | `pnpm --filter @sessionbox-killer/data airtable -- schema:check --environment preview` | Read-only Airtable schema drift check |
 
-Run the complete local gate before opening a pull request:
+Run focused tests for the changed behavior plus the local static gate before opening a pull request:
 
 ```bash
 pnpm format:check
@@ -65,13 +65,12 @@ pnpm check:public-repo
 pnpm deps:audit
 pnpm lint
 pnpm typecheck
-pnpm test:unit
 pnpm wrangler:types:check
 pnpm build
-pnpm test:e2e
+# pnpm exec vitest run --config vitest.config.ts <affected-test-files>
 ```
 
-CI repeats these checks from the immutable lockfile and runs Gitleaks against Git history. Browser CI installs Chromium explicitly before the responsive smoke suite.
+Protected CI is the full-suite authority. It runs four isolated, duration-balanced Vitest coverage shards and two Playwright shards, merges their evidence, enforces the unchanged coverage policy, and runs Gitleaks against Git history. Use `pnpm test:coverage` and `pnpm test:e2e` locally when diagnosing harness or cross-surface failures; routine changes do not duplicate both full suites before protected CI.
 
 ## Workspace boundaries
 
