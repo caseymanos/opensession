@@ -446,6 +446,14 @@ export function CfpBuilder({ eventKey }: { eventKey: string }) {
       (block.type === "single_select" || block.type === "multi_select"),
   );
   const ruleDiagnostics = useMemo(() => validateCfpRules(blocks), [blocks]);
+  const localPublishDiagnostics = ruleDiagnostics.filter(
+    (diagnostic) =>
+      !serverDiagnostics.some(
+        (serverDiagnostic) => serverDiagnostic.message === diagnostic.message,
+      ),
+  );
+  const publishDiagnosticCount =
+    localPublishDiagnostics.length + serverDiagnostics.length;
   const previewEvaluation = useMemo(
     () => evaluateCfpRules(blocks, previewAnswers),
     [blocks, previewAnswers],
@@ -1363,12 +1371,19 @@ export function CfpBuilder({ eventKey }: { eventKey: string }) {
               </li>
             ))}
           </ul>
-          {serverDiagnostics.length ? (
+          {publishDiagnosticCount ? (
             <div className="cfp-publish-errors" role="alert">
               <strong>
-                Resolve {serverDiagnostics.length} form issue before publishing
+                Resolve {publishDiagnosticCount} form issue before publishing
               </strong>
               <ul>
+                {localPublishDiagnostics.map((diagnostic, index) => (
+                  <li
+                    key={`${diagnostic.code}-${diagnostic.ruleId ?? diagnostic.fieldKey}-${index}`}
+                  >
+                    {diagnostic.message}
+                  </li>
+                ))}
                 {serverDiagnostics.map((diagnostic, index) => (
                   <li key={`${diagnostic.path}-${diagnostic.code}-${index}`}>
                     {diagnostic.message}
