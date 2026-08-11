@@ -210,6 +210,296 @@ afterAll(() => {
 });
 
 describe("D1 operational foundation", () => {
+  it("upgrades representative CFP projections from 0019 without losing indexes or history", () => {
+    const migrationPersistence = mkdtempSync(
+      join(tmpdir(), "opensession-d1-cfp-form-migration-"),
+    );
+    const executeMigration = (arguments_: readonly string[]) =>
+      execFileSync(wrangler, arguments_, {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, CI: "1", NO_COLOR: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    const executeLocal = (sql: string, json = false) =>
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--command",
+        sql,
+        "--config",
+        config,
+        ...(json ? ["--json"] : []),
+      ]);
+    const migrationFiles = [
+      "0001_operational_foundation.sql",
+      "0002_auth_security.sql",
+      "0003_operational_observability.sql",
+      "0003_private_uploads.sql",
+      "0004_email_delivery.sql",
+      "0005_auth_browser_binding.sql",
+      "0006_authority_completion.sql",
+      "0007_public_abuse_protection.sql",
+      "0008_tenant_authority_readiness.sql",
+      "0009_authority_cache_invalidation.sql",
+      "0010_cache_invalidation_delivery.sql",
+      "0011_cfp_authoritative_routing.sql",
+      "0012_cfp_submission_reservations.sql",
+      "0013_email_queue_handoff.sql",
+      "0014_schedule_domain.sql",
+      "0015_demo_bootstrap_authorization.sql",
+      "0016_organizer_submissions.sql",
+      "0017_campaign_delivery_product.sql",
+      "0018_schedule_publication.sql",
+      "0019_speaker_profiles.sql",
+    ];
+
+    try {
+      for (const filename of migrationFiles) {
+        executeMigration([
+          "d1",
+          "execute",
+          "DB",
+          "--local",
+          "--persist-to",
+          migrationPersistence,
+          "--file",
+          resolve(root, "migrations", filename),
+          "--config",
+          config,
+        ]);
+      }
+      executeLocal(`
+        INSERT INTO tenant_registry
+          (organization_id, base_key, source_record_id, created_at, updated_at)
+        VALUES
+          ('org_cfp_upgrade', 'base_preview', 'rec_org_cfp_upgrade',
+           '${timestamp}', '${timestamp}');
+        INSERT INTO p_events
+          (id, organization_id, name, slug, timezone, status, source_record_id,
+           source_version, source_content_hash, projected_at)
+        VALUES
+          ('evt_cfp_upgrade', 'org_cfp_upgrade', 'Upgrade CFP', 'upgrade-cfp',
+           'UTC', 'draft', 'rec_evt_cfp_upgrade', 1, '${hash}', '${timestamp}');
+        INSERT INTO p_contacts
+          (id, organization_id, email_normalized, display_name,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('contact_cfp_upgrade', 'org_cfp_upgrade', 'speaker@example.test',
+           'Speaker', 'rec_contact_cfp_upgrade', 1, '${hash}', '${timestamp}');
+        INSERT INTO p_forms
+          (id, organization_id, event_id, name, status, version,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('form_cfp_v1', 'org_cfp_upgrade', 'evt_cfp_upgrade', 'CFP v1',
+           'published', 1, 'rec_form_cfp_v1', 1, '${hash}', '${timestamp}'),
+          ('form_deleted_draft', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'Deleted draft', 'draft', 2, 'rec_form_deleted_draft', 1, '${hash}',
+           '${timestamp}'),
+          ('form_deleted_publication', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'Deleted publication', 'published', 1,
+           'rec_form_deleted_publication', 1, '${hash}', '${timestamp}');
+        UPDATE p_forms SET source_deleted_at = '${timestamp}'
+        WHERE id IN ('form_deleted_draft', 'form_deleted_publication');
+        INSERT INTO p_form_fields
+          (id, organization_id, event_id, form_id, stable_key, sort_order,
+           block_type, label, required, source_record_id, source_version,
+           source_content_hash, projected_at)
+        VALUES
+          ('field_cfp_title', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v1', 'title', 1, 'text', 'Title', 1,
+           'rec_field_cfp_title', 1, '${hash}', '${timestamp}');
+        INSERT INTO p_form_rules
+          (id, organization_id, event_id, form_id, target_field_id,
+           source_field_id, effect, operator, value_json, sort_order,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('rule_cfp_title', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v1', 'field_cfp_title', 'field_cfp_title', 'show',
+           'is_not_empty', 'null', 1, 'rec_rule_cfp_title', 1, '${hash}',
+           '${timestamp}');
+        INSERT INTO p_submissions
+          (id, organization_id, event_id, form_id, form_version, friendly_id,
+           submitter_contact_id, title, status, submitted_at, updated_at,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('submission_cfp_v1', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v1', 1, 'CFP-V1', 'contact_cfp_upgrade', 'Historical',
+           'submitted', '${timestamp}', '${timestamp}', 'rec_submission_cfp_v1',
+           1, '${hash}', '${timestamp}');
+        INSERT INTO p_submission_answers
+          (id, organization_id, event_id, submission_id, field_stable_key,
+           field_label_snapshot, answer_type, value_json, sort_order,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('answer_cfp_v1', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'submission_cfp_v1', 'title', 'Original title', 'short_text',
+           '"Historical"', 1, 'rec_answer_cfp_v1', 1, '${hash}', '${timestamp}');
+      `);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0020_versioned_cfp_forms.sql"),
+        "--config",
+        config,
+      ]);
+
+      const integrity = JSON.parse(
+        executeLocal(
+          `PRAGMA foreign_key_check;
+           SELECT name FROM pragma_index_list('p_form_fields');
+           SELECT name FROM pragma_index_list('p_form_rules');
+           SELECT name, "unique" AS is_unique FROM pragma_index_list('p_forms');
+           SELECT form_version_snapshot, field_label_snapshot, answer_type,
+                  sort_order
+           FROM p_submission_answers WHERE id = 'answer_cfp_v1';`,
+          true,
+        ),
+      ) as D1Execution[];
+      expect(integrity[0]?.results).toEqual([]);
+      expect(integrity[1]?.results).toEqual(
+        expect.arrayContaining([{ name: "idx_p_form_fields_order" }]),
+      );
+      expect(integrity[2]?.results).toEqual(
+        expect.arrayContaining([{ name: "idx_p_form_rules_order" }]),
+      );
+      expect(integrity[3]?.results).toEqual(
+        expect.arrayContaining([
+          { is_unique: 1, name: "uq_p_forms_active_draft" },
+          { is_unique: 1, name: "uq_p_forms_active_publication" },
+          { is_unique: 1, name: "uq_p_forms_publication_version" },
+        ]),
+      );
+      expect(integrity[4]?.results).toEqual([
+        {
+          answer_type: "short_text",
+          field_label_snapshot: "Original title",
+          form_version_snapshot: 1,
+          sort_order: 1,
+        },
+      ]);
+
+      executeLocal(`
+        INSERT INTO p_forms
+          (id, organization_id, event_id, name, status, version,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('form_cfp_v2', 'org_cfp_upgrade', 'evt_cfp_upgrade', 'CFP v2',
+           'draft', 2, 'rec_form_cfp_v2', 1, '${hash}', '${timestamp}');
+        INSERT INTO p_form_fields
+          (id, organization_id, event_id, form_id, stable_key, sort_order,
+           block_type, label, required, source_record_id, source_version,
+           source_content_hash, projected_at)
+        VALUES
+          ('field_cfp_section', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v2', 'details', 1, 'section', 'Details', 0,
+           'rec_field_cfp_section', 1, '${hash}', '${timestamp}'),
+          ('field_cfp_url', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v2', 'example_url', 2, 'url', 'Example URL', 0,
+           'rec_field_cfp_url', 1, '${hash}', '${timestamp}');
+        INSERT INTO p_form_rules
+          (id, organization_id, event_id, form_id, target_field_id,
+           source_field_id, effect, operator, value_json, sort_order,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('rule_cfp_v2', 'org_cfp_upgrade', 'evt_cfp_upgrade', 'form_cfp_v2',
+           'field_cfp_url', 'field_cfp_url', 'show', 'is_not_empty', 'null', 1,
+           'rec_rule_cfp_v2', 1, '${hash}', '${timestamp}');
+        UPDATE p_forms SET status = 'closed' WHERE id = 'form_cfp_v1';
+        UPDATE p_forms SET status = 'published' WHERE id = 'form_cfp_v2';
+        INSERT INTO p_submissions
+          (id, organization_id, event_id, form_id, form_version, friendly_id,
+           submitter_contact_id, title, status, submitted_at, updated_at,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('submission_cfp_v2', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'form_cfp_v2', 2, 'CFP-V2', 'contact_cfp_upgrade', 'Current',
+           'submitted', '${timestamp}', '${timestamp}', 'rec_submission_cfp_v2',
+           1, '${hash}', '${timestamp}');
+        INSERT INTO p_submission_answers
+          (id, organization_id, event_id, submission_id, field_stable_key,
+           field_label_snapshot, answer_type, value_json, sort_order,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('answer_cfp_v2', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+           'submission_cfp_v2', 'example_url', 'Example URL', 'url',
+           '"https://example.test"', 1, 'rec_answer_cfp_v2', 1, '${hash}',
+           '${timestamp}');
+      `);
+      const upgraded = JSON.parse(
+        executeLocal(
+          `SELECT block_type FROM p_form_fields
+           WHERE form_id = 'form_cfp_v2' ORDER BY sort_order;
+           SELECT form_version_snapshot FROM p_submission_answers
+           WHERE id = 'answer_cfp_v2';
+           PRAGMA foreign_key_check;`,
+          true,
+        ),
+      ) as D1Execution[];
+      expect(upgraded[0]?.results).toEqual([
+        { block_type: "section" },
+        { block_type: "url" },
+      ]);
+      expect(upgraded[1]?.results).toEqual([{ form_version_snapshot: 2 }]);
+      expect(upgraded[2]?.results).toEqual([]);
+
+      expect(() =>
+        executeLocal(`
+          INSERT INTO p_forms
+            (id, organization_id, event_id, name, status, version,
+             source_record_id, source_version, source_content_hash, projected_at)
+          VALUES
+            ('form_duplicate_publication', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+             'Duplicate publication', 'published', 3,
+             'rec_form_duplicate_publication', 1, '${hash}', '${timestamp}');
+        `),
+      ).toThrow();
+      executeLocal(`
+        INSERT INTO p_forms
+          (id, organization_id, event_id, name, status, version,
+           source_record_id, source_version, source_content_hash, projected_at)
+        VALUES
+          ('form_draft_v3', 'org_cfp_upgrade', 'evt_cfp_upgrade', 'CFP v3',
+           'draft', 3, 'rec_form_draft_v3', 1, '${hash}', '${timestamp}');
+      `);
+      expect(() =>
+        executeLocal(`
+          INSERT INTO p_forms
+            (id, organization_id, event_id, name, status, version,
+             source_record_id, source_version, source_content_hash, projected_at)
+          VALUES
+            ('form_duplicate_draft', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+             'Duplicate draft', 'draft', 4, 'rec_form_duplicate_draft', 1,
+             '${hash}', '${timestamp}');
+        `),
+      ).toThrow();
+      expect(() =>
+        executeLocal(`
+          INSERT INTO p_submission_answers
+            (id, organization_id, event_id, submission_id, field_stable_key,
+             field_label_snapshot, answer_type, value_json, sort_order,
+             source_record_id, source_version, source_content_hash, projected_at,
+             form_version_snapshot)
+          VALUES
+            ('answer_wrong_version', 'org_cfp_upgrade', 'evt_cfp_upgrade',
+             'submission_cfp_v2', 'example_url', 'Example URL', 'url', '"bad"',
+             2, 'rec_answer_wrong_version', 1, '${hash}', '${timestamp}', 1);
+        `),
+      ).toThrow();
+    } finally {
+      rmSync(migrationPersistence, { force: true, recursive: true });
+    }
+  }, 120_000);
+
   it("keeps a preexisting active tenant fail-closed until reconciliation marks it ready", () => {
     const migrationPersistence = mkdtempSync(
       join(tmpdir(), "opensession-d1-readiness-migration-"),

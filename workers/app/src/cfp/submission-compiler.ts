@@ -924,6 +924,7 @@ export class D1CfpSubmissionCompiler {
           fields: {
             "Field label snapshot": field.label,
             "Field stable key": field.key,
+            "Form version snapshot": policy.formVersion,
             Order: index + 1,
             Submission: itemReference("submission"),
             Type: field.type,

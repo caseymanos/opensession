@@ -451,7 +451,7 @@ describe("BaseAuthority Durable Object", () => {
     });
   });
 
-  it("upgrades a persisted v2 authority cursor to v4 without losing state", async () => {
+  it("upgrades a persisted v2 authority cursor to v5 without losing state", async () => {
     expect(
       (
         await post("/configure-webhook", {
@@ -467,7 +467,7 @@ describe("BaseAuthority Durable Object", () => {
     await expect(state.json()).resolves.toEqual({
       committedCursor: 37,
       committedRosterHash: null,
-      schemaVersion: 4,
+      schemaVersion: 5,
       webhookId: "webhook_v2_upgrade",
     });
   });
@@ -488,7 +488,7 @@ describe("BaseAuthority Durable Object", () => {
     await expect(state.json()).resolves.toEqual({
       committedCursor: 41,
       committedRosterHash: null,
-      schemaVersion: 4,
+      schemaVersion: 5,
       webhookId: "webhook_v3_upgrade",
     });
   });

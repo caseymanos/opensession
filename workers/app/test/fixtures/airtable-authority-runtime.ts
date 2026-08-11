@@ -12,6 +12,7 @@ import type {
   CfpSubmissionPlanInput,
   CfpSubmissionPlanItem,
 } from "../../src/cfp/submission-authority.js";
+import { CfpFormService } from "../../src/cfp/form-service.js";
 import { UploadService } from "../../src/uploads/service.js";
 import { processPublicScheduleCacheInvalidation } from "../../src/public-schedule/cache.js";
 import { D1ScheduleProjectionRepository } from "../../src/schedule/d1-repository.js";
@@ -88,8 +89,26 @@ export class FixtureBaseAuthority extends BaseAuthority {
     };
   }
 
+  cfpFormPlanStatesForTest(): Record<string, number> {
+    return Object.fromEntries(
+      this.ctx.storage.sql
+        .exec<{ count: number; state: string }>(
+          `SELECT CASE WHEN failure_json IS NULL THEN state ELSE 'rejected' END AS state,
+                  count(*) AS count
+           FROM cfp_form_plans
+           GROUP BY CASE WHEN failure_json IS NULL THEN state ELSE 'rejected' END
+           ORDER BY state`,
+        )
+        .toArray()
+        .map((row) => [row.state, row.count]),
+    );
+  }
+
   downgradeAuthoritySchemaToV2ForTest(): void {
     this.ctx.storage.sql.exec(`
+      DROP TABLE cfp_form_event_heads;
+      DROP TABLE cfp_form_plan_items;
+      DROP TABLE cfp_form_plans;
       DROP TABLE cfp_submission_plan_items;
       DROP TABLE cfp_submission_plans;
       ALTER TABLE airtable_cursor_state DROP COLUMN committed_roster_hash;
@@ -99,6 +118,9 @@ export class FixtureBaseAuthority extends BaseAuthority {
 
   downgradeAuthoritySchemaToV3ForTest(): void {
     this.ctx.storage.sql.exec(`
+      DROP TABLE cfp_form_event_heads;
+      DROP TABLE cfp_form_plan_items;
+      DROP TABLE cfp_form_plans;
       DROP TABLE cfp_submission_plan_items;
       DROP TABLE cfp_submission_plans;
       UPDATE authority_schema SET version = 3 WHERE singleton = 1;
@@ -626,6 +648,77 @@ const fixtureHandler = {
           { status: 409 },
         );
       }
+    }
+    if (url.pathname === "/execute-cfp-form-plan") {
+      try {
+        return Response.json(
+          await authority(env).executeCfpFormPlan(await request.json()),
+        );
+      } catch (error) {
+        return Response.json(
+          {
+            error: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : "Unknown error",
+          },
+          { status: 409 },
+        );
+      }
+    }
+    if (url.pathname === "/cfp-form-service") {
+      const body = (await request.json()) as {
+        action?: "close" | "publish" | "read" | "save";
+        at?: string;
+        eventId?: string;
+        request?: unknown;
+      };
+      try {
+        const service = new CfpFormService({
+          actorId: "usr_cfp_form_fixture",
+          authority: authority(env),
+          database: env.DB,
+        });
+        const eventId = body.eventId ?? "";
+        const result =
+          body.action === "read"
+            ? await service.read(eventId)
+            : body.action === "save"
+              ? await service.save(eventId, body.request as never)
+              : body.action === "publish"
+                ? await service.publish(
+                    eventId,
+                    body.request as never,
+                    body.at ? new Date(body.at) : undefined,
+                  )
+                : body.action === "close"
+                  ? await service.close(eventId, body.request as never)
+                  : null;
+        if (!result) {
+          return Response.json({ error: "invalid_action" }, { status: 400 });
+        }
+        return Response.json(result);
+      } catch (error) {
+        return Response.json(
+          {
+            ...(error && typeof error === "object" && "diagnostics" in error
+              ? { diagnostics: error.diagnostics }
+              : {}),
+            error: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : "Unknown error",
+          },
+          { status: 409 },
+        );
+      }
+    }
+    if (url.pathname === "/inspect-cfp-form-plan") {
+      return Response.json(
+        await authority(env).inspectCfpFormPlan(
+          url.searchParams.get("organizationId") ?? "",
+          url.searchParams.get("planId") ?? "",
+        ),
+      );
+    }
+    if (url.pathname === "/cfp-form-plan-states") {
+      return Response.json(await authority(env).cfpFormPlanStatesForTest());
     }
     if (url.pathname === "/resume-cfp-plan") {
       const body = (await request.json()) as {

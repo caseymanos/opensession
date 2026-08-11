@@ -108,6 +108,7 @@ const publicCfpConfiguration = {
       },
     ],
     name: "Call for proposals",
+    status: "published",
     submissionLimit: 3,
     version: 2,
     welcomeContent:
@@ -140,7 +141,7 @@ const publicCfpConfiguration = {
 test.beforeEach(async ({ page }) => {
   await mockTurnstile(page);
   await page.route(
-    "**/api/v1/public/events/ai-engineer-summit/cfp",
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
     async (route) => {
       await route.fulfill({
         body: JSON.stringify(publicCfpConfiguration),
@@ -149,6 +150,69 @@ test.beforeEach(async ({ page }) => {
       });
     },
   );
+});
+
+test("production loading state does not reveal demo CFP content", async ({
+  page,
+}) => {
+  let releaseConfiguration: (() => void) | undefined;
+  const heldConfiguration = new Promise<void>((resolve) => {
+    releaseConfiguration = resolve;
+  });
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      await heldConfiguration;
+      await route.fulfill({ json: publicCfpConfiguration, status: 200 });
+    },
+  );
+
+  await page.goto(publicPath);
+  await expect(
+    page.getByRole("heading", { name: "Loading the call for proposals" }),
+  ).toBeVisible();
+  await expect(page.getByText("Proposals close")).toHaveCount(0);
+  await expect(page.getByText("program@aiengineersummit.com")).toHaveCount(0);
+  releaseConfiguration?.();
+  await expect(
+    page.getByRole("button", { name: "Start a proposal" }),
+  ).toBeVisible();
+});
+
+test("organizer display text stays escaped at the public runtime boundary", async ({
+  page,
+}) => {
+  const eventMarkup = '<img src="x" onerror="window.__cfpMarkupRan=1">';
+  const welcomeMarkup =
+    "<script>window.__cfpMarkupRan=1</script><b>Welcome safely</b>";
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          ...publicCfpConfiguration,
+          event: { ...publicCfpConfiguration.event, name: eventMarkup },
+          form: {
+            ...publicCfpConfiguration.form,
+            welcomeContent: welcomeMarkup,
+          },
+        },
+        status: 200,
+      });
+    },
+  );
+
+  await page.goto(publicPath);
+  await expect(page.getByText(welcomeMarkup, { exact: true })).toBeVisible();
+  await expect(page.locator('.public-cfp-flow img[src="x"]')).toHaveCount(0);
+  await expect(page.locator(".public-cfp-flow script")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { __cfpMarkupRan?: number }).__cfpMarkupRan,
+      ),
+    )
+    .toBeUndefined();
 });
 
 const reviewDraft = {
@@ -492,6 +556,163 @@ test("Workshop conditions announce, require, and clear hidden answers", async ({
   );
   await page.getByLabel("Format").selectOption("90-minute workshop");
   await expect(page.getByLabel("Workshop prerequisites")).toHaveValue("");
+});
+
+test("authoritative builder fields render, validate, and retain stable answer keys", async ({
+  page,
+}) => {
+  await mockVerifiedSession(page);
+  const extendedConfiguration = {
+    ...publicCfpConfiguration,
+    form: {
+      ...publicCfpConfiguration.form,
+      fields: [
+        ...publicCfpConfiguration.form.fields,
+        {
+          helpText: "Optional context for reviewers.",
+          key: "proposal_context",
+          label: "Additional context",
+          options: [],
+          required: false,
+          rules: [],
+          type: "section",
+          validation: {},
+        },
+        {
+          helpText: "Share a complete public web address.",
+          key: "supporting_url",
+          label: "Supporting URL",
+          options: [],
+          required: true,
+          rules: [],
+          type: "url",
+          validation: { maxLength: 2_000 },
+        },
+        {
+          helpText: "Choose all audiences that apply.",
+          key: "audiences",
+          label: "Audience",
+          options: ["Builders", "Leaders"],
+          required: true,
+          rules: [
+            {
+              effect: "show",
+              id: "show_workshop_audiences",
+              operator: "equals",
+              sourceKey: "format",
+              value: "90-minute workshop",
+            },
+          ],
+          type: "multi_select",
+          validation: {},
+        },
+        {
+          helpText: "Required before this proposal can continue.",
+          key: "reviewer_consent",
+          label: "I agree to share this with reviewers",
+          options: [],
+          required: true,
+          rules: [],
+          type: "checkbox",
+          validation: {},
+        },
+      ],
+    },
+  };
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      await route.fulfill({ json: extendedConfiguration, status: 200 });
+    },
+  );
+  let savedAnswers: Record<string, unknown> | null = null;
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/submissions",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      savedAnswers = (
+        route.request().postDataJSON() as { answers: Record<string, unknown> }
+      ).answers;
+      await route.fulfill({
+        json: {
+          friendly_id: "AES-DYNAMIC",
+          outcome: "applied",
+          source_version: 1,
+          status: "draft",
+          submission_id: "submission_dynamic",
+        },
+        status: 201,
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/submissions/submission_dynamic",
+    async (route) => {
+      savedAnswers = (
+        route.request().postDataJSON() as { answers: Record<string, unknown> }
+      ).answers;
+      await route.fulfill({
+        json: {
+          friendly_id: "AES-DYNAMIC",
+          outcome: "applied",
+          source_version: 2,
+          status: "draft",
+          submission_id: "submission_dynamic",
+        },
+        status: 200,
+      });
+    },
+  );
+
+  await page.goto(publicPath);
+  await page.evaluate(
+    ([key, draft]) =>
+      window.localStorage.setItem(
+        key,
+        JSON.stringify({ ...draft, step: "submission" }),
+      ),
+    [draftStorageKey, reviewDraft] as const,
+  );
+  await page.reload();
+
+  await expect(
+    page.getByRole("heading", { name: "Additional context" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Supporting URL")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Audience" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.locator("#proposal-supporting-url-error")).toHaveText(
+    "Supporting URL is required.",
+  );
+  await expect(page.locator("#proposal-reviewer-consent-error")).toHaveText(
+    "I agree to share this with reviewers is required.",
+  );
+
+  await page.getByLabel("Supporting URL").fill("https://example.com/session");
+  await page
+    .getByRole("checkbox", { name: "I agree to share this with reviewers" })
+    .check();
+  await page.getByLabel("Format").selectOption("90-minute workshop");
+  await expect(page.getByRole("group", { name: "Audience" })).toBeVisible();
+  await page.getByLabel("Builders").check();
+  await page
+    .getByLabel("Workshop prerequisites")
+    .fill("Install Node.js and clone the exercise repository.");
+
+  const results = await new AxeBuilder({ page })
+    .include(".public-cfp-card")
+    .analyze();
+  expect(results.violations).toEqual([]);
+  await expect
+    .poll(() => savedAnswers)
+    .toMatchObject({
+      audiences: ["Builders"],
+      reviewer_consent: true,
+      supporting_url: "https://example.com/session",
+    });
 });
 
 test("Product selection submits one canonical Track D reviewer route", async ({
@@ -1143,7 +1364,7 @@ test("closed calls preserve permitted draft edits but disable final submission",
 }) => {
   await mockVerifiedSession(page);
   await page.route(
-    "**/api/v1/public/events/ai-engineer-summit/cfp",
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
     async (route) => {
       await route.fulfill({
         body: JSON.stringify({
@@ -1176,6 +1397,79 @@ test("closed calls preserve permitted draft edits but disable final submission",
   await expect(
     page.getByRole("button", { name: "Submit proposal" }),
   ).toBeDisabled();
+});
+
+test("an existing v1 draft stays editable and submittable after v2 is live", async ({
+  page,
+}) => {
+  await mockVerifiedSession(page);
+  const versionOneDraft = { ...ownedSubmission("draft", 4), form_version: 1 };
+  const configurationRequests: string[] = [];
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      const url = new URL(route.request().url());
+      configurationRequests.push(url.search);
+      const requestedVersion = url.searchParams.get("version");
+      await route.fulfill({
+        body: JSON.stringify(
+          requestedVersion === "1"
+            ? {
+                ...publicCfpConfiguration,
+                form: {
+                  ...publicCfpConfiguration.form,
+                  status: "closed",
+                  version: 1,
+                },
+              }
+            : publicCfpConfiguration,
+        ),
+        contentType: "application/json",
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/submissions",
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ submissions: [versionOneDraft] }),
+        contentType: "application/json",
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/submissions/submission_test_lifecycle",
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          friendly_id: versionOneDraft.friendly_id,
+          outcome: "applied",
+          source_version: versionOneDraft.source_version + 1,
+          status: "draft",
+          submission_id: versionOneDraft.submission_id,
+        }),
+        contentType: "application/json",
+        status: 200,
+      });
+    },
+  );
+
+  await page.goto(publicPath);
+  await expect(
+    page.getByRole("heading", { name: "Shape the session." }),
+  ).toBeVisible();
+  await expect
+    .poll(() => configurationRequests.includes("?version=1"))
+    .toBe(true);
+  expect(configurationRequests[0]).toBe("");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel(/I confirm everyone listed agreed/).check();
+  await expect(
+    page.getByRole("button", { name: "Submit proposal" }),
+  ).toBeEnabled();
 });
 
 test("multiple owned proposals expose lifecycle status and allow another draft", async ({
@@ -1256,7 +1550,7 @@ test("an alternate event slug drives configuration and browser storage scope", a
     ],
   };
   await page.route(
-    "**/api/v1/public/events/community-systems-day/cfp",
+    "**/api/v1/public/events/community-systems-day/cfp*",
     async (route) => {
       await route.fulfill({
         body: JSON.stringify(alternateConfiguration),
@@ -1443,7 +1737,7 @@ test("a pre-open call reports its opening time instead of claiming it closed", a
   page,
 }) => {
   await page.route(
-    "**/api/v1/public/events/ai-engineer-summit/cfp",
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
     async (route) => {
       await route.fulfill({
         body: JSON.stringify({

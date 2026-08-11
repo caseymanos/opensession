@@ -78,6 +78,7 @@ describe("organizer submission contracts", () => {
       organizerSubmissionAnswerSchema.safeParse({
         fieldKey: "slides_file",
         fieldType: "file",
+        formVersion: 2,
         label: "Slides",
         order: 3,
         redacted: true,
@@ -88,6 +89,7 @@ describe("organizer submission contracts", () => {
       organizerSubmissionAnswerSchema.safeParse({
         fieldKey: "slides_file",
         fieldType: "file",
+        formVersion: 2,
         label: "Slides",
         order: 3,
         redacted: false,

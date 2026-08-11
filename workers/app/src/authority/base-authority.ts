@@ -31,6 +31,13 @@ import {
   type SnapshotReplaceInput,
 } from "./snapshot.js";
 import {
+  CfpFormAuthority,
+  CfpFormPlanPreconditionError,
+  type CfpFormPlanInput,
+  type CfpFormPlanInspection,
+  type CfpFormPlanReceipt,
+} from "../cfp/form-authority.js";
+import {
   CfpSubmissionAuthority,
   type CfpSubmissionPlanInput,
   type CfpSubmissionPlanInspection,
@@ -87,7 +94,7 @@ interface TenantRoster {
   }[];
 }
 
-export const authoritySchemaVersion = 4;
+export const authoritySchemaVersion = 5;
 const productionLeaseDurationMilliseconds = 180_000;
 const productionRecoveryDelayMilliseconds = 5_000;
 
@@ -181,6 +188,7 @@ function parseResponse(value: string): AuthorityResponse {
 export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
   private baseQueue: Promise<void> = Promise.resolve();
   private readonly inFlight = new Map<string, Promise<AuthorityResponse>>();
+  private readonly cfpForms: CfpFormAuthority;
   private readonly cfpSubmissions: CfpSubmissionAuthority;
   private readonly projector: D1AuthorityProjector;
   private readonly provider: AirtableAuthorityProvider;
@@ -211,6 +219,12 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
       onItemCommitted: (input, item) =>
         this.onCfpSubmissionItemCommitted(input, item),
       storage: ctx.storage,
+    });
+    this.cfpForms = new CfpFormAuthority({
+      execute: (command) => this.executeSnapshotCommand(command),
+      storage: ctx.storage,
+      validatePrecondition: (input) =>
+        this.validateCfpFormPlanPrecondition(input),
     });
     void ctx.blockConcurrencyWhile(async () => {
       ctx.storage.transactionSync(() => this.initializeSchema());
@@ -408,6 +422,35 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     return this.serializeBase(() => this.cfpSubmissions.execute(input));
   }
 
+  async executeCfpFormPlan(input: unknown): Promise<CfpFormPlanReceipt> {
+    try {
+      return await this.serializeBase(() => this.cfpForms.execute(input));
+    } finally {
+      await this.schedulePendingRecovery();
+    }
+  }
+
+  async resumeCfpFormPlan(
+    organizationId: string,
+    planId: string,
+    requestHash: string,
+  ): Promise<CfpFormPlanReceipt | null> {
+    try {
+      return await this.serializeBase(() =>
+        this.cfpForms.resume(organizationId, planId, requestHash),
+      );
+    } finally {
+      await this.schedulePendingRecovery();
+    }
+  }
+
+  inspectCfpFormPlan(
+    organizationId: string,
+    planId: string,
+  ): CfpFormPlanInspection | null {
+    return this.cfpForms.inspect(organizationId, planId);
+  }
+
   resumeCfpSubmissionPlan(
     organizationId: string,
     planId: string,
@@ -423,6 +466,53 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     planId: string,
   ): CfpSubmissionPlanInspection | null {
     return this.cfpSubmissions.inspect(organizationId, planId);
+  }
+
+  private async validateCfpFormPlanPrecondition(
+    input: CfpFormPlanInput,
+  ): Promise<void> {
+    const result = await this.env.DB.prepare(
+      `SELECT id, status, version, source_version
+       FROM p_forms
+       WHERE organization_id = ?1 AND event_id = ?2
+         AND status IN ('draft', 'published', 'closed')
+         AND source_deleted_at IS NULL
+       ORDER BY CASE status
+                  WHEN 'draft' THEN 0
+                  WHEN 'published' THEN 1
+                  ELSE 2
+                END,
+                version DESC, source_version DESC, id
+       LIMIT 258`,
+    )
+      .bind(input.organizationId, input.eventId)
+      .all<{
+        id: string;
+        source_version: number;
+        status: "closed" | "draft" | "published";
+        version: number;
+      }>();
+    const drafts = result.results.filter((form) => form.status === "draft");
+    const publications = result.results.filter(
+      (form) => form.status === "published",
+    );
+    if (
+      result.results.length > 257 ||
+      drafts.length > 1 ||
+      publications.length > 1
+    ) {
+      throw new Error("The CFP form projection has conflicting active state.");
+    }
+    const actual = drafts[0] ?? publications[0] ?? result.results[0];
+    if (!actual) {
+      throw new Error("The CFP form precondition projection is unavailable.");
+    }
+    if (
+      actual.id !== input.expectedFormId ||
+      actual.source_version !== input.expectedSourceVersion
+    ) {
+      throw new CfpFormPlanPreconditionError(actual.id, actual.source_version);
+    }
   }
 
   async reconcile(
@@ -973,6 +1063,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     } catch {
       await this.schedulePendingRecovery();
     }
+    recovered += await this.serializeBase(() => this.cfpForms.recoverPending());
     return recovered;
   }
 
@@ -996,6 +1087,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         item_count INTEGER NOT NULL CHECK (item_count BETWEEN 1 AND 160),
         state TEXT NOT NULL CHECK (state IN ('received', 'applying', 'complete')),
         receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)),
+        failure_json TEXT CHECK (failure_json IS NULL OR json_valid(failure_json)),
         created_at_ms INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL,
         completed_at_ms INTEGER,
@@ -1031,6 +1123,65 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
     `);
   }
 
+  private migrateCfpFormPlanSchema(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE cfp_form_plans (
+        organization_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        form_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('save', 'publish', 'close')),
+        request_hash TEXT NOT NULL CHECK (
+          length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'
+        ),
+        plan_json TEXT NOT NULL CHECK (json_valid(plan_json)),
+        item_count INTEGER NOT NULL CHECK (item_count BETWEEN 1 AND 400),
+        state TEXT NOT NULL CHECK (state IN ('received', 'applying', 'complete')),
+        receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)),
+        failure_json TEXT CHECK (failure_json IS NULL OR json_valid(failure_json)),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        completed_at_ms INTEGER,
+        PRIMARY KEY (organization_id, plan_id)
+      ) WITHOUT ROWID, STRICT;
+
+      CREATE TABLE cfp_form_plan_items (
+        organization_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        item_index INTEGER NOT NULL CHECK (item_index >= 0),
+        table_key TEXT NOT NULL CHECK (table_key IN (
+          'forms', 'form_fields', 'form_rules'
+        )),
+        entity_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'materialized', 'complete')),
+        materialized_command_json TEXT CHECK (
+          materialized_command_json IS NULL OR json_valid(materialized_command_json)
+        ),
+        provider_record_id TEXT,
+        result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (organization_id, plan_id, item_key),
+        UNIQUE (organization_id, plan_id, item_index),
+        FOREIGN KEY (organization_id, plan_id)
+          REFERENCES cfp_form_plans (organization_id, plan_id)
+      ) WITHOUT ROWID, STRICT;
+      CREATE INDEX cfp_form_plan_items_state
+        ON cfp_form_plan_items (organization_id, plan_id, state, item_index);
+      CREATE TABLE cfp_form_event_heads (
+        organization_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        form_id TEXT NOT NULL,
+        source_version INTEGER NOT NULL CHECK (source_version >= 1),
+        plan_id TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (organization_id, event_id)
+      ) WITHOUT ROWID, STRICT;
+      UPDATE authority_schema SET version = 5 WHERE singleton = 1;
+    `);
+  }
+
   private initializeSchema(): void {
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS authority_schema (
@@ -1050,13 +1201,20 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
       version !== undefined &&
       version !== 1 &&
       version !== 2 &&
-      version !== 3
+      version !== 3 &&
+      version !== 4
     ) {
       throw new Error(`Unsupported BaseAuthority schema version ${version}.`);
     }
 
+    if (version === 4) {
+      this.migrateCfpFormPlanSchema();
+      return;
+    }
+
     if (version === 3) {
       this.migrateCfpSubmissionPlanSchema();
+      this.migrateCfpFormPlanSchema();
       return;
     }
 
@@ -1116,6 +1274,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         UPDATE authority_schema SET version = 3 WHERE singleton = 1;
       `);
       this.migrateCfpSubmissionPlanSchema();
+      this.migrateCfpFormPlanSchema();
       return;
     }
 
@@ -1130,6 +1289,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         UPDATE authority_schema SET version = 3 WHERE singleton = 1;
       `);
       this.migrateCfpSubmissionPlanSchema();
+      this.migrateCfpFormPlanSchema();
       return;
     }
 
@@ -1273,6 +1433,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
       INSERT INTO authority_schema (singleton, version) VALUES (1, 3);
     `);
     this.migrateCfpSubmissionPlanSchema();
+    this.migrateCfpFormPlanSchema();
   }
 
   private async executeDurably(
@@ -1754,6 +1915,16 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
               now + 100,
             )
           : now + recoveryDelayMilliseconds(this.env);
+      earliest = earliest === null ? candidate : Math.min(earliest, candidate);
+    }
+    const pendingCfpFormPlan = this.ctx.storage.sql
+      .exec<{ present: number }>(
+        `SELECT 1 AS present FROM cfp_form_plans
+         WHERE state IN ('received', 'applying') LIMIT 1`,
+      )
+      .toArray()[0];
+    if (pendingCfpFormPlan) {
+      const candidate = now + recoveryDelayMilliseconds(this.env);
       earliest = earliest === null ? candidate : Math.min(earliest, candidate);
     }
     try {

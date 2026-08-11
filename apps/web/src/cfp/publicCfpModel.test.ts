@@ -5,8 +5,10 @@ import type { PublicCfpConfigurationResponse } from "@sessionbox-killer/contract
 import {
   emptyPublicCfpDraft,
   publicCfpConfigurationSupportsFlow,
+  publicCfpDraftContent,
   publicCfpDraftForConfiguration,
   publicCfpEventFromConfiguration,
+  publicCfpRuleAnswersForConfiguration,
   publicCfpRuleFieldsFromConfiguration,
 } from "./publicCfpModel";
 
@@ -55,6 +57,7 @@ const configuration: PublicCfpConfigurationResponse = {
       },
     ],
     name: "CFP",
+    status: "published",
     submissionLimit: 4,
     version: 9,
     welcomeContent: "Share the decisions behind the result.",
@@ -188,6 +191,99 @@ describe("public CFP presentation model", () => {
     });
   });
 
+  it("renders additional builder fields without losing their stable answer keys", () => {
+    const extended: PublicCfpConfigurationResponse = {
+      ...supportedConfiguration,
+      form: {
+        ...supportedConfiguration.form,
+        fields: [
+          ...supportedConfiguration.form.fields,
+          {
+            helpText: "Optional context for reviewers.",
+            key: "proposal_context",
+            label: "Proposal context",
+            options: [],
+            required: false,
+            rules: [],
+            type: "section",
+            validation: {},
+          },
+          {
+            helpText: "A public example.",
+            key: "supporting_url",
+            label: "Supporting URL",
+            options: [],
+            required: false,
+            rules: [],
+            type: "url",
+            validation: { maxLength: 2_000 },
+          },
+          {
+            helpText: "Choose all that apply.",
+            key: "audiences",
+            label: "Audience",
+            options: ["Builders", "Leaders"],
+            required: true,
+            rules: [
+              {
+                effect: "show",
+                id: "show-audiences",
+                operator: "equals",
+                sourceKey: "format",
+                value: "Workshop",
+              },
+            ],
+            type: "multi_select",
+            validation: {},
+          },
+        ],
+      },
+    };
+
+    expect(publicCfpConfigurationSupportsFlow(extended)).toBe(true);
+    const draft = publicCfpDraftForConfiguration(emptyPublicCfpDraft, extended);
+    expect(draft.additionalAnswers).toEqual({
+      audiences: [],
+      supporting_url: "",
+    });
+    expect(
+      publicCfpDraftContent({
+        ...draft,
+        additionalAnswers: {
+          audiences: ["Builders"],
+          supporting_url: "https://example.com/talk",
+        },
+      }).answers,
+    ).toMatchObject({
+      audiences: ["Builders"],
+      supporting_url: "https://example.com/talk",
+    });
+  });
+
+  it("fails file fields closed until the public upload workflow is available", () => {
+    expect(
+      publicCfpConfigurationSupportsFlow({
+        ...supportedConfiguration,
+        form: {
+          ...supportedConfiguration.form,
+          fields: [
+            ...supportedConfiguration.form.fields,
+            {
+              helpText: "",
+              key: "supporting_file",
+              label: "Supporting file",
+              options: [],
+              required: false,
+              rules: [],
+              type: "file",
+              validation: {},
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("preserves an explicit unlimited-submission policy", () => {
     expect(
       publicCfpEventFromConfiguration({
@@ -195,5 +291,35 @@ describe("public CFP presentation model", () => {
         form: { ...supportedConfiguration.form, submissionLimit: null },
       }).maxSubmissions,
     ).toBeNull();
+  });
+
+  it("drops device answers that do not exist in the requested form version", () => {
+    expect(
+      publicCfpRuleAnswersForConfiguration(
+        {
+          ...emptyPublicCfpDraft,
+          additionalAnswers: {
+            obsolete_v1_field: "must not cross versions",
+          },
+          title: "Versioned proposal",
+        },
+        supportedConfiguration,
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        title: "Versioned proposal",
+      }),
+    );
+    expect(
+      publicCfpRuleAnswersForConfiguration(
+        {
+          ...emptyPublicCfpDraft,
+          additionalAnswers: {
+            obsolete_v1_field: "must not cross versions",
+          },
+        },
+        supportedConfiguration,
+      ),
+    ).not.toHaveProperty("obsolete_v1_field");
   });
 });

@@ -127,6 +127,7 @@ const allowedFields: Readonly<
   ]),
   submission_answers: new Set([
     "Submission",
+    "Form version snapshot",
     "Field stable key",
     "Field label snapshot",
     "Type",
@@ -158,6 +159,7 @@ const requiredFields: Readonly<
   ],
   submission_answers: [
     "Submission",
+    "Form version snapshot",
     "Field stable key",
     "Field label snapshot",
     "Type",
@@ -190,7 +192,11 @@ const linkTargets: Readonly<
   },
 };
 
-const numericFields = new Set(["Form version", "Order"]);
+const numericFields = new Set([
+  "Form version",
+  "Form version snapshot",
+  "Order",
+]);
 const booleanFields = new Set(["Is primary"]);
 const nullableFields: Readonly<
   Record<CfpSubmissionPlanTable, ReadonlySet<string>>

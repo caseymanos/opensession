@@ -230,6 +230,72 @@ async function seedCfp(
   ]);
 }
 
+async function seedHistoricalOpenCfpForm(): Promise<void> {
+  const environment = await server.getWorker<Env>().getEnv();
+  await environment.DB.batch([
+    environment.DB.prepare(
+      `INSERT INTO p_forms
+        (id, organization_id, event_id, name, status, version,
+         welcome_content, submission_limit, edit_after_close, published_at,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('form_open-cfp_v1', 'org_open-cfp', 'event_open-cfp',
+               'Original call for proposals', 'closed', 1,
+               'The original published form.', 3, 0, ?1,
+               'rec_form_open-cfp_v1', 2, ?2, ?1)`,
+    ).bind(projectedAt, hash),
+    environment.DB.prepare(
+      `INSERT INTO p_form_fields
+        (id, organization_id, event_id, form_id, stable_key, sort_order,
+         block_type, label, help_text, required, options_json, validation_json,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('field_open-cfp_v1_title', 'org_open-cfp', 'event_open-cfp',
+               'form_open-cfp_v1', 'title', 1, 'text', 'Original title',
+               '', 1, '[]', '{"maxLength":100}',
+               'rec_field_open-cfp_v1_title', 1, ?1, ?2)`,
+    ).bind(hash, projectedAt),
+    environment.DB.prepare(
+      `INSERT INTO p_form_fields
+        (id, organization_id, event_id, form_id, stable_key, sort_order,
+         block_type, label, help_text, required, options_json, validation_json,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('field_open-cfp_v1_abstract', 'org_open-cfp', 'event_open-cfp',
+               'form_open-cfp_v1', 'abstract', 2, 'textarea', 'Original abstract',
+               '', 1, '[]', '{"maxLength":1200}',
+               'rec_field_open-cfp_v1_abstract', 1, ?1, ?2)`,
+    ).bind(hash, projectedAt),
+    environment.DB.prepare(
+      `INSERT INTO p_form_fields
+        (id, organization_id, event_id, form_id, stable_key, sort_order,
+         block_type, label, help_text, required, options_json, validation_json,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('field_open-cfp_v1_outcomes', 'org_open-cfp', 'event_open-cfp',
+               'form_open-cfp_v1', 'outcomes', 3, 'textarea', 'Original outcomes',
+               '', 1, '[]', '{"maxLength":1200}',
+               'rec_field_open-cfp_v1_outcomes', 1, ?1, ?2)`,
+    ).bind(hash, projectedAt),
+    environment.DB.prepare(
+      `INSERT INTO p_form_fields
+        (id, organization_id, event_id, form_id, stable_key, sort_order,
+         block_type, label, help_text, required, options_json, validation_json,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('field_open-cfp_v1_format', 'org_open-cfp', 'event_open-cfp',
+               'form_open-cfp_v1', 'format', 4, 'select', 'Original format',
+               '', 1, '["30-minute talk","90-minute workshop"]', '{}',
+               'rec_field_open-cfp_v1_format', 1, ?1, ?2)`,
+    ).bind(hash, projectedAt),
+    environment.DB.prepare(
+      `INSERT INTO p_form_fields
+        (id, organization_id, event_id, form_id, stable_key, sort_order,
+         block_type, label, help_text, required, options_json, validation_json,
+         source_record_id, source_version, source_content_hash, projected_at)
+       VALUES ('field_open-cfp_v1_track', 'org_open-cfp', 'event_open-cfp',
+               'form_open-cfp_v1', 'track', 5, 'select', 'Original track',
+               '', 1, '["Product"]', '{}',
+               'rec_field_open-cfp_v1_track', 1, ?1, ?2)`,
+    ).bind(hash, projectedAt),
+  ]);
+}
+
 function authHeaders(ipAddress: string): Record<string, string> {
   return {
     "CF-Connecting-IP": ipAddress,
@@ -283,6 +349,7 @@ beforeAll(async () => {
   origin = listening.url.origin;
   await server.getWorker<Env>().applyD1Migrations("DB");
   await seedCfp("open-cfp");
+  await seedHistoricalOpenCfpForm();
   await seedCfp("limit-cfp");
   await seedCfp("closed-cfp", {
     closesAt: "2001-01-01T00:00:00.000Z",
@@ -360,6 +427,152 @@ describe("authoritative public CFP policy", () => {
       (await reader.readBySlug("open-cfp", new Date("2099-01-01T00:00:00Z")))
         ?.acceptingSubmissions,
     ).toBe(false);
+  });
+
+  it("keeps an existing v1 draft valid and submittable after v2 is published", async () => {
+    const environment = await server.getWorker<Env>().getEnv();
+    const reader = new D1PublicCfpPolicyReader(environment.DB);
+    const current = await reader.readBySlug(
+      "open-cfp",
+      new Date("2026-08-10T12:00:00.000Z"),
+    );
+    const historical = await reader.readBySlug(
+      "open-cfp",
+      new Date("2026-08-10T12:00:00.000Z"),
+      1,
+    );
+    if (!current || !historical) {
+      throw new Error("The versioned CFP policy fixture is missing.");
+    }
+    expect(current.publicConfiguration.form).toMatchObject({
+      status: "published",
+      version: 2,
+    });
+    expect(historical.publicConfiguration.form).toMatchObject({
+      status: "closed",
+      version: 1,
+    });
+    expect(historical.acceptingSubmissions).toBe(true);
+
+    const versionedResponse = await server.fetch(
+      "/api/v1/public/events/open-cfp/cfp?version=1",
+    );
+    expect(versionedResponse.status).toBe(200);
+    await expect(versionedResponse.json()).resolves.toMatchObject({
+      acceptingSubmissions: true,
+      form: { status: "closed", version: 1 },
+    });
+
+    const session: AuthenticatedSession = {
+      csrfTokenHash: "1".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      id: "session_cfp_historical",
+      tokenHash: "2".repeat(64),
+      user: {
+        displayName: "Historical Speaker",
+        email: "historical@example.test",
+        id: "user_cfp_historical",
+      },
+    };
+    const request = {
+      answers: {
+        abstract: "The original version of this proposal abstract.",
+        format: "30-minute talk",
+        outcomes: "Understand why immutable snapshots matter.",
+        title: "Historical snapshot safety",
+        track: "Product",
+      },
+      expected_source_version: 3,
+      form_version: 1,
+      mode: "submit" as const,
+      participant_consent: true as const,
+      participants: [
+        {
+          email: session.user.email,
+          id: "historical-speaker",
+          name: "Historical Speaker",
+          role: "Engineer",
+        },
+      ],
+      turnstile_action: "cfp_submit" as const,
+      turnstile_token: "XXXX.DUMMY.TOKEN.XXXX",
+    };
+    const draft = {
+      content: {
+        answers: request.answers,
+        participants: request.participants,
+      },
+      form_version: 1,
+      friendly_id: "OS-HISTORICAL",
+      source_version: 3,
+      submission_id: "submission_cfp_historical",
+      updated_at: projectedAt,
+    };
+    const coordinates = await cfpSubmissionUpdateCoordinates(
+      historical,
+      session,
+      "request-key-historical-0001",
+      request,
+      draft,
+    );
+    const plan = await new D1CfpSubmissionCompiler(
+      environment.DB,
+    ).compileUpdate(
+      historical,
+      session,
+      request,
+      coordinates,
+      draft,
+      new Date("2026-08-10T12:00:00.000Z"),
+    );
+    expect(
+      plan.items.find((item) => item.table === "submissions")?.fields,
+    ).toMatchObject({
+      Form: { kind: "provider_record", recordId: "rec_form_open-cfp_v1" },
+      "Form version": 1,
+      Status: "submitted",
+    });
+    expect(
+      plan.items
+        .filter((item) => item.table === "submission_answers")
+        .map((item) => item.fields),
+    ).toEqual([
+      expect.objectContaining({
+        "Field label snapshot": "Original title",
+        "Field stable key": "title",
+        "Form version snapshot": 1,
+        Order: 1,
+        Type: "short_text",
+      }),
+      expect.objectContaining({
+        "Field label snapshot": "Original abstract",
+        "Field stable key": "abstract",
+        "Form version snapshot": 1,
+        Order: 2,
+        Type: "long_text",
+      }),
+      expect.objectContaining({
+        "Field label snapshot": "Original outcomes",
+        "Field stable key": "outcomes",
+        "Form version snapshot": 1,
+        Order: 3,
+        Type: "long_text",
+      }),
+      expect.objectContaining({
+        "Field label snapshot": "Original format",
+        "Field stable key": "format",
+        "Form version snapshot": 1,
+        Order: 4,
+        Type: "single_select",
+      }),
+      expect.objectContaining({
+        "Field label snapshot": "Original track",
+        "Field stable key": "track",
+        "Form version snapshot": 1,
+        Order: 5,
+        Type: "single_select",
+      }),
+    ]);
   });
 
   it("compiles an authenticated request into server-owned authority routing", async () => {
@@ -944,6 +1157,24 @@ describe("authoritative public CFP policy", () => {
     ).toBe(409);
     expect(staleBody).toMatchObject({
       error: { code: "source_version_conflict" },
+    });
+
+    const versionRace = await server.fetch(
+      `/api/v1/public/events/open-cfp/submissions/${submissionId}`,
+      {
+        body: JSON.stringify({ ...draftRequest, form_version: 1 }),
+        headers: {
+          ...authHeaders("203.0.113.109"),
+          Cookie: authentication.cookie,
+          "Idempotency-Key": "request-key-route-version-race-0001",
+          "X-CSRF-Token": authentication.csrf,
+        },
+        method: "PUT",
+      },
+    );
+    expect(versionRace.status).toBe(409);
+    await expect(versionRace.json()).resolves.toMatchObject({
+      error: { code: "form_version_conflict" },
     });
 
     await environment.DB.prepare(

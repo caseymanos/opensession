@@ -86,6 +86,7 @@ function readMigrationStatements(): string[] {
     "0016_organizer_submissions.sql",
     "0018_schedule_publication.sql",
     "0019_speaker_profiles.sql",
+    "0020_versioned_cfp_forms.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -1369,7 +1370,7 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       Event: [`rec_events_${demoEventId}`],
       ID: indirectFormId,
       Name: "Moved form must protect its fields",
-      Status: "published",
+      Status: "archived",
       Version: 1,
     });
     await seedManagedRecord("form_fields", {

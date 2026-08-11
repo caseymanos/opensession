@@ -236,6 +236,7 @@ export const projectionSpecs: Readonly<
   submission_answers: {
     fields: [
       link("Submission", "submission_id", "submissions"),
+      number("Form version snapshot", "form_version_snapshot"),
       text("Field stable key", "field_stable_key", true),
       text("Field label snapshot", "field_label_snapshot", true),
       text("Type", "answer_type", true),

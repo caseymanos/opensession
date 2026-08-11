@@ -6,6 +6,7 @@ export * from "./demo";
 export * from "./organizer-submissions";
 export * from "./calendar";
 export * from "./speaker-profile";
+export * from "./cfp-forms";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),
@@ -193,89 +194,6 @@ export const turnstileConfigResponseSchema = z
   })
   .strict();
 
-const publicCfpRuleSchema = z
-  .object({
-    effect: z.enum(["require", "show"]),
-    id: publicIdentifierSchema,
-    operator: z.enum(["equals", "includes"]),
-    sourceKey: publicIdentifierSchema,
-    value: z.string().max(4_000),
-  })
-  .strict();
-
-const publicCfpFieldSchema = z
-  .object({
-    helpText: z.string().max(2_000),
-    key: publicIdentifierSchema,
-    label: z.string().trim().min(1).max(240),
-    options: z.array(z.string().trim().min(1).max(240)).max(128),
-    required: z.boolean(),
-    rules: z.array(publicCfpRuleSchema).max(64),
-    type: z.enum([
-      "checkbox",
-      "file",
-      "long_text",
-      "multi_select",
-      "participant",
-      "short_text",
-      "single_select",
-    ]),
-    validation: z
-      .object({
-        maxLength: z.int().positive().max(20_000).optional(),
-        minLength: z.int().nonnegative().max(20_000).optional(),
-      })
-      .strict()
-      .refine(
-        (value) =>
-          value.minLength === undefined ||
-          value.maxLength === undefined ||
-          value.minLength <= value.maxLength,
-        { message: "Minimum length cannot exceed maximum length." },
-      ),
-  })
-  .strict();
-
-export const publicCfpConfigurationResponseSchema = z
-  .object({
-    acceptingSubmissions: z.boolean(),
-    event: z
-      .object({
-        cfpClosesAt: z.iso.datetime({ offset: true }),
-        cfpOpensAt: z.iso.datetime({ offset: true }).nullable(),
-        endsAt: z.iso.datetime({ offset: true }).nullable(),
-        name: z.string().trim().min(1).max(240),
-        slug: publicIdentifierSchema,
-        startsAt: z.iso.datetime({ offset: true }).nullable(),
-        timezone: z.string().trim().min(1).max(120),
-        venue: z.string().trim().max(240),
-      })
-      .strict(),
-    form: z
-      .object({
-        editAfterClose: z.boolean(),
-        fields: z.array(publicCfpFieldSchema).min(1).max(128),
-        name: z.string().trim().min(1).max(240),
-        submissionLimit: z.int().positive().nullable(),
-        version: z.int().positive(),
-        welcomeContent: z.string().max(20_000),
-      })
-      .strict(),
-    formats: z.array(z.string().trim().min(1).max(80)).min(1).max(64),
-    tracks: z
-      .array(
-        z
-          .object({
-            description: z.string().max(2_000),
-            selection: z.string().trim().min(1).max(160),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(64),
-  })
-  .strict();
-
 const publicCfpAnswerValueSchema = z.union([
   z.string().max(20_000),
   z.boolean(),
@@ -449,9 +367,6 @@ export type ProtectedMagicLinkRequest = z.infer<
 export type TurnstileAction = z.infer<typeof turnstileActionSchema>;
 export type TurnstileConfigResponse = z.infer<
   typeof turnstileConfigResponseSchema
->;
-export type PublicCfpConfigurationResponse = z.infer<
-  typeof publicCfpConfigurationResponseSchema
 >;
 export type ProtectedPublicCfpSubmissionRequest = z.infer<
   typeof protectedPublicCfpSubmissionRequestSchema

@@ -72,6 +72,33 @@ interface CfpSubmissionPlanResumer {
   ): Promise<CfpSubmissionPlanReceipt | null>;
 }
 
+type AbuseCapacityPort = typeof requireAbuseCapacity;
+type TurnstileVerificationPort = typeof verifyTurnstile;
+
+export async function requireCfpSubmissionCapacity(
+  context: Context<AppContext>,
+  mode: "draft" | "submit",
+  eventId: string,
+  identity: string,
+  ip: string | null,
+  limiter: AbuseCapacityPort = requireAbuseCapacity,
+): Promise<Response | null> {
+  const operation = mode === "submit" ? "submit" : "autosave";
+  const actorLimited = await limiter(context, operation, { identity, ip });
+  return actorLimited ?? limiter(context, operation, { event: eventId });
+}
+
+export async function verifyCfpSubmissionChallenge(
+  context: Context<AppContext>,
+  request:
+    | ProtectedPublicCfpSubmissionRequest
+    | ProtectedPublicCfpSubmissionUpdateRequest,
+  verifier: TurnstileVerificationPort = verifyTurnstile,
+): Promise<void> {
+  if (request.mode !== "submit") return;
+  await verifier(context, request.turnstile_token, request.turnstile_action);
+}
+
 export async function resumeOwnedCfpSubmission(
   authority: CfpSubmissionPlanResumer,
   organizationId: string,
@@ -188,6 +215,34 @@ function submissionResponse(
     status: receipt.mode === "submit" ? "submitted" : "draft",
     submission_id: receipt.submissionId,
   });
+}
+
+function requestedCfpFormVersion(
+  context: Context<AppContext>,
+): number | null | undefined {
+  const value = context.req.query("version");
+  if (value === undefined) return undefined;
+  if (!/^[1-9][0-9]*$/.test(value)) return null;
+  const version = Number(value);
+  return Number.isSafeInteger(version) ? version : null;
+}
+
+async function policyForOwnedDraft(
+  reader: D1PublicCfpPolicyReader,
+  slug: string,
+  current: PublicCfpPolicy,
+  formVersion: number,
+): Promise<PublicCfpPolicy> {
+  if (current.formVersion === formVersion) return current;
+  const historical = await reader.readBySlug(slug, new Date(), formVersion);
+  if (!historical) {
+    throw new CfpSubmissionError(
+      "form_version_conflict",
+      "The original CFP form snapshot is no longer available.",
+      409,
+    );
+  }
+  return historical;
 }
 
 async function ensureSubmissionReceipt(
@@ -323,11 +378,24 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         404,
       );
     }
+    const formVersion = requestedCfpFormVersion(context);
+    if (formVersion === null) {
+      return context.json(
+        {
+          error: {
+            code: "invalid_form_version",
+            message: "The requested CFP form version is invalid.",
+          },
+          request_id: context.get("requestId"),
+        },
+        400,
+      );
+    }
 
     try {
       const policy = await new D1PublicCfpPolicyReader(
         context.env.DB,
-      ).readBySlug(slug);
+      ).readBySlug(slug, new Date(), formVersion);
       if (!policy) {
         return context.json(
           {
@@ -467,23 +535,15 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
 
       requireSubmissionReceiptReady(context, request.data);
 
-      const operation = request.data.mode === "submit" ? "submit" : "autosave";
-      const limited = await requireAbuseCapacity(context, operation, {
-        identity: session.user.id,
-        ip: context.req.header("CF-Connecting-IP") ?? null,
-      });
+      const limited = await requireCfpSubmissionCapacity(
+        context,
+        request.data.mode,
+        policy.eventId,
+        session.user.id,
+        context.req.header("CF-Connecting-IP") ?? null,
+      );
       if (limited) return limited;
-      const eventLimited = await requireAbuseCapacity(context, operation, {
-        event: policy.eventId,
-      });
-      if (eventLimited) return eventLimited;
-      if (request.data.mode === "submit") {
-        await verifyTurnstile(
-          context,
-          request.data.turnstile_token,
-          request.data.turnstile_action,
-        );
-      }
+      await verifyCfpSubmissionChallenge(context, request.data);
 
       const plan = await new D1CfpSubmissionCompiler(context.env.DB).compile(
         policy,
@@ -652,10 +712,9 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
           session,
           context.req.header("X-CSRF-Token") ?? null,
         );
-        const policy = await new D1PublicCfpPolicyReader(
-          context.env.DB,
-        ).readBySlug(slug);
-        if (!policy) {
+        const policyReader = new D1PublicCfpPolicyReader(context.env.DB);
+        const currentPolicy = await policyReader.readBySlug(slug);
+        if (!currentPolicy) {
           return context.json(
             {
               error: {
@@ -669,7 +728,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         }
         const owned = await new D1OwnedCfpDraftReader(
           context.env.DB,
-        ).readForWrite(policy, session, submissionId);
+        ).readForWrite(currentPolicy, session, submissionId);
         if (!owned) {
           return context.json(
             {
@@ -682,6 +741,12 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
             404,
           );
         }
+        const policy = await policyForOwnedDraft(
+          policyReader,
+          slug,
+          currentPolicy,
+          owned.draft.form_version,
+        );
         const coordinates = await cfpSubmissionUpdateCoordinates(
           policy,
           session,
@@ -723,24 +788,15 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
 
         requireSubmissionReceiptReady(context, request.data);
 
-        const operation =
-          request.data.mode === "submit" ? "submit" : "autosave";
-        const limited = await requireAbuseCapacity(context, operation, {
-          identity: session.user.id,
-          ip: context.req.header("CF-Connecting-IP") ?? null,
-        });
+        const limited = await requireCfpSubmissionCapacity(
+          context,
+          request.data.mode,
+          policy.eventId,
+          session.user.id,
+          context.req.header("CF-Connecting-IP") ?? null,
+        );
         if (limited) return limited;
-        const eventLimited = await requireAbuseCapacity(context, operation, {
-          event: policy.eventId,
-        });
-        if (eventLimited) return eventLimited;
-        if (request.data.mode === "submit") {
-          await verifyTurnstile(
-            context,
-            request.data.turnstile_token,
-            request.data.turnstile_action,
-          );
-        }
+        await verifyCfpSubmissionChallenge(context, request.data);
 
         const plan = await new D1CfpSubmissionCompiler(
           context.env.DB,

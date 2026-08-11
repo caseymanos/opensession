@@ -43,6 +43,7 @@ function liveDetail(status = "submitted", version = 2) {
         {
           fieldKey: "outcomes",
           fieldType: "long_text",
+          formVersion: 3,
           label: "What will attendees learn?",
           order: 0,
           redacted: false,
@@ -51,6 +52,7 @@ function liveDetail(status = "submitted", version = 2) {
         {
           fieldKey: "private_file",
           fieldType: "file",
+          formVersion: 3,
           label: "Private attachment",
           order: 1,
           redacted: true,

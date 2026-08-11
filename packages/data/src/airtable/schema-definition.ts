@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 6;
+export const AIRTABLE_SCHEMA_VERSION = 7;
 
 export type AirtableTableKey =
   | "organizations"
@@ -279,6 +279,8 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
         "checkbox",
         "file",
         "participant",
+        "section",
+        "url",
       ]),
       text("Label"),
       longText("Help"),
@@ -352,6 +354,7 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
     ]),
     table("submission_answers", "Submission Answers", [
       link("Submission", "submissions"),
+      number("Form version snapshot"),
       text("Field stable key"),
       text("Field label snapshot"),
       text("Type"),
