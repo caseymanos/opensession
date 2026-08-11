@@ -1,0 +1,27 @@
+{
+  "recordsTotal": 3,
+  "recordsFiltered": 3,
+  "data": [
+    {
+      "sessionId": 3101,
+      "title": "Opening systems safely",
+      "startTime": "2026/09/14 09:00",
+      "endTime": "2026/09/14 09:45",
+      "description": "A deterministic fixture session.",
+      "location": "Main hall",
+      "format": "MAIN_STAGE",
+      "status": "VISIBLE"
+    },
+    {
+      "sessionId": 3102,
+      "title": "Bounded provider retries",
+      "startTime": "2026/09/14 10:00",
+      "endTime": "2026/09/14 10:45",
+      "description": "No production or attendee data is present.",
+      "location": "Room A",
+      "format": "BREAKOUT_SESSION",
+      "status": "HIDDEN"
+    }
+  ],
+  "error": null
+}
