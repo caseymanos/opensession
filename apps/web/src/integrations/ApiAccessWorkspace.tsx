@@ -38,6 +38,7 @@ import {
   createApiKeyPort,
   type ApiKeyPort,
 } from "./apiKeyClient";
+import { AirtableHealthPanel } from "./AirtableHealthPanel";
 
 import "./api-access-workspace.css";
 
@@ -292,9 +293,8 @@ export function ApiAccessWorkspace({
           <p className="api-access__eyebrow">Integrations</p>
           <h1>API access</h1>
           <p>
-            Give trusted systems the smallest durable slice of event data they
-            need. Every credential is scoped, auditable, and instantly
-            revocable.
+            Inspect the Airtable authority, projection health, and scoped API
+            access from one operational surface.
           </p>
         </div>
         <div className="api-access__hero-actions">
@@ -306,6 +306,8 @@ export function ApiAccessWorkspace({
           </Button>
         </div>
       </header>
+
+      <AirtableHealthPanel eventKey={eventKey} />
 
       <section className="api-access__trust" aria-label="API key safeguards">
         <div>

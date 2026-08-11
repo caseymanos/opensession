@@ -3,6 +3,7 @@ import type {
   AirtableRecord,
   AirtableTableKey,
 } from "@sessionbox-killer/data/airtable/internal";
+import { getExpectedTable } from "@sessionbox-killer/data/airtable/internal";
 
 import { projectionSpecs, projectionTableOrder } from "./projection-spec.js";
 import type {
@@ -28,6 +29,22 @@ export interface ReconciliationResult {
   projected: number;
   scanId: string;
   tables: readonly AirtableTableKey[];
+}
+
+export interface ReconciliationPlanCount {
+  create: number;
+  missing: number;
+  unchanged: number;
+  update: number;
+}
+
+export interface ReconciliationPlan {
+  counts: ReconciliationPlanCount;
+  fingerprint: string;
+  tables: readonly (ReconciliationPlanCount & {
+    key: AirtableTableKey;
+    name: string;
+  })[];
 }
 
 function safeErrorCode(error: unknown): string {
@@ -78,17 +95,128 @@ export class AirtableReconciliationService {
     this.#provider = options.provider;
   }
 
+  async plan(options: {
+    organizationId: string;
+    tables?: readonly AirtableTableKey[] | undefined;
+  }): Promise<ReconciliationPlan> {
+    const tenant = await this.assertActiveTenant(options.organizationId);
+    const tables = this.selectedTables(options.tables);
+    const results: ReconciliationPlan["tables"][number][] = [];
+    const plannedOwnership = new Map<string, string>();
+    const fingerprintParts: string[] = [];
+
+    for (const table of tables) {
+      const counts: ReconciliationPlanCount = {
+        create: 0,
+        missing: 0,
+        unchanged: 0,
+        update: 0,
+      };
+      const seenRecordIds = new Set<string>();
+      const records = await this.#provider.listTableRecords(table);
+      let organizationRecords = 0;
+      for (const record of records) {
+        if (table === "organizations" && record.id !== tenant.sourceRecordId) {
+          continue;
+        }
+        if (
+          !(await this.belongsToOrganization(
+            options.organizationId,
+            table,
+            record,
+            plannedOwnership,
+          ))
+        ) {
+          continue;
+        }
+        organizationRecords += 1;
+        const stableId = entityId(record.fields, table);
+        const baseline = await this.baseline(table, record.id);
+        if (baseline && baseline.entityId !== stableId) {
+          throw new Error(
+            `Airtable ${table} stable ID changed outside the authority.`,
+          );
+        }
+        const inspection = await this.#provider.inspectReconciliationRecord(
+          table,
+          record,
+          baseline,
+        );
+        counts[inspection.disposition] += 1;
+        seenRecordIds.add(record.id);
+        plannedOwnership.set(record.id, options.organizationId);
+        fingerprintParts.push(
+          [
+            table,
+            record.id,
+            stableId,
+            inspection.sourceVersion,
+            inspection.sourceContentHash,
+            inspection.disposition,
+          ].join(":"),
+        );
+      }
+      if (table === "organizations" && organizationRecords !== 1) {
+        throw new Error(
+          "Airtable authority requires exactly one organization record per tenant.",
+        );
+      }
+      const projected = await this.#env.DB.prepare(
+        `SELECT provider_record_id FROM authority_source_records
+         WHERE base_key = ? AND provider_table_key = ? AND organization_id = ?
+           AND source_deleted_at IS NULL`,
+      )
+        .bind(this.baseKey(), table, options.organizationId)
+        .all<{ provider_record_id: string }>();
+      counts.missing = projected.results.filter(
+        ({ provider_record_id }) => !seenRecordIds.has(provider_record_id),
+      ).length;
+      projected.results
+        .filter(
+          ({ provider_record_id }) => !seenRecordIds.has(provider_record_id),
+        )
+        .forEach(({ provider_record_id }) =>
+          fingerprintParts.push(`${table}:${provider_record_id}:missing`),
+        );
+      results.push({
+        ...counts,
+        key: table,
+        name: getExpectedTable(table).name,
+      });
+    }
+
+    const fingerprintBytes = new TextEncoder().encode(
+      fingerprintParts.sort().join("\n"),
+    );
+    const fingerprint = [
+      ...new Uint8Array(
+        await crypto.subtle.digest("SHA-256", fingerprintBytes),
+      ),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    return {
+      counts: results.reduce<ReconciliationPlanCount>(
+        (total, table) => ({
+          create: total.create + table.create,
+          missing: total.missing + table.missing,
+          unchanged: total.unchanged + table.unchanged,
+          update: total.update + table.update,
+        }),
+        { create: 0, missing: 0, unchanged: 0, update: 0 },
+      ),
+      fingerprint,
+      tables: results,
+    };
+  }
+
   async fullScan(options: {
     cursor?: number | undefined;
     organizationId: string;
     tables?: readonly AirtableTableKey[] | undefined;
   }): Promise<ReconciliationResult> {
     const tenant = await this.assertActiveTenant(options.organizationId);
-    const requested = new Set(options.tables ?? projectionTableOrder);
-    const tables = projectionTableOrder.filter((table) => requested.has(table));
-    if (tables.length !== requested.size) {
-      throw new Error("Reconciliation requested an unknown Airtable table.");
-    }
+    const tables = this.selectedTables(options.tables);
     const isCompleteFullScan = tables.length === projectionTableOrder.length;
     const now = new Date().toISOString();
     const invalidated = await this.#env.DB.prepare(
@@ -309,6 +437,21 @@ export class AirtableReconciliationService {
     };
   }
 
+  private selectedTables(
+    selected: readonly AirtableTableKey[] | undefined,
+  ): AirtableTableKey[] {
+    const requested = new Set(selected ?? projectionTableOrder);
+    const tables = projectionTableOrder.filter((table) => requested.has(table));
+    if (
+      tables.length !== requested.size ||
+      tables.length === 0 ||
+      (selected && new Set(selected).size !== selected.length)
+    ) {
+      throw new Error("Reconciliation table selection is invalid.");
+    }
+    return tables;
+  }
+
   private async baseline(
     table: AirtableTableKey,
     recordId: string,
@@ -336,6 +479,7 @@ export class AirtableReconciliationService {
     organizationId: string,
     table: AirtableTableKey,
     record: AirtableRecord,
+    plannedOwnership?: ReadonlyMap<string, string>,
   ): Promise<boolean> {
     const existing = await this.#env.DB.prepare(
       `SELECT organization_id FROM authority_source_records
@@ -348,6 +492,8 @@ export class AirtableReconciliationService {
       return entityId(record.fields, table) === organizationId;
     const links = linkedRecordIds(record.fields, table);
     for (const recordId of links) {
+      const planned = plannedOwnership?.get(recordId);
+      if (planned) return planned === organizationId;
       const linked = await this.#env.DB.prepare(
         `SELECT organization_id FROM authority_source_records
          WHERE base_key = ? AND provider_record_id = ? AND source_deleted_at IS NULL

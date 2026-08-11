@@ -13,6 +13,7 @@ export * from "./decisions";
 export * from "./readiness";
 export * from "./lifecycle";
 export * from "./privacy";
+export * from "./integrations";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),

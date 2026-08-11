@@ -87,6 +87,207 @@
   background: var(--ink-200);
 }
 
+.airtable-health {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0 2.7rem;
+  padding: clamp(1rem, 2vw, 1.4rem);
+  border: 1px solid var(--ink-200);
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at 96% 0, rgb(120 193 144 / 12%), transparent 18rem),
+    var(--paper-50);
+}
+
+.airtable-health .api-access__section-heading {
+  margin-bottom: 0;
+}
+
+.airtable-health .api-access__section-heading .ui-button,
+.airtable-health__activity span,
+.airtable-health__trace-grid > .ui-card > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.airtable-health__eyebrow {
+  margin: 0 0 0.18rem !important;
+  color: #31654a !important;
+  font-size: 0.64rem !important;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.airtable-health__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.airtable-health__metrics > .ui-card {
+  display: grid;
+  min-width: 0;
+  gap: 0.28rem;
+  padding: 0.9rem;
+}
+
+.airtable-health__metrics span:first-child,
+.airtable-health__metrics small {
+  color: var(--ink-500);
+  font-size: 0.66rem;
+}
+
+.airtable-health__metrics > .ui-card > strong {
+  overflow: hidden;
+  font: 750 1.2rem/1.2 var(--font-display);
+  text-overflow: ellipsis;
+}
+
+.airtable-health__metrics .ui-status {
+  justify-self: start;
+  text-transform: capitalize;
+}
+
+.airtable-health__activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.2rem;
+  padding: 0.72rem 0.85rem;
+  color: var(--ink-600);
+  border: 1px solid var(--ink-150, #e2e6e2);
+  border-radius: 0.7rem;
+  background: var(--paper-100);
+  font-size: 0.7rem;
+}
+
+.airtable-health__activity svg {
+  color: #31654a;
+}
+
+.airtable-health__activity strong {
+  color: var(--ink-850, var(--ink-900));
+}
+
+.airtable-health__trace {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.15rem;
+}
+
+.airtable-health__trace h3,
+.airtable-reconcile__tables h3 {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.airtable-health__trace > div:first-child > p,
+.airtable-reconcile__tables > p {
+  margin: 0.2rem 0 0;
+  color: var(--ink-600);
+  font-size: 0.7rem;
+}
+
+.airtable-health__trace-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.airtable-health__trace-grid > .ui-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+}
+
+.airtable-health__trace-grid > .ui-card > div > svg {
+  color: #31654a;
+}
+
+.airtable-health__trace-grid > .ui-card > div > strong {
+  font-size: 0.73rem;
+}
+
+.airtable-health__trace-grid > .ui-card > div > span {
+  margin-left: auto;
+  color: #244f38;
+  font: 800 1.05rem var(--font-display);
+}
+
+.airtable-health__trace-grid ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.airtable-health__trace-grid li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--ink-600);
+  font-size: 0.63rem;
+}
+
+.airtable-reconcile {
+  display: grid;
+  gap: 1rem;
+}
+
+.airtable-reconcile__counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.airtable-reconcile__counts > div {
+  display: grid;
+  gap: 0.12rem;
+  padding: 0.7rem;
+  text-align: center;
+  border: 1px solid var(--ink-200);
+  border-radius: 0.6rem;
+  background: var(--paper-100);
+}
+
+.airtable-reconcile__counts strong {
+  font: 800 1.25rem var(--font-display);
+}
+
+.airtable-reconcile__counts span {
+  color: var(--ink-600);
+  font-size: 0.63rem;
+  text-transform: capitalize;
+}
+
+.airtable-reconcile__tables ul {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 12rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.airtable-reconcile__tables li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.5rem;
+  background: var(--paper-100);
+  font-size: 0.7rem;
+}
+
+.airtable-reconcile__tables li span {
+  color: var(--ink-600);
+}
+
 .api-access__trust > div {
   display: flex;
   align-items: flex-start;
@@ -397,6 +598,11 @@
     grid-template-columns: 1fr;
   }
 
+  .airtable-health__metrics,
+  .airtable-health__trace-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .api-key-card__metadata {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 0.8rem;
@@ -428,8 +634,17 @@
   }
 
   .api-key-create__row,
-  .api-key-create__scopes > div {
+  .api-key-create__scopes > div,
+  .airtable-health__metrics,
+  .airtable-health__trace-grid,
+  .airtable-reconcile__counts {
     grid-template-columns: 1fr;
+  }
+
+  .airtable-health .api-access__section-heading,
+  .airtable-reconcile__tables li {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .api-key-card__topline,

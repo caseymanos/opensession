@@ -774,6 +774,47 @@ const fixtureHandler = {
         );
       }
     }
+    if (url.pathname === "/reconcile-plan") {
+      const body = (await request.json()) as {
+        organizationId?: string;
+        tables?: Parameters<ReturnType<typeof authority>["planReconcile"]>[1];
+      };
+      try {
+        return Response.json(
+          await authority(env).planReconcile(
+            body.organizationId ?? "org_fixture",
+            body.tables,
+          ),
+        );
+      } catch (error) {
+        return Response.json(
+          {
+            error: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : "Unknown error",
+          },
+          { status: 500 },
+        );
+      }
+    }
+    if (url.pathname === "/reconcile-planned") {
+      const body = (await request.json()) as {
+        fingerprint: string;
+        organizationId: string;
+      };
+      try {
+        return Response.json(
+          await authority(env).reconcilePlanned(
+            body.organizationId,
+            body.fingerprint,
+          ),
+        );
+      } catch (error) {
+        return Response.json(
+          { error: error instanceof Error ? error.name : "UnknownError" },
+          { status: 500 },
+        );
+      }
+    }
     if (url.pathname === "/configure-webhook") {
       const body = (await request.json()) as {
         cursor?: number;
