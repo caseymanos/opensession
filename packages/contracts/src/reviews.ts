@@ -335,7 +335,7 @@ export const reviewOperationsCommandResultSchema = z
     appliedAt: reviewInstantSchema,
     commandId: reviewIdentifierSchema,
     entityId: reviewIdentifierSchema,
-    entityType: z.enum(["assignment", "group", "rubric"]),
+    entityType: z.enum(["assignment", "group", "rubric", "submission"]),
     outcome: z.enum(["applied", "replayed"]),
     projection: z.enum(["durable", "repair_pending"]),
     version: z.int().positive(),

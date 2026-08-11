@@ -638,6 +638,139 @@ describe.sequential("review operations runtime", () => {
     );
   });
 
+  it("computes submitted-only evidence and records one auditable decision", async () => {
+    const queue = (await (
+      await request(
+        "/api/events/event_alpha/reviewer-assignments",
+        reviewerOneAuth,
+      )
+    ).json()) as {
+      assignments: { assignment: { id: string; sourceVersion: number } }[];
+    };
+    const assignment = queue.assignments.find(
+      ({ assignment }) => assignment.id === "assignment_existing",
+    )?.assignment;
+    const submit = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      {
+        assignmentId: "assignment_existing",
+        commandId: "command_decision_review_submit",
+        draft: {
+          note: "Strong evidence.",
+          scores: [
+            { criterionId: "criterion_value", score: 4 },
+            { criterionId: "criterion_evidence", score: 5 },
+          ],
+        },
+        expectedVersion: assignment?.sourceVersion,
+        type: "submit_review",
+      },
+    );
+    expect(submit.status, await submit.clone().text()).toBe(200);
+
+    const privateRead = await request(
+      "/api/events/event_alpha/decisions",
+      reviewerOneAuth,
+    );
+    expect(privateRead.status).toBe(403);
+
+    const before = await request(
+      "/api/events/event_alpha/decisions",
+      organizerAuth,
+    );
+    expect(before.status, await before.clone().text()).toBe(200);
+    expect(await before.json()).toMatchObject({
+      submissions: expect.arrayContaining([
+        expect.objectContaining({
+          aggregateScore: 4.4,
+          decision: "undecided",
+          id: "submission_assigned",
+          reviews: [
+            expect.objectContaining({
+              note: "Strong evidence.",
+              overallScore: 4.4,
+              reviewer: "Riley Reviewer",
+              status: "submitted",
+            }),
+          ],
+        }),
+      ]),
+    });
+
+    const command = {
+      audience: "Primary speaker",
+      commandId: "command_submission_accept",
+      decision: "accepted",
+      expectedVersion: 1,
+      messageMode: "recorded_only",
+      privateNote: "Anchor the reliability track.",
+      reason: "Strong program fit",
+      submissionId: "submission_assigned",
+      template: null,
+      type: "record_decision",
+    };
+    const applied = await request(
+      "/api/events/event_alpha/decisions/submission_assigned/commands",
+      organizerAuth,
+      command,
+    );
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    expect(await applied.json()).toMatchObject({
+      ok: true,
+      result: {
+        entityType: "submission",
+        outcome: "applied",
+        version: 2,
+      },
+    });
+    const replay = await request(
+      "/api/events/event_alpha/decisions/submission_assigned/commands",
+      organizerAuth,
+      command,
+    );
+    expect(await replay.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "replayed", version: 2 },
+    });
+    const unauthorized = await request(
+      "/api/events/event_alpha/decisions/submission_assigned/commands",
+      reviewerTwoAuth,
+      {
+        ...command,
+        commandId: "command_reviewer_forbidden",
+        expectedVersion: 2,
+      },
+    );
+    expect(unauthorized.status).toBe(403);
+
+    const after = await request(
+      "/api/events/event_alpha/decisions",
+      organizerAuth,
+    );
+    expect(after.status, await after.clone().text()).toBe(200);
+    const decided = (
+      (await after.json()) as {
+        submissions: {
+          decision: string;
+          history: unknown[];
+          id: string;
+        }[];
+      }
+    ).submissions.find(({ id }) => id === "submission_assigned");
+    expect(decided).toMatchObject({ decision: "accepted" });
+    expect(decided?.history).toEqual([
+      expect.objectContaining({
+        action: "accepted",
+        actor: "Owen Organizer",
+        commandId: command.commandId,
+        messageMode: "recorded_only",
+        privateNote: command.privateNote,
+        reason: command.reason,
+      }),
+    ]);
+  });
+
   it("records conflicts durably, removes scoring access, and exposes authoritative audit history", async () => {
     const operations = (await (
       await request("/api/events/event_alpha/review-operations", organizerAuth)

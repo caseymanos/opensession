@@ -52,6 +52,16 @@ function reviewEventKey(pathname: string): string | null {
   }
 }
 
+function decisionEventKey(pathname: string): string | null {
+  const value = /^\/app\/([^/]+)\/decisions\/?$/.exec(pathname)?.[1];
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function useRuntimeEnvironment() {
   const [environment, setEnvironment] = useState<AppEnvironment | null>(null);
 
@@ -115,6 +125,8 @@ export function WorkspaceApp({
   const submissionRoute = organizerSubmissionRoute(currentPath);
   const cfpEvent = cfpEventKey(currentPath);
   const reviewEvent = reviewEventKey(currentPath);
+  const decisionEvent = decisionEventKey(currentPath);
+  const isDecisionFixtureRoute = currentPath === "/fixtures/decisions";
   const isReviewFixtureRoute = currentPath.startsWith("/fixtures/reviews/");
   const content = apiAccessEvent ? (
     <ApiAccessWorkspace
@@ -160,8 +172,13 @@ export function WorkspaceApp({
       state="error"
       title="Review operations route not found"
     />
-  ) : currentPath.endsWith("/decisions") ? (
-    <DecisionWorkspace key={resetVersion} />
+  ) : isDecisionFixtureRoute ? (
+    <DecisionWorkspace fixture key={resetVersion} />
+  ) : decisionEvent ? (
+    <DecisionWorkspace
+      eventKey={decisionEvent}
+      key={`${decisionEvent}:${resetVersion}`}
+    />
   ) : isAgendaRoute ? (
     isAgendaFixtureRoute ? (
       <AgendaBuilder fixtureState={agendaFixtureState} key={resetVersion} />

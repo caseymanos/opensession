@@ -1,7 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import type {
+  DecisionWorkspaceResponse,
+  RecordDecisionCommand,
+} from "@sessionbox-killer/contracts";
 
-const decisionsPath = "/app/ai-engineer-summit/decisions";
+const decisionsPath = "/fixtures/decisions";
 
 test("decision workspace exposes transparent aggregate and queue state", async ({
   page,
@@ -152,4 +156,154 @@ test("decision workspace remains usable at 360px without document overflow", asy
     .include(".decision-workspace")
     .analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("production decision records and retries one exact authoritative command", async ({
+  page,
+}) => {
+  const csrf = `decision-csrf-${"c".repeat(40)}`;
+  await page.context().addCookies([
+    {
+      name: "__Host-opensession-csrf",
+      sameSite: "Lax",
+      secure: true,
+      url: "https://127.0.0.1:8787",
+      value: csrf,
+    },
+  ]);
+  const response: DecisionWorkspaceResponse = {
+    actor: "Owen Organizer",
+    eventId: "event_alpha",
+    eventName: "OpenSession Summit",
+    submissions: [
+      {
+        aggregateScore: 4.4,
+        decision: "undecided",
+        format: "30-minute talk",
+        history: [],
+        id: "submission_alpha",
+        reference: "SUB-001",
+        reviews: [
+          {
+            conflictReason: null,
+            criteria: [
+              {
+                criterionId: "criterion_value",
+                label: "Audience value",
+                score: 4,
+                weight: 60,
+              },
+              {
+                criterionId: "criterion_evidence",
+                label: "Evidence",
+                score: 5,
+                weight: 40,
+              },
+            ],
+            id: "review_alpha",
+            note: "Strong evidence.",
+            overallScore: 4.4,
+            reviewer: "Riley Reviewer",
+            status: "submitted",
+            submittedAt: "2026-08-11T12:00:00.000Z",
+          },
+        ],
+        sourceVersion: 1,
+        speakerCount: 1,
+        title: "Reliable agents",
+        track: "Reliability",
+      },
+    ],
+  };
+  const bodies: string[] = [];
+  await page.route("**/api/events/event_alpha/decisions**", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: response });
+      return;
+    }
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrf);
+    bodies.push(route.request().postData() ?? "");
+    const command = route.request().postDataJSON() as RecordDecisionCommand;
+    if (bodies.length === 1) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "authority_unavailable",
+            message: "The decision outcome was not confirmed.",
+          },
+          request_id: "request_decision_unknown",
+        },
+        status: 503,
+      });
+      return;
+    }
+    const submission = response.submissions[0];
+    if (!submission) throw new Error("Expected one decision submission.");
+    response.submissions[0] = {
+      ...submission,
+      decision: command.decision,
+      history: [
+        {
+          action: command.decision,
+          actor: "Owen Organizer",
+          at: "2026-08-11T12:05:00.000Z",
+          audience: command.audience,
+          commandId: command.commandId,
+          messageMode: command.messageMode,
+          privateNote: command.privateNote || null,
+          reason: command.reason,
+          template: command.template,
+        },
+      ],
+      sourceVersion: 2,
+    };
+    await route.fulfill({
+      json: {
+        ok: true,
+        result: {
+          appliedAt: "2026-08-11T12:05:00.000Z",
+          commandId: command.commandId,
+          entityId: command.submissionId,
+          entityType: "submission",
+          outcome: bodies.length === 1 ? "applied" : "replayed",
+          projection: "durable",
+          version: 2,
+        },
+      },
+    });
+  });
+
+  await page.goto("/app/event_alpha/decisions");
+  await page.getByRole("button", { name: "Accept SUB-001" }).click();
+  const dialog = page.getByRole("dialog", { name: "Accept this proposal?" });
+  await expect(dialog).toContainText("Accept by Owen Organizer");
+  await expect(dialog).toContainText("Accept · OpenSession Summit");
+  await dialog.getByLabel("Decision reason").selectOption("Strong program fit");
+  await dialog.getByLabel("Record without sending").check();
+  await dialog.getByRole("button", { name: "Record accept" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Decision not confirmed" }),
+  ).toBeVisible();
+  await page.reload();
+  const restoredDialog = page.getByRole("dialog", {
+    name: "Accept this proposal?",
+  });
+  await expect(restoredDialog.getByLabel("Decision reason")).toHaveValue(
+    "Strong program fit",
+  );
+  await restoredDialog
+    .getByRole("button", { name: "Retry exact decision" })
+    .click();
+  const drawer = page.getByRole("dialog", {
+    name: "Evidence and decision history",
+  });
+  await expect(drawer).toContainText("Owen Organizer");
+  await drawer
+    .getByRole("button", { name: "Retry same command safely" })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "No duplicate created" }),
+  ).toBeVisible();
+  expect(bodies).toHaveLength(3);
+  expect(new Set(bodies).size).toBe(1);
 });

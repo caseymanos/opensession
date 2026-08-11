@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -20,12 +20,18 @@ import {
   Drawer,
   LiveRegion,
   SelectField,
+  StatePanel,
   StatusPill,
   TextAreaField,
   TextField,
   ToastRegion,
   type ToastMessage,
 } from "@sessionbox-killer/ui";
+import {
+  recordDecisionCommandSchema,
+  type DecisionWorkspaceResponse,
+  type RecordDecisionCommand,
+} from "@sessionbox-killer/contracts";
 
 import {
   decisionSubmissionsFixture,
@@ -35,6 +41,11 @@ import {
   type DecisionSubmissionView,
   type RawReviewView,
 } from "./decisionModel";
+import {
+  createDecisionPort,
+  DecisionApiError,
+  type DecisionPort,
+} from "./decisionClient";
 
 import "./decision-workspace.css";
 
@@ -53,6 +64,43 @@ const actionLabels: Record<DecisionAction, string> = {
   declined: "Decline",
   waitlisted: "Waitlist",
 };
+
+function pendingCommandStorageKey(eventKey: string) {
+  return `opensession.decisions.pending.${eventKey}`;
+}
+
+function readPendingCommand(eventKey: string | undefined) {
+  if (!eventKey || typeof window === "undefined") return null;
+  const key = pendingCommandStorageKey(eventKey);
+  try {
+    const value = window.localStorage.getItem(key);
+    if (!value) return null;
+    const parsed = recordDecisionCommandSchema.safeParse(JSON.parse(value));
+    if (parsed.success) return parsed.data;
+    window.localStorage.removeItem(key);
+  } catch {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function writePendingCommand(
+  eventKey: string | undefined,
+  command: RecordDecisionCommand | null,
+) {
+  if (!eventKey || typeof window === "undefined") return;
+  try {
+    const key = pendingCommandStorageKey(eventKey);
+    if (command) window.localStorage.setItem(key, JSON.stringify(command));
+    else window.localStorage.removeItem(key);
+  } catch {
+    return;
+  }
+}
 
 const reasonOptions: Record<
   DecisionAction,
@@ -113,7 +161,7 @@ function DecisionHeader() {
         </p>
       </div>
       <div className="decision-header-proof">
-        <StatusPill tone="success">Rubric v2 snapshots</StatusPill>
+        <StatusPill tone="success">Immutable rubric snapshots</StatusPill>
         <span>
           <ShieldCheck aria-hidden="true" size={15} /> Missing scores are never
           zero-filled
@@ -523,6 +571,10 @@ function EvidenceDrawer({
 
 function DecisionDialog({
   action,
+  actorName,
+  audienceOverride,
+  eventName,
+  frozen,
   messageMode,
   note,
   onActionChange,
@@ -534,8 +586,13 @@ function DecisionDialog({
   open,
   reason,
   submission,
+  templateOverride,
 }: {
   action: DecisionAction;
+  actorName: string;
+  audienceOverride?: string;
+  eventName: string;
+  frozen: boolean;
   messageMode: MessageMode;
   note: string;
   onActionChange: (action: DecisionAction) => void;
@@ -547,10 +604,14 @@ function DecisionDialog({
   open: boolean;
   reason: string;
   submission: DecisionSubmissionView | null;
+  templateOverride?: string;
 }) {
-  const audience = submission
-    ? `Primary speaker${submission.speakerCount > 1 ? ` + ${submission.speakerCount - 1} co-speaker` : ""}`
-    : "Selected proposal speakers";
+  const audience =
+    audienceOverride ??
+    (submission
+      ? `Primary speaker${submission.speakerCount > 1 ? ` + ${submission.speakerCount - 1} co-speaker` : ""}`
+      : "Selected proposal speakers");
+  const template = templateOverride ?? `${actionLabels[action]} · ${eventName}`;
 
   return (
     <Dialog
@@ -574,6 +635,7 @@ function DecisionDialog({
               <button
                 aria-pressed={action === item}
                 className={action === item ? "is-active" : ""}
+                disabled={frozen}
                 key={item}
                 onClick={() => {
                   onActionChange(item);
@@ -588,6 +650,7 @@ function DecisionDialog({
         </div>
 
         <SelectField
+          disabled={frozen}
           label="Decision reason"
           onChange={(event) => onReasonChange(event.target.value)}
           options={reasonOptions[action]}
@@ -595,6 +658,7 @@ function DecisionDialog({
           value={reason}
         />
         <TextAreaField
+          disabled={frozen}
           label="Private program note"
           onChange={(event) => onNoteChange(event.target.value)}
           placeholder="Optional context for organizers…"
@@ -618,7 +682,7 @@ function DecisionDialog({
               <FileCheck2 aria-hidden="true" size={17} />
               <span>
                 <strong>Record status and one audit entry</strong>
-                {actionLabels[action]} by Casey Manos with reason and timestamp
+                {actionLabels[action]} by {actorName} with reason and timestamp
               </span>
             </li>
             <li>
@@ -632,7 +696,7 @@ function DecisionDialog({
               <Mail aria-hidden="true" size={17} />
               <span>
                 <strong>Selected template</strong>
-                {actionLabels[action]} · AI Engineer Summit
+                {template}
               </span>
             </li>
           </ul>
@@ -643,18 +707,21 @@ function DecisionDialog({
           <label>
             <input
               checked={messageMode === "send_queued"}
+              disabled={frozen}
               name="decision-message-mode"
               onChange={() => onMessageModeChange("send_queued")}
               type="radio"
             />
             <span>
-              <strong>Record and queue message</strong>
-              Uses the selected template and audience above.
+              <strong>Record and prepare message</strong>
+              Preserves the selected template and audience for delivery
+              orchestration.
             </span>
           </label>
           <label>
             <input
               checked={messageMode === "recorded_only"}
+              disabled={frozen}
               name="decision-message-mode"
               onChange={() => onMessageModeChange("recorded_only")}
               type="radio"
@@ -673,11 +740,13 @@ function DecisionDialog({
         </div>
 
         <div className="decision-dialog-actions">
-          <Button variant="secondary" onClick={onClose}>
+          <Button disabled={frozen} variant="secondary" onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={!reason} onClick={onConfirm}>
-            Record {actionLabels[action].toLowerCase()}
+            {frozen
+              ? "Retry exact decision"
+              : `Record ${actionLabels[action].toLowerCase()}`}
           </Button>
         </div>
       </div>
@@ -685,19 +754,96 @@ function DecisionDialog({
   );
 }
 
-export function DecisionWorkspace() {
-  const [submissions, setSubmissions] = useState(decisionSubmissionsFixture);
+function productionSubmissions(
+  response: DecisionWorkspaceResponse,
+): DecisionSubmissionView[] {
+  return response.submissions.map((submission) => ({
+    ...(submission.aggregateScore === null
+      ? {}
+      : { aggregateScore: submission.aggregateScore }),
+    authorityId: submission.id,
+    decision: submission.decision,
+    format: submission.format ?? "Format not provided",
+    history: submission.history.map((entry) => ({
+      action: entry.action,
+      actor: entry.actor,
+      audience: entry.audience,
+      messageMode: entry.messageMode,
+      reason: entry.reason,
+      time: new Date(entry.at).toLocaleString(),
+      ...(entry.privateNote ? { privateNote: entry.privateNote } : {}),
+      ...(entry.template ? { template: entry.template } : {}),
+    })),
+    id: submission.reference,
+    reviews: submission.reviews.map((review) => ({
+      criteria: review.criteria.map((criterion) => ({
+        criterion: criterion.label,
+        score: criterion.score,
+        weight: criterion.weight,
+      })),
+      reviewer: review.reviewer,
+      status: review.status,
+      ...(review.conflictReason
+        ? { conflictReason: review.conflictReason }
+        : {}),
+      ...(review.note ? { note: review.note } : {}),
+      ...(review.overallScore === null
+        ? {}
+        : { overallScore: review.overallScore }),
+      ...(review.submittedAt
+        ? { submittedAt: new Date(review.submittedAt).toLocaleString() }
+        : {}),
+    })),
+    sourceVersion: submission.sourceVersion,
+    speakerCount: submission.speakerCount,
+    title: submission.title,
+    track: submission.track ?? "Unassigned",
+  }));
+}
+
+function DecisionWorkspaceSurface({
+  actorName = "Casey Manos",
+  eventKey,
+  eventName = "AI Engineer Summit",
+  initialSubmissions = decisionSubmissionsFixture,
+  port,
+}: {
+  actorName?: string;
+  eventKey?: string;
+  eventName?: string;
+  initialSubmissions?: DecisionSubmissionView[];
+  port?: DecisionPort;
+}) {
+  const [submissions, setSubmissions] = useState(initialSubmissions);
+  const [pendingCommand, setPendingCommand] =
+    useState<RecordDecisionCommand | null>(() => readPendingCommand(eventKey));
+  const restoredTarget = pendingCommand
+    ? initialSubmissions.find(
+        (submission) =>
+          (submission.authorityId ?? submission.id) ===
+          pendingCommand.submissionId,
+      )
+    : undefined;
   const [query, setQuery] = useState("");
   const [track, setTrack] = useState("all");
   const [decision, setDecision] = useState("all");
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [decisionTargetId, setDecisionTargetId] = useState<string | null>(null);
-  const [action, setAction] = useState<DecisionAction>("accepted");
-  const [reason, setReason] = useState("");
-  const [note, setNote] = useState("");
-  const [messageMode, setMessageMode] = useState<MessageMode>("send_queued");
+  const [decisionTargetId, setDecisionTargetId] = useState<string | null>(
+    restoredTarget?.id ?? null,
+  );
+  const [action, setAction] = useState<DecisionAction>(
+    pendingCommand?.decision ?? "accepted",
+  );
+  const [reason, setReason] = useState(pendingCommand?.reason ?? "");
+  const [note, setNote] = useState(pendingCommand?.privateNote ?? "");
+  const [messageMode, setMessageMode] = useState<MessageMode>(
+    pendingCommand?.messageMode ?? "send_queued",
+  );
   const [announcement, setAnnouncement] = useState("");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [lastCommands, setLastCommands] = useState<
+    Record<string, RecordDecisionCommand>
+  >({});
 
   const visible = useMemo(
     () =>
@@ -711,6 +857,15 @@ export function DecisionWorkspace() {
         );
       }),
     [decision, query, submissions, track],
+  );
+  const trackOptions = useMemo(
+    () => [
+      { label: "All tracks", value: "all" },
+      ...Array.from(new Set(submissions.map((submission) => submission.track)))
+        .sort((left, right) => left.localeCompare(right))
+        .map((value) => ({ label: value, value })),
+    ],
+    [submissions],
   );
 
   const detailSubmission =
@@ -727,6 +882,14 @@ export function DecisionWorkspace() {
     ]);
   }
 
+  function announceFailure(title: string, message: string) {
+    setAnnouncement(message);
+    setToasts((current) => [
+      ...current,
+      { id: `${Date.now()}-${title}`, message, title, tone: "error" },
+    ]);
+  }
+
   function openDecision(
     submission: DecisionSubmissionView,
     nextAction: DecisionAction,
@@ -738,8 +901,58 @@ export function DecisionWorkspace() {
     setMessageMode("send_queued");
   }
 
-  function recordDecision() {
+  async function recordDecision() {
     if (!decisionTarget || !reason) return;
+    if (port && eventKey) {
+      const submissionId = decisionTarget.authorityId ?? decisionTarget.id;
+      const command =
+        pendingCommand?.submissionId === submissionId
+          ? pendingCommand
+          : {
+              audience: `Primary speaker${decisionTarget.speakerCount > 1 ? ` + ${decisionTarget.speakerCount - 1} co-speaker` : ""}`,
+              commandId: `decision_${crypto.randomUUID()}`,
+              decision: action,
+              expectedVersion: decisionTarget.sourceVersion ?? 0,
+              messageMode,
+              privateNote: note,
+              reason,
+              submissionId,
+              template:
+                messageMode === "send_queued"
+                  ? `${actionLabels[action]} · ${eventName}`
+                  : null,
+              type: "record_decision" as const,
+            };
+      setPendingCommand(command);
+      writePendingCommand(eventKey, command);
+      try {
+        await port.execute(eventKey, command);
+        const response = await port.load(eventKey);
+        setSubmissions(productionSubmissions(response));
+        setLastCommands((current) => ({
+          ...current,
+          [decisionTarget.id]: command,
+        }));
+        setPendingCommand(null);
+        writePendingCommand(eventKey, null);
+        setDecisionTargetId(null);
+        setDetailId(decisionTarget.id);
+        announce(
+          "Decision recorded",
+          command.messageMode === "send_queued"
+            ? `${actionLabels[command.decision]} recorded once; the selected message intent is preserved for its previewed audience.`
+            : `${actionLabels[command.decision]} recorded once without sending a message.`,
+        );
+      } catch (error) {
+        announceFailure(
+          "Decision not confirmed",
+          error instanceof DecisionApiError
+            ? `${error.message} Retry to replay the exact decision command.`
+            : "Retry to replay the exact decision command.",
+        );
+      }
+      return;
+    }
     if (
       decisionTarget.decision === action &&
       decisionTarget.history.some((entry) => entry.action === action)
@@ -761,7 +974,7 @@ export function DecisionWorkspace() {
       time: "Just now",
       ...(note ? { privateNote: note } : {}),
       ...(messageMode === "send_queued"
-        ? { template: `${actionLabels[action]} · AI Engineer Summit` }
+        ? { template: `${actionLabels[action]} · ${eventName}` }
         : {}),
     };
     const next: DecisionSubmissionView = {
@@ -779,12 +992,28 @@ export function DecisionWorkspace() {
     announce(
       "Decision recorded",
       messageMode === "send_queued"
-        ? `${actionLabels[action]} recorded once; the selected message is queued for its previewed audience.`
+        ? `${actionLabels[action]} recorded once; the selected message intent is preserved for its previewed audience.`
         : `${actionLabels[action]} recorded once without sending a message.`,
     );
   }
 
-  function retryDecision(submission: DecisionSubmissionView) {
+  async function retryDecision(submission: DecisionSubmissionView) {
+    const command = lastCommands[submission.id];
+    if (port && eventKey && command) {
+      try {
+        await port.execute(eventKey, command);
+        announce(
+          "No duplicate created",
+          `The ${command.decision} command already exists; history and message side effects remain unchanged.`,
+        );
+      } catch {
+        announceFailure(
+          "Retry not confirmed",
+          "The exact decision command remains safe to retry.",
+        );
+      }
+      return;
+    }
     const latest = submission.history.at(-1);
     if (!latest) return;
     announce(
@@ -822,13 +1051,7 @@ export function DecisionWorkspace() {
           <SelectField
             label="Track"
             onChange={(event) => setTrack(event.target.value)}
-            options={[
-              { label: "All tracks", value: "all" },
-              { label: "AI Engineering", value: "AI Engineering" },
-              { label: "Evaluation", value: "Evaluation" },
-              { label: "Infrastructure", value: "Infrastructure" },
-              { label: "Product · Track D", value: "Product · Track D" },
-            ]}
+            options={trackOptions}
             value={track}
           />
           <SelectField
@@ -862,22 +1085,33 @@ export function DecisionWorkspace() {
 
       <DecisionDialog
         action={action}
+        actorName={actorName}
+        {...(pendingCommand?.audience
+          ? { audienceOverride: pendingCommand.audience }
+          : {})}
+        eventName={eventName}
+        frozen={pendingCommand !== null}
         messageMode={messageMode}
         note={note}
         onActionChange={setAction}
-        onClose={() => setDecisionTargetId(null)}
-        onConfirm={recordDecision}
+        onClose={() => {
+          if (!pendingCommand) setDecisionTargetId(null);
+        }}
+        onConfirm={() => void recordDecision()}
         onMessageModeChange={setMessageMode}
         onNoteChange={setNote}
         onReasonChange={setReason}
         open={Boolean(decisionTarget)}
         reason={reason}
         submission={decisionTarget}
+        {...(pendingCommand?.template
+          ? { templateOverride: pendingCommand.template }
+          : {})}
       />
 
       <EvidenceDrawer
         onClose={() => setDetailId(null)}
-        onRetry={retryDecision}
+        onRetry={(submission) => void retryDecision(submission)}
         submission={detailSubmission}
       />
 
@@ -889,5 +1123,115 @@ export function DecisionWorkspace() {
         }
       />
     </div>
+  );
+}
+
+function ProductionDecisionWorkspace({
+  eventKey,
+  port,
+}: {
+  eventKey: string;
+  port?: DecisionPort;
+}) {
+  const client = useMemo(() => port ?? createDecisionPort(), [port]);
+  const [reload, setReload] = useState(0);
+  const requestKey = `${eventKey}:${reload}`;
+  const [loadState, setLoadState] = useState<{
+    error: DecisionApiError | null;
+    key: string;
+    response: DecisionWorkspaceResponse | null;
+  }>({ error: null, key: "", response: null });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void client
+      .load(eventKey, controller.signal)
+      .then((response) =>
+        setLoadState({ error: null, key: requestKey, response }),
+      )
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setLoadState({
+          error:
+            cause instanceof DecisionApiError
+              ? cause
+              : new DecisionApiError(
+                  "decisions_unavailable",
+                  "The decision workspace could not be loaded.",
+                  0,
+                ),
+          key: requestKey,
+          response: null,
+        });
+      });
+    return () => controller.abort();
+  }, [client, eventKey, requestKey]);
+
+  if (loadState.key !== requestKey) {
+    return (
+      <StatePanel
+        description="Loading submitted reviews and authoritative decision history."
+        state="loading"
+        title="Loading decision evidence"
+      />
+    );
+  }
+  if (loadState.error) {
+    return (
+      <StatePanel
+        action={
+          loadState.error.status === 403 ? undefined : (
+            <Button onClick={() => setReload((value) => value + 1)}>
+              Retry
+            </Button>
+          )
+        }
+        description={loadState.error.message}
+        state={loadState.error.status === 403 ? "permission" : "error"}
+        title="Decision workspace unavailable"
+      />
+    );
+  }
+  if (!loadState.response) {
+    return (
+      <StatePanel
+        description="Loading submitted reviews and authoritative decision history."
+        state="loading"
+        title="Loading decision evidence"
+      />
+    );
+  }
+  return (
+    <DecisionWorkspaceSurface
+      actorName={loadState.response.actor}
+      eventKey={eventKey}
+      eventName={loadState.response.eventName}
+      initialSubmissions={productionSubmissions(loadState.response)}
+      port={client}
+    />
+  );
+}
+
+export function DecisionWorkspace({
+  eventKey,
+  fixture = false,
+  port,
+}: {
+  eventKey?: string;
+  fixture?: boolean;
+  port?: DecisionPort;
+} = {}) {
+  if (fixture) return <DecisionWorkspaceSurface />;
+  return eventKey ? (
+    <ProductionDecisionWorkspace
+      eventKey={eventKey}
+      {...(port ? { port } : {})}
+    />
+  ) : (
+    <StatePanel
+      description="Open decisions from a valid event workspace."
+      state="error"
+      title="Decision route not found"
+    />
   );
 }

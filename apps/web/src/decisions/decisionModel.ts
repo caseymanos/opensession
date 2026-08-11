@@ -32,11 +32,13 @@ export interface DecisionHistoryView {
 
 export interface DecisionSubmissionView {
   aggregateScore?: number;
+  authorityId?: string;
   decision: DecisionState;
   format: string;
   history: DecisionHistoryView[];
   id: string;
   reviews: RawReviewView[];
+  sourceVersion?: number;
   speakerCount: number;
   title: string;
   track: string;

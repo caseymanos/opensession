@@ -60,6 +60,8 @@ export function App() {
     route = <AuthScreen />;
   } else if (window.location.pathname === "/fixtures/ui") {
     route = <UiFixtures />;
+  } else if (window.location.pathname === "/fixtures/decisions") {
+    route = <WorkspaceApp />;
   } else if (window.location.pathname === "/fixtures/public-schedule/empty") {
     route = <PublicSchedule fixtureState="empty" />;
   } else if (window.location.pathname === "/fixtures/public-schedule/error") {
