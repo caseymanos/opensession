@@ -17,6 +17,8 @@ import type {
   CampaignEmailQueueMessage,
   EmailQueueMessage,
 } from "../email/messages.js";
+import { LifecycleEmailOutbox } from "../lifecycle/email-outbox.js";
+import { TaskAssignmentLifecycleService } from "../lifecycle/task-assignments.js";
 import {
   D1EmailTemplateProjectionRepository,
   type EmailTemplateEventProjection,
@@ -257,11 +259,12 @@ export class AcceptanceOrchestrationService {
   readonly #actor: AcceptanceServiceOptions["actor"];
   readonly #authority: AcceptanceServiceOptions["authority"];
   readonly #database: D1Database;
-  readonly #emailCoordinator: CampaignEmailCoordinator;
+  readonly #emailOutbox: LifecycleEmailOutbox;
   readonly #failAfterStep: string | undefined;
   readonly #now: () => Date;
   readonly #requestId: string;
   readonly #requestUrl: string;
+  readonly #taskAssignmentLifecycle: TaskAssignmentLifecycleService;
 
   constructor(options: AcceptanceServiceOptions) {
     this.#actor = options.actor;
@@ -271,11 +274,22 @@ export class AcceptanceOrchestrationService {
     this.#now = options.now ?? (() => new Date());
     this.#requestId = options.requestId;
     this.#requestUrl = options.requestUrl;
-    this.#emailCoordinator = new CampaignEmailCoordinator({
+    const emailCoordinator = new CampaignEmailCoordinator({
       config: options.emailConfig,
       database: options.database,
       now: this.#now,
       queue: options.emailQueue,
+    });
+    this.#emailOutbox = new LifecycleEmailOutbox({
+      coordinator: emailCoordinator,
+      database: options.database,
+      now: this.#now,
+    });
+    this.#taskAssignmentLifecycle = new TaskAssignmentLifecycleService({
+      database: options.database,
+      emailConfig: options.emailConfig,
+      emailQueue: options.emailQueue,
+      now: this.#now,
     });
   }
 
@@ -762,7 +776,7 @@ export class AcceptanceOrchestrationService {
         slug: frozen.event.slug,
         timezone: frozen.event.timezone,
       };
-      await new TaskAuthorityService({
+      const taskResult = await new TaskAuthorityService({
         authority: this.#authority,
         database: this.#database,
       }).materializeAcceptance(
@@ -782,6 +796,18 @@ export class AcceptanceOrchestrationService {
         },
         frozen.requestId,
       );
+      if (
+        taskResult.ok &&
+        "assignment_ids" in taskResult.result &&
+        taskResult.result.created_count > 0
+      ) {
+        await this.#taskAssignmentLifecycle.notify(
+          event,
+          taskResult.result.assignment_ids,
+          frozen.requestId,
+          this.#requestUrl,
+        );
+      }
       current.tasksComplete = true;
       await this.#saveCheckpoint(frozen.workflowId, current);
       this.#inject("tasks");
@@ -789,7 +815,15 @@ export class AcceptanceOrchestrationService {
     while (current.emailIndex < frozen.emails.length) {
       const message = frozen.emails[current.emailIndex];
       if (!message) throw new Error("Acceptance email plan is incomplete.");
-      await this.#emailCoordinator.enqueue(message);
+      await this.#emailOutbox.enqueueAndDispatch({
+        aggregateId: frozen.submission.id,
+        aggregateType: "submission",
+        eventId: frozen.event.id,
+        eventType: "lifecycle.decision.requested",
+        idempotencyKey: `lifecycle:decision:${frozen.command.commandId}:${message.contact_id}`,
+        message,
+        organizationId: frozen.event.organization_id,
+      });
       await this.#auditEmail(frozen, message);
       current.emailIndex += 1;
       await this.#saveCheckpoint(frozen.workflowId, current);

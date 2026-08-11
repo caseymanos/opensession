@@ -58,6 +58,7 @@ const publicSlugPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export { BaseAuthority } from "./authority/base-authority.js";
 export { AgendaCoordinator } from "./schedule/coordinator.js";
+export { TaskReminderWorkflow } from "./lifecycle/task-reminder-workflow.js";
 
 function operationalRoute(context: Context<AppContext>): string {
   const matchedRoute = routePath(context, -1);
@@ -127,6 +128,7 @@ app.get("/health/ready", async (context) => {
     context.env.INTEGRATION_EXPORT_QUEUE,
     context.env.BASE_AUTHORITY,
     context.env.AGENDA_COORDINATOR,
+    context.env.TASK_REMINDER_WORKFLOW,
     context.env.AIRTABLE_PAT,
     context.env.AUTH_HASH_PEPPER,
     context.env.OBSERVABILITY,

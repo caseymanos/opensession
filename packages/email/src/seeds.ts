@@ -27,6 +27,31 @@ const seedDefinitions: readonly SeedDefinition[] = [
   {
     allowedMergeFields: [
       "event.name",
+      "recipient.first_name",
+      "task.name",
+      "task.portal_url",
+    ],
+    audience: "speaker",
+    blocks: [
+      { text: "A new speaker task is ready", type: "heading" },
+      {
+        text: "Hi {{recipient.first_name}}, {{event.name}} assigned “{{task.name}}” to you.",
+        type: "paragraph",
+      },
+      {
+        label: "Open this task",
+        type: "button",
+        url: "{{task.portal_url}}",
+      },
+    ],
+    id: "template_task_assigned",
+    internalName: "Task assigned",
+    previewText: "{{event.name}} has a new speaker task for you.",
+    subject: "New task: {{task.name}} for {{event.name}}",
+  },
+  {
+    allowedMergeFields: [
+      "event.name",
       "organizer.email",
       "recipient.first_name",
       "submission.friendly_id",

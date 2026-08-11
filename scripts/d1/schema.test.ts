@@ -1059,6 +1059,7 @@ describe("D1 operational foundation", () => {
       "schedule_command_receipts",
       "organizer_submission_command_receipts",
       "tenant_registry",
+      "task_reminder_results",
       "users",
       "webhook_deliveries",
       "webhook_delivery_attempts",

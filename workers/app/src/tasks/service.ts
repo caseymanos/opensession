@@ -1240,7 +1240,7 @@ export class TaskAuthorityService {
       command,
       command.acceptance_id,
       operations,
-      applicable.map(({ assignmentId }) => assignmentId),
+      create.map(({ assignmentId }) => assignmentId),
     );
     return taskCommandResponseSchema.parse({
       ok: true,

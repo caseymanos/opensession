@@ -4,6 +4,22 @@ exports[`typed email templates > renders deterministic HTML and plain-text previ
 [
   {
     "from": "OpenSession <notifications@example.test>",
+    "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">AI Engineer Summit 2026 has a new speaker task for you.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">A new speaker task is ready</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Hi Mina, AI Engineer Summit 2026 assigned “Upload your final slides” to you.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/portal/tasks/task_slides" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">Open this task</a></p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
+    "id": "template_task_assigned",
+    "replyTo": "program@example.test",
+    "subject": "New task: Upload your final slides for AI Engineer Summit 2026",
+    "text": "A new speaker task is ready
+
+Hi Mina, AI Engineer Summit 2026 assigned “Upload your final slides” to you.
+
+Open this task
+https://events.example.test/ai-engineer-summit/portal/tasks/task_slides
+
+Sent by OpenSession.",
+    "version": 1,
+  },
+  {
+    "from": "OpenSession <notifications@example.test>",
     "html": "<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#f3f5f2;margin:0;padding:24px"><div style="display:none;max-height:0;overflow:hidden;opacity:0">Your AI Engineer Summit 2026 submission is safely recorded.</div><main style="background:#ffffff;border:1px solid #d9ddd8;border-radius:12px;margin:0 auto;max-width:600px;padding:32px"><h1 style="color:#18201b;font-family:Arial,sans-serif;font-size:28px;line-height:1.2;margin:0 0 20px">Thanks, Mina</h1><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">We received “Reliable Agents in Production” for AI Engineer Summit 2026. Your confirmation number is SUB-0104.</p><p style="margin:26px 0"><a href="https://events.example.test/ai-engineer-summit/submissions/SUB-0104" style="background:#156b45;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,sans-serif;font-size:16px;font-weight:700;padding:12px 18px;text-decoration:none">Review your submission</a></p><p style="color:#3e4942;font-family:Arial,sans-serif;font-size:16px;line-height:1.6;margin:0 0 18px">Questions? Reply to this email or contact program@example.test.</p><p style="color:#69746d;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;margin:30px 0 0">Sent by OpenSession.</p></main></body></html>",
     "id": "template_submission_receipt",
     "replyTo": "program@example.test",

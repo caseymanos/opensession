@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("cloudflare:workers", async (importOriginal) => {
+  const original = (await importOriginal()) as object;
+  return {
+    ...original,
+    WorkflowEntrypoint: class {
+      readonly __workflowEntrypoint = true;
+    },
+  };
+});
+
 import { app } from "../src/index";
 import { authoritySchemaVersion } from "../src/authority/base-authority";
 import {
@@ -64,6 +74,7 @@ function createReadinessEnvironment(schemaVersion: number) {
       INTEGRATION_EXPORT_QUEUE: {},
       OBSERVABILITY: { writeDataPoint },
       PROJECTION_REPAIR_QUEUE: {},
+      TASK_REMINDER_WORKFLOW: {},
       UPLOADS: {},
       WEBHOOK_DELIVERY_QUEUE: {},
     } as unknown as Env,
