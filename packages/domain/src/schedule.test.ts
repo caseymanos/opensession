@@ -1,12 +1,15 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
   applyScheduleCommand,
   assertValidScheduleSnapshot,
   isIanaTimezone,
+  previewSchedulePublication,
+  SchedulePublicationBlockedError,
+  ScheduleValidationError,
   ScheduleVersionConflictError,
   type ScheduleSnapshot,
-  type ScheduleValidationError,
   type ScheduleValidationReason,
 } from "./schedule";
 
@@ -150,6 +153,173 @@ describe("schedule domain", () => {
       state: "canceled",
     });
     expect(() => assertValidScheduleSnapshot(canceled.snapshot)).not.toThrow();
+  });
+
+  it("names every accepted-public publication blocker server-side", () => {
+    const preview = previewSchedulePublication(snapshot());
+
+    expect(preview).toMatchObject({
+      acceptedPublicSessionCount: 1,
+      canPublish: false,
+      counts: {
+        hardConflicts: 0,
+        missingRoomOrTime: 1,
+        softWarnings: 0,
+        unscheduled: 1,
+      },
+      currentPublicationVersion: 0,
+      nextPublicationVersion: 2,
+      scheduleVersion: 1,
+      unscheduledSessions: [
+        {
+          resolutionHref: "/app/demo-event/agenda?session=session_one",
+          session: { id: "session_one", title: "Session one" },
+        },
+      ],
+    });
+    expect(() =>
+      applyScheduleCommand(snapshot(), {
+        commandId: "command_blocked_publish",
+        eventId: "event_demo",
+        expectedVersion: 1,
+        type: "publish_schedule",
+      }),
+    ).toThrow(SchedulePublicationBlockedError);
+  });
+
+  it("requires an exact soft-warning override before publication", () => {
+    const base = snapshot();
+    const warningSnapshot: ScheduleSnapshot = {
+      ...base,
+      sessions: [
+        {
+          ...required(base.sessions[0]),
+          expectedAttendance: 150,
+        },
+      ],
+    };
+    const placed = applyScheduleCommand(warningSnapshot, {
+      commandId: "command_warning_place",
+      durationMinutes: 30,
+      eventId: "event_demo",
+      expectedVersion: 1,
+      roomId: "room_main",
+      sessionId: "session_one",
+      startAt: "2026-09-15T16:00:00.000Z",
+      type: "place_session",
+    });
+    const preview = previewSchedulePublication(placed.snapshot);
+    expect(preview.counts.softWarnings).toBe(1);
+    const warningKey = required(preview.softWarnings[0]).key;
+
+    expect(() =>
+      applyScheduleCommand(placed.snapshot, {
+        commandId: "command_warning_publish_missing",
+        eventId: "event_demo",
+        expectedVersion: 2,
+        type: "publish_schedule",
+      }),
+    ).toThrow(
+      expect.objectContaining<Partial<ScheduleValidationError>>({
+        reason: "soft_warning_override_required",
+      }),
+    );
+
+    expect(
+      applyScheduleCommand(placed.snapshot, {
+        commandId: "command_warning_publish",
+        eventId: "event_demo",
+        expectedVersion: 2,
+        softWarningOverride: {
+          reason: "Operations approved the audience overflow plan",
+          warningKeys: [warningKey],
+        },
+        type: "publish_schedule",
+      }).snapshot.event.publicationVersion,
+    ).toBe(3);
+  });
+
+  it("excludes private accepted sessions from publication blockers and output", () => {
+    const base = snapshot();
+    const publicSession = {
+      ...required(base.sessions[0]),
+      id: "session_public",
+      slot: {
+        endAt: "2026-09-15T16:30:00.000Z",
+        publicationVersion: 0,
+        roomId: "room_main",
+        startAt: "2026-09-15T16:00:00.000Z",
+        version: 1,
+      },
+      state: "scheduled" as const,
+    };
+    const privateSession = {
+      ...required(base.sessions[0]),
+      id: "session_private",
+      isPublic: false,
+    };
+    const candidate = {
+      ...base,
+      sessions: [publicSession, privateSession],
+    };
+
+    expect(previewSchedulePublication(candidate)).toMatchObject({
+      acceptedPublicSessionCount: 1,
+      canPublish: true,
+      counts: { unscheduled: 0 },
+    });
+    const published = applyScheduleCommand(candidate, {
+      commandId: "command_public_only",
+      eventId: "event_demo",
+      expectedVersion: 1,
+      type: "publish_schedule",
+    });
+    expect(published.snapshot.sessions).toEqual([
+      expect.objectContaining({ id: "session_public", state: "published" }),
+      expect.objectContaining({
+        id: "session_private",
+        slot: null,
+        state: "accepted_unscheduled",
+      }),
+    ]);
+  });
+
+  it("property-checks accepted-public blocker counts", () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), { maxLength: 40 }), (publicFlags) => {
+        const base = snapshot();
+        const scheduled = {
+          ...required(base.sessions[0]),
+          id: "session_scheduled_public",
+          slot: {
+            endAt: "2026-09-15T16:30:00.000Z",
+            publicationVersion: 0,
+            roomId: "room_main",
+            startAt: "2026-09-15T16:00:00.000Z",
+            version: 1,
+          },
+          state: "scheduled" as const,
+        };
+        const candidate: ScheduleSnapshot = {
+          ...base,
+          sessions: [
+            scheduled,
+            ...publicFlags.map((isPublic, index) => ({
+              ...required(base.sessions[0]),
+              id: `session_candidate_${index}`,
+              isPublic,
+            })),
+          ],
+        };
+        const preview = previewSchedulePublication(candidate);
+        const expectedUnscheduled = publicFlags.filter(Boolean).length;
+        expect(preview.acceptedPublicSessionCount).toBe(
+          expectedUnscheduled + 1,
+        );
+        expect(preview.counts.unscheduled).toBe(expectedUnscheduled);
+        expect(preview.counts.missingRoomOrTime).toBe(expectedUnscheduled);
+      }),
+    );
   });
 
   it.each([

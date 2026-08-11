@@ -47,6 +47,11 @@ interface SpeakerRow {
   title: string | null;
 }
 
+interface PublicationRow {
+  event_id: string;
+  public_projection_json: string;
+}
+
 export interface PublicScheduleReadResult {
   eventId: string;
   projection: PublicScheduleProjection;
@@ -128,17 +133,69 @@ export class D1PublicScheduleProjectionReader implements PublicScheduleProjectio
   }
 
   async readBySlug(slug: string): Promise<PublicScheduleReadResult | null> {
+    const committed = await this.#database
+      .prepare(
+        `SELECT publication.event_id, publication.public_projection_json
+         FROM schedule_publications AS publication
+         JOIN p_events AS event
+           ON event.organization_id = publication.organization_id
+          AND event.id = publication.event_id
+         WHERE event.slug = ? AND event.source_deleted_at IS NULL
+           AND publication.publication_version = (
+             SELECT MAX(candidate.publication_version)
+             FROM schedule_publications AS candidate
+             WHERE candidate.organization_id = publication.organization_id
+               AND candidate.event_id = publication.event_id
+           )
+         ORDER BY publication.organization_id, publication.event_id
+         LIMIT 2`,
+      )
+      .bind(slug)
+      .all<PublicationRow>();
+    if (committed.results.length > 1) {
+      throw new Error("Public event slug resolves to multiple organizations.");
+    }
+    const publication = committed.results[0];
+    if (publication) {
+      return {
+        eventId: publication.event_id,
+        projection: publicScheduleProjectionSchema.parse(
+          JSON.parse(publication.public_projection_json) as unknown,
+        ),
+      };
+    }
+
+    const live = await this.#readLiveEvent("slug", slug);
+    if (!live) return null;
+    const applying = await this.#database
+      .prepare(
+        `SELECT 1 FROM schedule_command_receipts
+         WHERE event_id = ? AND state = 'applying' LIMIT 1`,
+      )
+      .bind(live.eventId)
+      .first<{ 1: number }>();
+    return applying ? null : live;
+  }
+
+  readLiveByEventId(eventId: string): Promise<PublicScheduleReadResult | null> {
+    return this.#readLiveEvent("id", eventId);
+  }
+
+  async #readLiveEvent(
+    selector: "id" | "slug",
+    value: string,
+  ): Promise<PublicScheduleReadResult | null> {
     const eventResult = await this.#database
       .prepare(
         `SELECT id, organization_id, name, slug, timezone, starts_at, ends_at,
                 venue, brand_json, published_version, projected_at
          FROM p_events
-         WHERE slug = ? AND status = 'published' AND published_version > 0
+         WHERE ${selector} = ? AND status = 'published' AND published_version > 0
            AND source_deleted_at IS NULL
          ORDER BY organization_id, id
          LIMIT 2`,
       )
-      .bind(slug)
+      .bind(value)
       .all<EventRow>();
 
     const event = eventResult.results[0];
@@ -149,6 +206,12 @@ export class D1PublicScheduleProjectionReader implements PublicScheduleProjectio
       throw new Error("Public event slug resolves to multiple organizations.");
     }
 
+    return this.#buildLiveProjection(event);
+  }
+
+  async #buildLiveProjection(
+    event: EventRow,
+  ): Promise<PublicScheduleReadResult> {
     const [sessionResult, speakerResult] = await Promise.all([
       this.#database
         .prepare(

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { scheduleSnapshotFixture } from "@sessionbox-killer/contracts";
+import { previewSchedulePublication } from "@sessionbox-killer/domain";
 
 import { createScheduleCommandPort, ScheduleApiError } from "./scheduleClient";
 
@@ -50,6 +51,31 @@ describe("schedule HTTP command port", () => {
     );
     expect(fetcher).toHaveBeenCalledWith(
       `/api/events/${command.eventId}/schedule`,
+      {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      },
+    );
+  });
+
+  it("reads a typed server-revalidated publication preview", async () => {
+    const preview = previewSchedulePublication(scheduleSnapshotFixture);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify(preview), {
+          headers: {
+            "Content-Type": "application/json",
+            ETag: `"schedule-v${preview.scheduleVersion}"`,
+          },
+        }),
+    );
+    const port = createScheduleCommandPort(fetcher);
+
+    await expect(
+      port.previewPublication(command.eventId),
+    ).resolves.toEqual(preview);
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/events/${command.eventId}/schedule/publication-preview`,
       {
         credentials: "same-origin",
         headers: { Accept: "application/json" },

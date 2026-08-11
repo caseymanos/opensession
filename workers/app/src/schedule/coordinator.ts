@@ -2,14 +2,17 @@ import {
   scheduleCommandSchema,
   scheduleCommandResponseSchema,
   scheduleCommittedEventSchema,
+  schedulePublicationPreviewSchema,
   ScheduleAuthorityPendingError,
   ScheduleHardConflictError,
   ScheduleIdempotencyConflictError,
+  SchedulePublicationBlockedError,
   ScheduleValidationError,
   ScheduleVersionConflictError,
   type ScheduleCommand,
   type ScheduleCommandResponse,
   type ScheduleCommandResult,
+  type SchedulePublicationPreview,
 } from "@sessionbox-killer/contracts";
 import { DurableObject } from "cloudflare:workers";
 
@@ -80,6 +83,21 @@ export class AgendaCoordinator extends DurableObject<Env> {
         if (failure) return failure;
         throw error;
       }
+    });
+  }
+
+  previewPublication(eventId: string): Promise<SchedulePublicationPreview> {
+    if (!stableIdentifierPattern.test(eventId)) {
+      throw new TypeError("Agenda coordinator event ID is invalid.");
+    }
+    return this.serialize(async () => {
+      this.bindEvent(eventId);
+      return schedulePublicationPreviewSchema.parse(
+        await this.service({
+          actorId: "agenda_preview",
+          requestId: "request_agenda_preview",
+        }).previewPublication(eventId),
+      );
     });
   }
 
@@ -164,6 +182,16 @@ export class AgendaCoordinator extends DurableObject<Env> {
           code: error.code,
           conflicts: error.conflicts,
           message: error.message,
+        },
+        ok: false,
+      });
+    }
+    if (error instanceof SchedulePublicationBlockedError) {
+      return scheduleCommandResponseSchema.parse({
+        error: {
+          code: error.code,
+          message: error.message,
+          preview: error.preview,
         },
         ok: false,
       });

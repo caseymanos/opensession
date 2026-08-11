@@ -693,6 +693,22 @@
   font-size: 0.72rem;
 }
 
+.agenda-soft-warning-override {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.85rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: var(--paper-100);
+}
+
+.agenda-soft-warning-override p {
+  margin: 0;
+  color: var(--ink-700);
+  font-size: 0.72rem;
+}
+
 @media (max-width: 72rem) {
   .agenda-header {
     align-items: flex-start;

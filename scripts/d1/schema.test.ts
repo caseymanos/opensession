@@ -512,6 +512,18 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0018_schedule_publication.sql"),
+        "--config",
+        config,
+      ]);
       const handoffOutput = executeMigration([
         "d1",
         "execute",

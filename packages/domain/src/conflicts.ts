@@ -94,6 +94,19 @@ export type ScheduleSoftWarning =
   | ScheduleReadinessWarning
   | ScheduleTransitionWarning;
 
+export function scheduleSoftWarningKey(warning: ScheduleSoftWarning): string {
+  const sessionIds =
+    warning.code === "transition_buffer"
+      ? [warning.sessionA.id, warning.sessionB.id].sort()
+      : [warning.session.id];
+  return [
+    warning.code,
+    warning.entity.type,
+    warning.entity.id,
+    ...sessionIds,
+  ].join(":");
+}
+
 export interface ScheduleConflictReport {
   eventId: string;
   hardConflicts: readonly ScheduleHardConflict[];

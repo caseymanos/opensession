@@ -62,7 +62,7 @@ test("publish preview blocks an unsafe draft and versions a ready snapshot", asy
   await page.goto("/fixtures/agenda/default");
   await page.getByRole("button", { name: "Preview publish" }).click();
   let publish = page.getByRole("dialog", { name: "Publish agenda preview" });
-  await expect(publish).toContainText("3 blocker categories need attention");
+  await expect(publish).toContainText("2 blocker categories need attention");
   await expect(
     publish.getByRole("button", { name: "Publish version 3" }),
   ).toBeDisabled();
@@ -182,4 +182,35 @@ test("production agenda URLs ignore fixture query controls", async ({
   await expect(
     page.getByRole("heading", { name: "No sessions are ready to schedule" }),
   ).toHaveCount(0);
+});
+
+test("production publish commits the exact preview and public version", async ({
+  page,
+}) => {
+  await mockAgendaApi(page, { ready: true });
+  await page.goto(agendaPath);
+  await page.getByRole("button", { name: "Preview publish" }).click();
+  const publish = page.getByRole("dialog", { name: "Publish agenda preview" });
+  await expect(publish).toContainText("Public version 3 → 8");
+  await publish.getByRole("button", { name: "Publish version 8" }).click();
+
+  await expect(page.locator(".agenda-publication-state")).toContainText(
+    "Public version 8",
+  );
+  await page.goto("/e/ai-engineer-summit");
+  await expect(page.getByText("Public version 8")).toBeVisible();
+});
+
+test("stale publish loser reloads a recoverable preview", async ({ page }) => {
+  await mockAgendaApi(page, { ready: true, stalePublishOnce: true });
+  await page.goto(agendaPath);
+  await page.getByRole("button", { name: "Preview publish" }).click();
+  const publish = page.getByRole("dialog", { name: "Publish agenda preview" });
+  await publish.getByRole("button", { name: "Publish version 8" }).click();
+  await expect(publish).toContainText(
+    "Another organizer changed the schedule first",
+  );
+  await expect(
+    publish.getByRole("button", { name: "Publish version 9" }),
+  ).toBeEnabled();
 });

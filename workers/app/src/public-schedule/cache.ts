@@ -24,9 +24,20 @@ export interface PublicScheduleCacheInvalidationMessageV2 {
   version: 2;
 }
 
+export interface PublicScheduleCacheInvalidationMessageV3 {
+  event_id: string;
+  invalidation_version: number;
+  kind: "public_schedule.cache.invalidate";
+  organization_id: string;
+  publication_version: number;
+  surfaces: readonly ["schedule", "gallery", "feed"];
+  version: 3;
+}
+
 export type PublicScheduleCacheInvalidationMessage =
   | PublicScheduleCacheInvalidationMessageV1
-  | PublicScheduleCacheInvalidationMessageV2;
+  | PublicScheduleCacheInvalidationMessageV2
+  | PublicScheduleCacheInvalidationMessageV3;
 
 export function isPublicScheduleCacheInvalidationMessage(
   value: unknown,
@@ -41,20 +52,33 @@ export function isPublicScheduleCacheInvalidationMessage(
     /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.event_id) &&
     "version" in value &&
     (value.version === 1 ||
-      (value.version === 2 &&
+      ((value.version === 2 || value.version === 3) &&
         "organization_id" in value &&
         typeof value.organization_id === "string" &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.organization_id) &&
         "invalidation_version" in value &&
         typeof value.invalidation_version === "number" &&
         Number.isSafeInteger(value.invalidation_version) &&
-        value.invalidation_version > 0))
+        value.invalidation_version > 0 &&
+        (value.version === 2 ||
+          ("publication_version" in value &&
+            typeof value.publication_version === "number" &&
+            Number.isSafeInteger(value.publication_version) &&
+            value.publication_version > 0 &&
+            "surfaces" in value &&
+            Array.isArray(value.surfaces) &&
+            value.surfaces.length === 3 &&
+            value.surfaces[0] === "schedule" &&
+            value.surfaces[1] === "gallery" &&
+            value.surfaces[2] === "feed"))))
   );
 }
 
 export async function markPublicScheduleInvalidationProcessed(
   database: D1Database,
-  message: PublicScheduleCacheInvalidationMessageV2,
+  message:
+    | PublicScheduleCacheInvalidationMessageV2
+    | PublicScheduleCacheInvalidationMessageV3,
 ): Promise<boolean> {
   const now = new Date().toISOString();
   const completed = await database
@@ -89,7 +113,7 @@ export async function processPublicScheduleCacheInvalidation(
   if (!purged && environment.APP_ENV !== "local") {
     throw new Error("Worker cache invalidation is unavailable.");
   }
-  if (message.version === 2) {
+  if (message.version === 2 || message.version === 3) {
     await markPublicScheduleInvalidationProcessed(environment.DB, message);
   }
 }

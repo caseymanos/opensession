@@ -41,6 +41,7 @@ interface SessionRow {
   expected_attendance: number | null;
   format_id: string | null;
   id: string;
+  is_public: number;
   override_reason: string | null;
   published_version: number | null;
   room_id: string | null;
@@ -76,7 +77,7 @@ function previousCommittedSnapshot(value: string): ScheduleSnapshot | null {
     parsed === null ||
     Array.isArray(parsed) ||
     !("version" in parsed) ||
-    parsed.version !== 1 ||
+    (parsed.version !== 1 && parsed.version !== 2) ||
     !("previousSnapshot" in parsed)
   ) {
     return null;
@@ -189,6 +190,7 @@ export class D1ScheduleProjectionRepository {
         this.#database
           .prepare(
             `SELECT session.id, session.title, session.abstract, session.status,
+                    session.is_public,
                     session.track_id, session.format_id,
                     session.duration_minutes, session.expected_attendance,
                     slot.room_id, slot.override_reason,
@@ -346,6 +348,7 @@ export class D1ScheduleProjectionRepository {
         expectedAttendance: session.expected_attendance,
         formatId: session.format_id,
         id: session.id,
+        isPublic: session.is_public === 1,
         participants: participantsBySession.get(session.id) ?? [],
         slot: slotForSession(session),
         state: lifecycleState(session.status),

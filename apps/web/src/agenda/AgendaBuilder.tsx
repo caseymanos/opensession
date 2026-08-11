@@ -26,6 +26,7 @@ import {
 
 import type {
   ScheduleCommandPort,
+  SchedulePublicationPreview,
   ScheduleSnapshot,
 } from "@sessionbox-killer/contracts";
 
@@ -59,6 +60,7 @@ import {
   AgendaViewContext,
   AgendaViewSwitcher,
 } from "./AgendaPresentations";
+import { ScheduleApiError } from "./scheduleClient";
 
 import "./agenda-builder.css";
 import "./agenda-publish-views.css";
@@ -220,7 +222,7 @@ export function AgendaBuilder({
   fixtureState = "default",
   initialSnapshot,
 }: {
-  commandPort?: Pick<ScheduleCommandPort, "execute"> | undefined;
+  commandPort?: ScheduleCommandPort | undefined;
   fixtureState?: AgendaFixtureState | undefined;
   initialSnapshot?: ScheduleSnapshot | undefined;
 } = {}) {
@@ -242,7 +244,6 @@ export function AgendaBuilder({
   const initialUrlState = getAgendaUrlState(initialScheduleView);
   const emptyFixture = fixtureState === "empty";
   const readOnly = fixtureState === "ready-readonly";
-  const publicationPreviewOnly = Boolean(commandPort);
   const placementShouldFail = fixtureState === "placement-failed";
   const [day, setDay] = useState<AgendaDay>(initialUrlState.day);
   const [view, setView] = useState<AgendaView>(initialUrlState.view);
@@ -256,6 +257,14 @@ export function AgendaBuilder({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [publicationPreview, setPublicationPreview] =
+    useState<SchedulePublicationPreview | null>(null);
+  const [publicationPreviewError, setPublicationPreviewError] = useState("");
+  const [publicationPreviewLoading, setPublicationPreviewLoading] =
+    useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishCommandId, setPublishCommandId] = useState("");
+  const [softWarningReason, setSoftWarningReason] = useState("");
   const [scheduled, setScheduled] = useState(initialScheduleView.scheduled);
   const [unscheduledSessions, setUnscheduledSessions] = useState(
     initialScheduleView.unscheduled,
@@ -343,19 +352,23 @@ export function AgendaBuilder({
   const hasSessionsOnEveryDay = agendaDays.every((agendaDay) =>
     scheduled.some((session) => session.day === agendaDay.date),
   );
-  const hardConflictCount = scheduled.filter(
-    (session) => session.status === "conflict",
-  ).length;
-  const missingPlacementCount = unscheduledSessions.length;
-  const publishable =
-    hardConflictCount === 0 &&
-    missingPlacementCount === 0 &&
-    hasSessionsOnEveryDay &&
-    !conflictValidationPending;
+  const hardConflictCount =
+    publicationPreview?.counts.hardConflicts ??
+    scheduled.filter((session) => session.status === "conflict").length;
+  const missingPlacementCount =
+    publicationPreview?.counts.missingRoomOrTime ?? unscheduledSessions.length;
+  const unscheduledAcceptedCount =
+    publicationPreview?.counts.unscheduled ?? unscheduledSessions.length;
+  const softWarningCount = publicationPreview?.counts.softWarnings ?? 0;
+  const publishable = publicationPreview
+    ? publicationPreview.canPublish && !conflictValidationPending
+    : hardConflictCount === 0 &&
+      missingPlacementCount === 0 &&
+      hasSessionsOnEveryDay &&
+      !conflictValidationPending;
   const blockerCategoryCount =
     Number(hardConflictCount > 0) +
     Number(missingPlacementCount > 0) +
-    Number(!hasSessionsOnEveryDay) +
     Number(conflictValidationPending);
 
   useEffect(() => {
@@ -573,6 +586,7 @@ export function AgendaBuilder({
         setUnscheduledSessions(authoritative.unscheduled);
         setPublishedVersion(authoritative.publicationVersion);
         setScheduleVersion(authoritative.version);
+        setPublicationPreview(null);
       } else {
         setScheduleVersion((current) => current + 1);
       }
@@ -653,24 +667,167 @@ export function AgendaBuilder({
     setScheduleOpen(true);
   }
 
-  function publishAgenda() {
-    if (!publishable || publicationPreviewOnly) {
+  async function reloadPublicationPreview() {
+    if (!commandPort) return null;
+    setPublicationPreviewLoading(true);
+    setPublicationPreviewError("");
+    try {
+      const preview = await commandPort.previewPublication(
+        agendaScheduleView.eventId,
+      );
+      setPublicationPreview(preview);
+      setPublishedVersion(preview.currentPublicationVersion);
+      setScheduleVersion(preview.scheduleVersion);
+      setPublishCommandId(crypto.randomUUID());
+      return preview;
+    } catch (error) {
+      setPublicationPreviewError(
+        error instanceof ScheduleApiError
+          ? error.message
+          : "Publication readiness could not be loaded. Retry without losing your draft.",
+      );
+      return null;
+    } finally {
+      setPublicationPreviewLoading(false);
+    }
+  }
+
+  async function openPublishPreview() {
+    setPublishOpen(true);
+    if (commandPort) await reloadPublicationPreview();
+  }
+
+  async function openConflictPreview() {
+    setConflictsOpen(true);
+    if (commandPort) await reloadPublicationPreview();
+  }
+
+  async function recoverStalePublication() {
+    if (!commandPort) return;
+    const [snapshot, preview] = await Promise.all([
+      commandPort.read(agendaScheduleView.eventId),
+      commandPort.previewPublication(agendaScheduleView.eventId),
+    ]);
+    if (!snapshot) throw new Error("The event schedule no longer exists.");
+    const authoritative = scheduleSnapshotToAgendaView(
+      snapshot,
+      preview.hardConflicts.flatMap((conflict) => [
+        conflict.sessionA.id,
+        conflict.sessionB.id,
+      ]),
+    );
+    setAgendaScheduleView(authoritative);
+    setScheduled(authoritative.scheduled);
+    setUnscheduledSessions(authoritative.unscheduled);
+    setPublishedVersion(preview.currentPublicationVersion);
+    setScheduleVersion(preview.scheduleVersion);
+    setPublicationPreview(preview);
+    setPublishCommandId(crypto.randomUUID());
+  }
+
+  async function publishAgenda() {
+    if (!publishable || publishing) return;
+    if (!commandPort) {
+      const nextVersion = publishedVersion + 1;
+      setPublishedVersion(nextVersion);
+      setPublished(true);
+      setHasUnpublishedChanges(false);
+      setPublishOpen(false);
+      setToasts([
+        {
+          id: "agenda-published",
+          message: "The fixture public schedule snapshot is now current.",
+          title: `Agenda version ${nextVersion} published`,
+          tone: "success",
+        },
+      ]);
       return;
     }
-
-    setPublishedVersion((current) => current + 1);
-    setPublished(true);
-    setHasUnpublishedChanges(false);
-    setPublishOpen(false);
-    setToasts([
-      {
-        id: "agenda-published",
-        message:
-          "The public schedule snapshot is current. Calendar and cache invalidation are queued at the contract boundary.",
-        title: `Agenda version ${publishedVersion + 1} published`,
-        tone: "success",
-      },
-    ]);
+    const preview = publicationPreview;
+    if (!preview) return;
+    if (softWarningCount > 0 && softWarningReason.trim().length < 8) {
+      setPublicationPreviewError(
+        "Add a clear reason before acknowledging the named soft warnings.",
+      );
+      return;
+    }
+    setPublishing(true);
+    setPublicationPreviewError("");
+    try {
+      const result = await commandPort.execute({
+        commandId: publishCommandId || crypto.randomUUID(),
+        eventId: agendaScheduleView.eventId,
+        expectedVersion: preview.scheduleVersion,
+        ...(softWarningCount > 0
+          ? {
+              softWarningOverride: {
+                reason: softWarningReason.trim(),
+                warningKeys: preview.softWarnings.map(({ key }) => key),
+              },
+            }
+          : {}),
+        type: "publish_schedule",
+      });
+      const authoritative = scheduleSnapshotToAgendaView(result.snapshot);
+      setAgendaScheduleView(authoritative);
+      setScheduled(authoritative.scheduled);
+      setUnscheduledSessions(authoritative.unscheduled);
+      setPublishedVersion(result.snapshot.event.publicationVersion);
+      setScheduleVersion(result.snapshot.event.version);
+      setPublicationPreview(null);
+      setPublished(true);
+      setHasUnpublishedChanges(false);
+      setPublishOpen(false);
+      setToasts([
+        {
+          id: "agenda-published",
+          message:
+            "The committed public snapshot is current. Schedule, gallery, and feed cache refresh is queued against this exact version.",
+          title: `Agenda version ${result.snapshot.event.publicationVersion} published`,
+          tone: "success",
+        },
+      ]);
+    } catch (error) {
+      if (
+        error instanceof ScheduleApiError &&
+        error.code === "schedule_version_conflict"
+      ) {
+        try {
+          await recoverStalePublication();
+          setPublicationPreviewError(
+            "Another organizer changed the schedule first. The current draft and preview are reloaded; review them before publishing.",
+          );
+        } catch {
+          setPublicationPreviewError(
+            "Another organizer changed the schedule. Reload the preview to recover the latest version.",
+          );
+        }
+      } else if (
+        error instanceof ScheduleApiError &&
+        error.domainError?.code === "schedule_publication_blocked"
+      ) {
+        setPublicationPreview(error.domainError.preview);
+        setPublicationPreviewError(
+          "Publication was revalidated and new blockers were found. Resolve the named sessions, then reload this preview.",
+        );
+        setPublishCommandId(crypto.randomUUID());
+      } else if (
+        error instanceof ScheduleApiError &&
+        error.code === "schedule_authority_pending"
+      ) {
+        setPublicationPreviewError(
+          "The authority outcome is still being reconciled. Retry uses the same command identity and cannot publish twice.",
+        );
+      } else {
+        setPublicationPreviewError(
+          error instanceof ScheduleApiError
+            ? error.message
+            : "Publication failed before a new public version committed. The previous public schedule remains live.",
+        );
+      }
+    } finally {
+      setPublishing(false);
+    }
   }
 
   return (
@@ -693,12 +850,12 @@ export function AgendaBuilder({
             <>
               <Button
                 variant="secondary"
-                onClick={() => setConflictsOpen(true)}
+                onClick={() => void openConflictPreview()}
               >
                 <CircleAlert aria-hidden="true" size={16} /> {hardConflictCount}{" "}
                 hard conflict{hardConflictCount === 1 ? "" : "s"}
               </Button>
-              <Button onClick={() => setPublishOpen(true)}>
+              <Button onClick={() => void openPublishPreview()}>
                 <Sparkles aria-hidden="true" size={16} /> Preview publish
               </Button>
             </>
@@ -798,7 +955,7 @@ export function AgendaBuilder({
                 <strong>Unscheduled accepted</strong>
                 <small>Open the placement queue</small>
               </span>
-              <em>{missingPlacementCount}</em>
+              <em>{unscheduledAcceptedCount}</em>
             </button>
             <button
               className={
@@ -828,7 +985,7 @@ export function AgendaBuilder({
                   ? "agenda-drilldown is-blocking"
                   : "agenda-drilldown"
               }
-              onClick={() => setConflictsOpen(true)}
+              onClick={() => void openConflictPreview()}
               type="button"
             >
               <span>
@@ -839,6 +996,20 @@ export function AgendaBuilder({
                 <small>Inspect overlapping people</small>
               </span>
               <em>{hardConflictCount}</em>
+            </button>
+            <button
+              className="agenda-drilldown"
+              onClick={() => void openConflictPreview()}
+              type="button"
+            >
+              <span>
+                <Clock3 aria-hidden="true" size={16} />
+              </span>
+              <span>
+                <strong>Soft warnings</strong>
+                <small>Review and acknowledge</small>
+              </span>
+              <em>{softWarningCount}</em>
             </button>
           </section>
 
@@ -1278,7 +1449,51 @@ export function AgendaBuilder({
             title="Agenda conflicts"
           >
             <div className="agenda-conflicts">
-              {hardConflictCount > 0 ? (
+              {publicationPreviewLoading ? (
+                <p role="status">Revalidating authoritative conflicts…</p>
+              ) : null}
+              {publicationPreview?.hardConflicts.map((conflict) => (
+                <article key={conflict.code + ":" + conflict.resolutionHref}>
+                  <span>
+                    <AlertTriangle aria-hidden="true" size={17} />
+                  </span>
+                  <div>
+                    <StatusPill tone="warning">Hard conflict</StatusPill>
+                    <h3>
+                      {conflict.sessionA.title} and {conflict.sessionB.title}
+                    </h3>
+                    <p>
+                      {conflict.entity.name} overlaps from{" "}
+                      {new Date(conflict.overlap.startAt).toLocaleTimeString(
+                        [],
+                        { hour: "numeric", minute: "2-digit" },
+                      )}{" "}
+                      to{" "}
+                      {new Date(conflict.overlap.endAt).toLocaleTimeString([], {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                      . Publishing is blocked.
+                    </p>
+                    <button
+                      onClick={() => {
+                        const affected = scheduled.find(
+                          ({ id }) => id === conflict.sessionA.id,
+                        );
+                        if (affected) {
+                          setConflictsOpen(false);
+                          selectScheduled(affected);
+                        }
+                      }}
+                      type="button"
+                    >
+                      Open {conflict.sessionA.title}{" "}
+                      <ArrowRight aria-hidden="true" size={14} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {!publicationPreview && hardConflictCount > 0 ? (
                 <article>
                   <span>
                     <AlertTriangle aria-hidden="true" size={17} />
@@ -1287,7 +1502,7 @@ export function AgendaBuilder({
                     <StatusPill tone="warning">Hard conflict</StatusPill>
                     <h3>Ren Ito is scheduled twice at 10:30 AM</h3>
                     <p>
-                      “The Agent Runtime Is the Product” overlaps a panel in
+                      The Agent Runtime Is the Product overlaps a panel in
                       Gallery 308 by 30 minutes.
                     </p>
                     <button
@@ -1307,7 +1522,56 @@ export function AgendaBuilder({
                     </button>
                   </div>
                 </article>
-              ) : (
+              ) : null}
+              {publicationPreview?.softWarnings.map(({ key, warning }) => {
+                const session =
+                  warning.code === "transition_buffer"
+                    ? warning.sessionA
+                    : warning.session;
+                return (
+                  <article key={key}>
+                    <span>
+                      <Clock3 aria-hidden="true" size={17} />
+                    </span>
+                    <div>
+                      <StatusPill tone="preview">Soft warning</StatusPill>
+                      <h3>
+                        {warning.code === "capacity_exceeded"
+                          ? warning.session.title +
+                            " exceeds " +
+                            warning.entity.name +
+                            " capacity"
+                          : warning.code === "missing_readiness"
+                            ? warning.session.title +
+                              " has incomplete readiness"
+                            : warning.sessionA.title +
+                              " has a tight transition to " +
+                              warning.sessionB.title}
+                      </h3>
+                      <p>
+                        Review this named warning before providing a publication
+                        override reason.
+                      </p>
+                      <button
+                        onClick={() => {
+                          const affected = scheduled.find(
+                            ({ id }) => id === session.id,
+                          );
+                          if (affected) {
+                            setConflictsOpen(false);
+                            selectScheduled(affected);
+                          }
+                        }}
+                        type="button"
+                      >
+                        Open {session.title}{" "}
+                        <ArrowRight aria-hidden="true" size={14} />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+              {hardConflictCount === 0 && softWarningCount === 0 ? (
                 <div className="agenda-publish-version">
                   <span>
                     <Check aria-hidden="true" size={16} />
@@ -1320,35 +1584,45 @@ export function AgendaBuilder({
                     </small>
                   </span>
                 </div>
-              )}
+              ) : null}
               <p>
-                {hardConflictCount} hard conflicts · 0 room conflicts · 2
-                travel-time warnings
+                {hardConflictCount} hard conflicts · {softWarningCount} soft
+                warnings
               </p>
             </div>
           </Drawer>
 
           <Dialog
-            description={
-              publicationPreviewOnly
-                ? "Review publishing readiness here. This preview does not create a public schedule snapshot."
-                : "Resolve every publishing blocker before making this agenda public."
-            }
+            description="This server-revalidated preview names every blocker and the exact public version transition."
             onClose={() => setPublishOpen(false)}
             open={publishOpen}
             title="Publish agenda preview"
           >
             <div className="agenda-publish-preview">
               <div>
-                <StatusPill tone={publishable ? "success" : "warning"}>
-                  {publishable ? "Ready" : "Not ready"}
+                <StatusPill
+                  tone={
+                    publishable && !publicationPreviewLoading
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  {publicationPreviewLoading
+                    ? "Revalidating"
+                    : publishable
+                      ? "Ready"
+                      : "Not ready"}
                 </StatusPill>
                 <strong>
-                  {publishable
-                    ? publicationPreviewOnly
-                      ? `Version ${publishedVersion + 1} is ready for authoritative publication`
-                      : `Version ${publishedVersion + 1} can go public`
-                    : `${blockerCategoryCount} blocker categories need attention`}
+                  {publicationPreviewLoading
+                    ? "Reloading every accepted public session"
+                    : publishable
+                      ? "Version " +
+                        (publicationPreview?.nextPublicationVersion ??
+                          publishedVersion + 1) +
+                        " can go public"
+                      : blockerCategoryCount +
+                        " blocker categories need attention"}
                 </strong>
               </div>
               <div className="agenda-publish-version">
@@ -1361,33 +1635,56 @@ export function AgendaBuilder({
                 </span>
                 <span>
                   <strong>
-                    Public version {publishedVersion} → {publishedVersion + 1}
+                    Public version{" "}
+                    {publicationPreview?.currentPublicationVersion ??
+                      publishedVersion}{" "}
+                    →{" "}
+                    {publicationPreview?.nextPublicationVersion ??
+                      publishedVersion + 1}
                   </strong>
                   <small>
-                    {scheduled.length} placed sessions · local event times · one
-                    immutable public snapshot
+                    {publicationPreview?.acceptedPublicSessionCount ??
+                      scheduled.length}{" "}
+                    accepted public sessions · local event times · one immutable
+                    public snapshot
                   </small>
                 </span>
               </div>
+              {publicationPreviewError ? (
+                <div className="agenda-placement-error" role="alert">
+                  <AlertTriangle aria-hidden="true" size={17} />
+                  <span>
+                    <strong>Publication needs attention</strong>
+                    <small>{publicationPreviewError}</small>
+                  </span>
+                </div>
+              ) : null}
               <ul>
-                {hardConflictCount > 0 ? (
+                {publicationPreview?.hardConflicts.map((conflict) => (
+                  <li key={conflict.code + conflict.resolutionHref}>
+                    <AlertTriangle aria-hidden="true" size={15} />{" "}
+                    {conflict.sessionA.title} conflicts with{" "}
+                    {conflict.sessionB.title} on {conflict.entity.name}
+                  </li>
+                ))}
+                {!publicationPreview && hardConflictCount > 0 ? (
                   <li>
                     <AlertTriangle aria-hidden="true" size={15} />{" "}
                     {hardConflictCount} hard speaker conflict
                     {hardConflictCount === 1 ? "" : "s"}
                   </li>
                 ) : null}
-                {missingPlacementCount > 0 ? (
+                {publicationPreview?.unscheduledSessions.map(({ session }) => (
+                  <li key={session.id}>
+                    <CircleAlert aria-hidden="true" size={15} /> {session.title}{" "}
+                    is missing a room or time
+                  </li>
+                ))}
+                {!publicationPreview && missingPlacementCount > 0 ? (
                   <li>
                     <CircleAlert aria-hidden="true" size={15} />{" "}
                     {missingPlacementCount} accepted sessions are missing a room
                     or time
-                  </li>
-                ) : null}
-                {!hasSessionsOnEveryDay ? (
-                  <li>
-                    <CalendarDays aria-hidden="true" size={15} /> One or more
-                    event days have no sessions yet
                   </li>
                 ) : null}
                 {conflictValidationPending ? (
@@ -1408,12 +1705,30 @@ export function AgendaBuilder({
                     </li>
                     <li>
                       <Check aria-hidden="true" size={15} /> Public schedule,
-                      gallery, feed, and calendar invalidation are ready for the
+                      gallery, and feed invalidation are ready for the
                       authoritative publication command
                     </li>
                   </>
                 ) : null}
               </ul>
+              {publicationPreview?.softWarnings.length ? (
+                <div className="agenda-soft-warning-override">
+                  <p>
+                    {softWarningCount} named soft warning
+                    {softWarningCount === 1 ? "" : "s"} require one audited
+                    acknowledgement.
+                  </p>
+                  <TextField
+                    id="agenda-soft-warning-reason"
+                    label="Override reason"
+                    onChange={(event) =>
+                      setSoftWarningReason(event.target.value)
+                    }
+                    placeholder="Why is publication safe despite these warnings?"
+                    value={softWarningReason}
+                  />
+                </div>
+              ) : null}
               <div>
                 <Button
                   variant="secondary"
@@ -1421,15 +1736,23 @@ export function AgendaBuilder({
                 >
                   Keep scheduling
                 </Button>
-                {publicationPreviewOnly ? (
-                  <Button onClick={() => setPublishOpen(false)}>
-                    Close preview
-                  </Button>
-                ) : (
-                  <Button disabled={!publishable} onClick={publishAgenda}>
-                    Publish version {publishedVersion + 1}
-                  </Button>
-                )}
+                <Button
+                  disabled={
+                    !publishable ||
+                    publishing ||
+                    publicationPreviewLoading ||
+                    Boolean(commandPort && !publicationPreview) ||
+                    (softWarningCount > 0 &&
+                      softWarningReason.trim().length < 8)
+                  }
+                  onClick={() => void publishAgenda()}
+                >
+                  {publishing
+                    ? "Publishing…"
+                    : "Publish version " +
+                      (publicationPreview?.nextPublicationVersion ??
+                        publishedVersion + 1)}
+                </Button>
               </div>
             </div>
           </Dialog>

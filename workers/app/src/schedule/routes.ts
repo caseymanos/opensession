@@ -3,10 +3,12 @@ import {
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
   scheduleEntityTag,
+  schedulePublicationPreviewSchema,
   scheduleSnapshotSchema,
   scheduleVersionFromEntityTag,
   ScheduleAuthorityPendingError,
   ScheduleIdempotencyConflictError,
+  SchedulePublicationBlockedError,
   ScheduleValidationError,
   ScheduleVersionConflictError,
   type ScheduleCommandResponse,
@@ -176,6 +178,19 @@ function commandFailure(context: Context<AppContext>, error: unknown) {
       409,
     );
   }
+  if (error instanceof SchedulePublicationBlockedError) {
+    return context.json(
+      scheduleCommandResponseSchema.parse({
+        error: {
+          code: error.code,
+          message: error.message,
+          preview: error.preview,
+        },
+        ok: false,
+      }),
+      409,
+    );
+  }
   if (error instanceof ScheduleValidationError) {
     return validationResponse(
       context,
@@ -252,9 +267,11 @@ function coordinatorResponse(
       ? 202
       : response.error.code === "schedule_version_conflict"
         ? 412
-        : response.error.code === "schedule_validation_error"
-          ? 422
-          : 409;
+        : response.error.code === "schedule_publication_blocked"
+          ? 409
+          : response.error.code === "schedule_validation_error"
+            ? 422
+            : 409;
   return context.json(response, status);
 }
 
@@ -355,6 +372,48 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
       }
     }
   });
+
+  app.get(
+    "/api/events/:eventKey/schedule/publication-preview",
+    async (context) => {
+      const eventKey = context.req.param("eventKey");
+      try {
+        const authentication = authService(context);
+        const session = await authentication.authenticate(
+          sessionToken(context),
+        );
+        const resolution = await resolveAuthorizedEvent(
+          context,
+          eventKey,
+          session.user,
+          "event:manage",
+        );
+        if (resolution.kind !== "resolved") {
+          return eventResolutionFailure(context, resolution);
+        }
+        const preview = schedulePublicationPreviewSchema.parse(
+          await getAgendaCoordinator(
+            context.env,
+            resolution.eventId,
+          ).previewPublication(resolution.eventId),
+        );
+        context.header("Cache-Control", "private, no-store");
+        context.header("ETag", scheduleEntityTag(preview.scheduleVersion));
+        context.header("Schedule-Version", String(preview.scheduleVersion));
+        context.header(
+          "Current-Publication-Version",
+          String(preview.currentPublicationVersion),
+        );
+        context.header(
+          "Next-Publication-Version",
+          String(preview.nextPublicationVersion),
+        );
+        return context.json(preview);
+      } catch (error) {
+        return commandFailure(context, error);
+      }
+    },
+  );
 
   app.get("/api/events/:eventKey/schedule", async (context) => {
     const eventKey = context.req.param("eventKey");
