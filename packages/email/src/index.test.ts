@@ -86,11 +86,12 @@ function template(id: string): EmailTemplate {
 }
 
 describe("typed email templates", () => {
-  it("ships five valid, active seed templates", () => {
+  it("ships six valid, active seed templates", () => {
     expect(templates.map(({ id }) => id)).toEqual([
       "template_submission_receipt",
       "template_submission_accepted",
       "template_submission_declined",
+      "template_submission_waitlisted",
       "template_task_reminder",
       "template_schedule_updated",
     ]);

@@ -25,10 +25,16 @@ interface CalendarOutboxRecord {
   actor: CalendarActor;
   aggregateId: string;
   aggregateType: "calendar_invitation" | "session";
-  auditAction: "calendar.change.queued" | "calendar.invitation.queued";
+  auditAction:
+    | "calendar.acceptance.queued"
+    | "calendar.change.queued"
+    | "calendar.invitation.queued";
   commandId: string;
   eventId: string;
-  eventType: "calendar.change.requested" | "calendar.invitation.requested";
+  eventType:
+    | "calendar.acceptance.requested"
+    | "calendar.change.requested"
+    | "calendar.invitation.requested";
   idempotencyKey: string;
   metadata: Readonly<Record<string, string | number>>;
   occurredAt: string;
@@ -80,6 +86,52 @@ export class D1CalendarIntentOutbox {
 
   constructor(database: D1Database) {
     this.#database = database;
+  }
+
+  async enqueueAcceptance(input: {
+    actor: CalendarActor;
+    commandId: string;
+    contactIds: readonly string[];
+    eventId: string;
+    occurredAt: string;
+    organizationId: string;
+    requestId: string;
+    sessionId: string;
+    workflowId: string;
+  }): Promise<CalendarOutboxResult> {
+    const contactIds = [...new Set(input.contactIds)].sort();
+    return this.#record({
+      actor: input.actor,
+      aggregateId: input.sessionId,
+      aggregateType: "session",
+      auditAction: "calendar.acceptance.queued",
+      commandId: input.commandId,
+      eventId: input.eventId,
+      eventType: "calendar.acceptance.requested",
+      idempotencyKey: [
+        "calendar-acceptance:v1",
+        input.organizationId,
+        input.eventId,
+        input.sessionId,
+      ].join(":"),
+      metadata: {
+        attendeeCount: contactIds.length,
+        workflowId: input.workflowId,
+      },
+      occurredAt: input.occurredAt,
+      organizationId: input.organizationId,
+      payload: {
+        contactIds,
+        eventId: input.eventId,
+        kind: "calendar.acceptance.requested",
+        organizationId: input.organizationId,
+        sessionId: input.sessionId,
+        version: 1,
+        workflowId: input.workflowId,
+      },
+      requestId: input.requestId,
+      safeDiff: { attendeeCount: contactIds.length },
+    });
   }
 
   async enqueueChange(

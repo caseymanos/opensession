@@ -60,6 +60,15 @@ export const decisionReviewSchema = z
   })
   .strict();
 
+export const decisionSideEffectsSchema = z
+  .object({
+    errorCode: z.string().trim().min(1).max(120).nullable(),
+    status: z.enum(["complete", "failed", "pending"]),
+    updatedAt: instantSchema,
+    workflowId: idSchema,
+  })
+  .strict();
+
 export const decisionSubmissionSchema = z
   .object({
     aggregateScore: z.number().min(1).max(5).nullable(),
@@ -69,6 +78,7 @@ export const decisionSubmissionSchema = z
     id: idSchema,
     reference: z.string().trim().min(1).max(64),
     reviews: z.array(decisionReviewSchema).max(256),
+    sideEffects: decisionSideEffectsSchema.nullable().default(null),
     sourceVersion: z.int().positive(),
     speakerCount: z.int().nonnegative().max(64),
     title: z.string().trim().min(1).max(300),

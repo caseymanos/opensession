@@ -255,6 +255,12 @@ test("production decision records and retries one exact authoritative command", 
           template: command.template,
         },
       ],
+      sideEffects: {
+        errorCode: null,
+        status: "complete",
+        updatedAt: "2026-08-11T12:05:01.000Z",
+        workflowId: "awf_decision_acceptance_alpha",
+      },
       sourceVersion: 2,
     };
     await route.fulfill({
@@ -298,6 +304,10 @@ test("production decision records and retries one exact authoritative command", 
     name: "Evidence and decision history",
   });
   await expect(drawer).toContainText("Owen Organizer");
+  await expect(drawer).toContainText("Downstream effects");
+  await expect(drawer).toContainText(
+    "Session, portal, tasks, message, and calendar intent",
+  );
   await drawer
     .getByRole("button", { name: "Retry same command safely" })
     .click();

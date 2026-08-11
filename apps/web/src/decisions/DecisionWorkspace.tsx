@@ -544,6 +544,32 @@ function EvidenceDrawer({
                     </div>
                   ) : null}
                 </dl>
+                {submission.sideEffects ? (
+                  <div className="decision-side-effects">
+                    <div>
+                      <strong>Downstream effects</strong>
+                      <span>
+                        {submission.decision === "accepted"
+                          ? "Session, portal, tasks, message, and calendar intent"
+                          : "Decision settled without creating onboarding"}
+                      </span>
+                    </div>
+                    <StatusPill
+                      tone={
+                        submission.sideEffects.status === "complete"
+                          ? "success"
+                          : submission.sideEffects.status === "failed"
+                            ? "warning"
+                            : "neutral"
+                      }
+                    >
+                      {submission.sideEffects.status}
+                    </StatusPill>
+                    {submission.sideEffects.errorCode ? (
+                      <small>{submission.sideEffects.errorCode}</small>
+                    ) : null}
+                  </div>
+                ) : null}
                 <button
                   className="decision-safe-retry"
                   onClick={() => onRetry(submission)}
@@ -794,6 +820,20 @@ function productionSubmissions(
         ? { submittedAt: new Date(review.submittedAt).toLocaleString() }
         : {}),
     })),
+    ...(submission.sideEffects
+      ? {
+          sideEffects: {
+            ...(submission.sideEffects.errorCode
+              ? { errorCode: submission.sideEffects.errorCode }
+              : {}),
+            status: submission.sideEffects.status,
+            updatedAt: new Date(
+              submission.sideEffects.updatedAt,
+            ).toLocaleString(),
+            workflowId: submission.sideEffects.workflowId,
+          },
+        }
+      : {}),
     sourceVersion: submission.sourceVersion,
     speakerCount: submission.speakerCount,
     title: submission.title,

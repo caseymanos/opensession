@@ -9,6 +9,10 @@ import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
 import {
+  AcceptanceOrchestrationPendingError,
+  AcceptanceOrchestrationService,
+} from "../acceptance/service.js";
+import {
   hasEventPermission,
   loadEventAccess,
   type EventAccess,
@@ -20,6 +24,7 @@ import {
   sessionToken,
 } from "../auth/http.js";
 import { getBaseAuthority } from "../authority/binding.js";
+import { parseEmailDeliveryConfig } from "../email/config.js";
 import { isFeatureEnabled } from "../features.js";
 import { D1DecisionRepository } from "../decisions/repository.js";
 import {
@@ -527,18 +532,43 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
             "Authoritative decision changes are temporarily unavailable.",
           );
         }
+        const authority = getBaseAuthority(context.env);
         const result = await new AirtableReviewOperationsCommandService({
           actorId: session.user.id,
-          authority: getBaseAuthority(context.env),
+          authority,
           database: context.env.DB,
           eventId: resolution.eventId,
           organizationId: resolution.organizationId,
           requestId: context.get("requestId"),
         }).execute(input.data);
+        await new AcceptanceOrchestrationService({
+          actor: {
+            email: session.user.email,
+            id: session.user.id,
+            name: session.user.displayName ?? "OpenSession organizer",
+          },
+          authority,
+          database: context.env.DB,
+          emailConfig: parseEmailDeliveryConfig(
+            context.env.EMAIL_DELIVERY_CONFIG,
+            context.env.APP_ENV,
+          ),
+          emailQueue: context.env.EMAIL_QUEUE,
+          requestId: context.get("requestId"),
+          requestUrl: context.req.url,
+        }).execute(resolution.eventId, resolution.organizationId, input.data);
         return context.json(
           reviewOperationsCommandResponseSchema.parse({ ok: true, result }),
         );
       } catch (error) {
+        if (error instanceof AcceptanceOrchestrationPendingError) {
+          return simpleError(
+            context,
+            503,
+            "acceptance_orchestration_pending",
+            error.message,
+          );
+        }
         if (error instanceof ReviewOperationsValidationError) {
           return commandError(context, 422, {
             code: "decision_validation_error",
