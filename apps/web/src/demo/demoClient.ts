@@ -9,12 +9,19 @@ type Fetch = typeof fetch;
 
 export class DemoResetApiError extends Error {
   readonly code: string;
+  readonly requestId: string | null;
   readonly status: number;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    requestId: string | null = null,
+  ) {
     super(message);
     this.name = "DemoResetApiError";
     this.code = code;
+    this.requestId = requestId;
     this.status = status;
   }
 }
@@ -30,6 +37,7 @@ async function json(response: Response): Promise<unknown> {
 function apiError(response: Response, body: unknown): DemoResetApiError {
   const candidate = body as {
     error?: { code?: unknown; message?: unknown };
+    request_id?: unknown;
   } | null;
   return new DemoResetApiError(
     typeof candidate?.error?.code === "string"
@@ -39,6 +47,7 @@ function apiError(response: Response, body: unknown): DemoResetApiError {
       ? candidate.error.message
       : "The demo could not be reset. Try again.",
     response.status,
+    typeof candidate?.request_id === "string" ? candidate.request_id : null,
   );
 }
 

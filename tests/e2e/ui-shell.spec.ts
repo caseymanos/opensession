@@ -134,19 +134,32 @@ test("@judge @judge-e2e-07 demo reset requires the exact phrase and reports the 
     expect(request.postDataJSON()).toEqual({
       confirmation: "RESET AI ENGINEER SUMMIT 2026",
     });
-    await route.fulfill({
-      json: {
-        receipt: {
-          audit_event_id: "audit_demo_reset_e2e",
-          digest: "a".repeat(64),
-          operation_count: 134,
-          outcome: "applied",
-          reset_run_id: "demo_reset_e2e_request",
-          snapshot_id: `snapshot_${"b".repeat(24)}`,
-        },
-      },
-      status: 200,
-    });
+    await route.fulfill(
+      requestCount === 1
+        ? {
+            json: {
+              receipt: {
+                audit_event_id: "audit_demo_reset_e2e",
+                digest: "a".repeat(64),
+                operation_count: 134,
+                outcome: "applied",
+                reset_run_id: "demo_reset_e2e_request",
+                snapshot_id: `snapshot_${"b".repeat(24)}`,
+              },
+            },
+            status: 200,
+          }
+        : {
+            json: {
+              error: {
+                code: "authority_unavailable",
+                message: "Demo authority did not converge after the reset.",
+              },
+              request_id: "req_demo_reset_failed_e2e",
+            },
+            status: 503,
+          },
+    );
   });
 
   await page.goto("/");
@@ -169,10 +182,29 @@ test("@judge @judge-e2e-07 demo reset requires the exact phrase and reports the 
   await expect(
     page.getByText(
       "134 authoritative records restored from snapshot_bbbbbbbbbbbbbbbbbbbbbbbb · digest aaaaaaaaaaaa…",
-      { exact: true },
+      { exact: false },
     ),
   ).toBeVisible();
+  await expect(
+    page.getByText("reset run demo_reset_e2e_request"),
+  ).toBeVisible();
   expect(requestCount).toBe(1);
+
+  await page.getByRole("button", { name: "Reset demo" }).click();
+  const retryDialog = page.getByRole("dialog", {
+    name: "Reset all demo data?",
+  });
+  await retryDialog
+    .getByLabel("Confirmation phrase")
+    .fill("RESET AI ENGINEER SUMMIT 2026");
+  await retryDialog.getByRole("button", { name: "Reset demo data" }).click();
+
+  await expect(page.getByText("Demo reset did not finish")).toBeVisible();
+  await expect(page.getByText("req_demo_reset_failed_e2e")).toBeVisible();
+  await expect(retryDialog).toContainText(
+    "Demo authority did not converge after the reset.",
+  );
+  expect(requestCount).toBe(2);
 });
 
 test("@judge @judge-a11y workspace remains usable at a 200 percent text scale", async ({

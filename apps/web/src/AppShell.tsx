@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import type { DemoResetResponse } from "@sessionbox-killer/contracts";
 
+import { DemoResetApiError } from "./demo/demoClient";
 import {
   Button,
   Dialog,
@@ -265,7 +266,7 @@ export function AppShell({
         {
           id: "demo-reset",
           title: "Demo data reset",
-          message: `${result.receipt.operation_count} authoritative records restored from ${result.receipt.snapshot_id} · digest ${result.receipt.digest.slice(0, 12)}…`,
+          message: `${result.receipt.operation_count} authoritative records restored from ${result.receipt.snapshot_id} · digest ${result.receipt.digest.slice(0, 12)}… · reset run ${result.receipt.reset_run_id}`,
           tone: "success",
         },
       ]);
@@ -279,7 +280,11 @@ export function AppShell({
         {
           id: "demo-reset-failed",
           title: "Demo reset did not finish",
-          message: "Your existing demo data was left in a recoverable state.",
+          message: `Your existing demo data was left in a recoverable state.${
+            error instanceof DemoResetApiError && error.requestId
+              ? ` Reference ${error.requestId}.`
+              : ""
+          }`,
           tone: "error",
         },
       ]);

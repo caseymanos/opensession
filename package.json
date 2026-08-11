@@ -25,6 +25,7 @@
     "cloudflare:demo:bootstrap": "pnpm cloudflare:demo:build && node --conditions=sessionbox-operator-runtime --env-file-if-exists=.dev.vars .cloudflare/bin/demo-bootstrap.js",
     "cloudflare:demo:build": "pnpm --filter @sessionbox-killer/domain build && pnpm --filter @sessionbox-killer/data build && pnpm cloudflare:build && pnpm cloudflare:demo:runtime-check",
     "cloudflare:demo:runtime-check": "node --conditions=sessionbox-operator-runtime -e \"import('./packages/data/dist/airtable/internal.js')\"",
+    "cloudflare:demo:smoke": "pnpm cloudflare:build && node --env-file-if-exists=.dev.vars .cloudflare/bin/demo-smoke.js",
     "cloudflare:plan": "pnpm cloudflare:run plan --environment preview",
     "cloudflare:public-performance:preview": "pnpm cloudflare:build && node .cloudflare/bin/public-performance.js --environment preview",
     "cloudflare:provision:preview": "pnpm cloudflare:run apply --environment preview",
