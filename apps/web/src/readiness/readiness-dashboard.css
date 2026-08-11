@@ -402,7 +402,7 @@
   line-height: 1.35;
 }
 
-.readiness-queue article button {
+.readiness-queue article :is(button, a) {
   grid-column: 2;
   justify-self: start;
   padding: 0;
@@ -413,6 +413,12 @@
   font-size: 0.62rem;
   font-weight: 800;
   cursor: pointer;
+}
+
+.readiness-queue-empty {
+  color: var(--text-muted);
+  margin: 0;
+  padding: 1.1rem 1.25rem;
 }
 
 .readiness-queue article > svg {

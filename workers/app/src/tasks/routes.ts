@@ -7,6 +7,7 @@ import {
   taskDefinitionCommandSchema,
   taskStableIdSchema,
 } from "@sessionbox-killer/contracts/tasks";
+import { readinessDashboardQuerySchema } from "@sessionbox-killer/contracts/readiness";
 import { TaskDomainError } from "@sessionbox-killer/domain/tasks";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -40,6 +41,7 @@ import {
 } from "./service.js";
 import { safeAttachmentDisposition } from "../uploads/policy.js";
 import { UploadError, UploadService } from "../uploads/service.js";
+import { ReadinessDashboardService } from "../readiness/service.js";
 
 const taskBodyLimitBytes = 64 * 1024;
 
@@ -64,6 +66,7 @@ type TaskScopeResolution =
 async function resolveTaskScope(
   context: Context<AppContext>,
   eventKey: string,
+  options: { requireAuthorityReady?: boolean } = {},
 ): Promise<TaskScopeResolution> {
   const session = await authService(context).authenticate(
     sessionToken(context),
@@ -75,13 +78,13 @@ async function resolveTaskScope(
      JOIN tenant_registry tenant
        ON tenant.organization_id = event.organization_id
       AND tenant.status = 'active'
-      AND tenant.authority_ready_at IS NOT NULL
+      AND (?2 = 0 OR tenant.authority_ready_at IS NOT NULL)
      WHERE (event.id = ?1 OR event.slug = ?1)
        AND event.source_deleted_at IS NULL
      ORDER BY CASE WHEN event.id = ?1 THEN 0 ELSE 1 END,
               event.organization_id LIMIT 33`,
   )
-    .bind(eventKey)
+    .bind(eventKey, options.requireAuthorityReady === false ? 0 : 1)
     .all<EventCandidate>();
   if (candidates.results.length === 0) return { kind: "not_found" };
   const permitted: { access: EventAccess; candidate: EventCandidate }[] = [];
@@ -91,6 +94,9 @@ async function resolveTaskScope(
       session.user,
       candidate.organization_id,
       candidate.id,
+      options.requireAuthorityReady === undefined
+        ? {}
+        : { requireAuthorityReady: options.requireAuthorityReady },
     );
     if (
       hasEventPermission(access, "event:manage") ||
@@ -385,9 +391,21 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
 
   app.get("/api/events/:eventKey/readiness", async (context) => {
     try {
+      const query = readinessDashboardQuerySchema.safeParse(
+        context.req.query(),
+      );
+      if (!query.success) {
+        return standardError(
+          context,
+          400,
+          "invalid_readiness_query",
+          "Readiness filters or pagination are invalid.",
+        );
+      }
       const resolution = await resolveTaskScope(
         context,
         context.req.param("eventKey"),
+        { requireAuthorityReady: false },
       );
       if (resolution.kind !== "resolved") {
         return scopeFailure(context, resolution);
@@ -401,7 +419,10 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
         );
       }
       return context.json(
-        await new TaskReadService(context.env.DB).readiness(resolution.event),
+        await new ReadinessDashboardService(context.env.DB).read(
+          resolution.event,
+          query.data,
+        ),
       );
     } catch (error) {
       try {
@@ -410,7 +431,7 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
         return standardError(
           context,
           503,
-          "task_projection_unavailable",
+          "readiness_projection_unavailable",
           "Event readiness is temporarily unavailable.",
         );
       }

@@ -13,10 +13,10 @@ export interface SpeakerReadinessView {
   name: string;
   nextDue: string;
   overdueCount: number;
-  portalState: "active" | "invited" | "not_invited";
+  portalState: "active" | "invited" | "not_invited" | "revoked";
   sessions: string[];
   totalRequired: number;
-  track: "AI Engineering" | "Evaluation" | "Infrastructure" | "Product";
+  track: string;
 }
 
 const speakerReadinessBaseFixture: SpeakerReadinessView[] = [
