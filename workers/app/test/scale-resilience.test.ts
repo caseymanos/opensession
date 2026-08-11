@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -323,7 +323,11 @@ beforeAll(async () => {
   await seed();
 }, 60_000);
 
-describe("RAL-80 production-like scale and budget acceptance", () => {
+const skipScaleResilience = process.env.CI_COVERAGE_SHARD === "1";
+const scaleResilienceTitle =
+  "RAL-80 production-like scale and budget acceptance";
+
+describe.skipIf(skipScaleResilience)(scaleResilienceTitle, () => {
   it("re-enters the workflow after a durable wait with bounded retry policy", async () => {
     vi.doMock("cloudflare:workers", () => ({
       WorkflowEntrypoint: class {
@@ -485,27 +489,32 @@ describe("RAL-80 production-like scale and budget acceptance", () => {
     expect(bundles.publicGzipBytes).toBeLessThanOrEqual(170 * 1_024);
     expect(bundles.organizerGzipBytes).toBeLessThanOrEqual(300 * 1_024);
 
-    console.info(
-      JSON.stringify({
-        artifact: "ral-80-scale-resilience",
-        budgets: {
-          commonReadP95Milliseconds: commonReadBudgetMilliseconds,
-          organizerGzipBytes: 300 * 1_024,
-          publicGzipBytes: 170 * 1_024,
-          readinessP95Milliseconds: readinessBudgetMilliseconds,
-        },
-        build: buildSha(),
-        bundles,
-        conditions: {
-          database: "full migration chain on workerd local D1",
-          samples: sampleCount,
-          seed: cardinalities,
-          warmupRequests: 1,
-        },
-        latenciesP95Milliseconds: latencies,
-        queryPlans: plans,
-        url: "http://opensession-public-api-runtime.local",
-      }),
+    const receipt = {
+      artifact: "ral-80-scale-resilience",
+      budgets: {
+        commonReadP95Milliseconds: commonReadBudgetMilliseconds,
+        organizerGzipBytes: 300 * 1_024,
+        publicGzipBytes: 170 * 1_024,
+        readinessP95Milliseconds: readinessBudgetMilliseconds,
+      },
+      build: buildSha(),
+      bundles,
+      conditions: {
+        database: "full migration chain on workerd local D1",
+        samples: sampleCount,
+        seed: cardinalities,
+        warmupRequests: 1,
+      },
+      latenciesP95Milliseconds: latencies,
+      queryPlans: plans,
+      url: "http://opensession-public-api-runtime.local",
+    };
+    const receiptDirectory = resolve("coverage");
+    mkdirSync(receiptDirectory, { recursive: true });
+    writeFileSync(
+      resolve(receiptDirectory, "ral-80-scale-resilience.json"),
+      `${JSON.stringify(receipt, null, 2)}\n`,
     );
+    console.info(JSON.stringify(receipt));
   }, 60_000);
 });

@@ -17,11 +17,12 @@ chain and seeds one event with exactly:
 
 After one warmup it takes 20 samples of the actual organizer submission,
 readiness, and public API repositories. Common reads must remain at or below
-500 ms p95. The full readiness aggregation has a separate 750 ms local runaway
-guard because the runbook's organizer user-facing gate is LCP, not server
-duration. The same receipt verifies the 170 KiB gzip public and 300 KiB gzip
-organizer JavaScript graphs and records the build, local URL, seed, sample
-conditions, p95 values, and D1 query plans.
+500 ms p95. The full readiness aggregation has a separate 750 ms runaway guard
+because the runbook's organizer user-facing gate is LCP, not server duration.
+The same receipt verifies the 170 KiB gzip public and 300 KiB gzip organizer
+JavaScript graphs and records the build, local URL, seed, sample conditions,
+p95 values, and D1 query plans in
+`coverage/ral-80-scale-resilience.json`.
 
 `tests/e2e/performance-budgets.spec.ts` takes five LCP samples in the existing
 production bundle/browser harness. Mobile public schedule p75 must be at or
@@ -52,6 +53,10 @@ pnpm exec playwright test --config tests/e2e/playwright.config.ts \
 | Cache hit/invalidation | The release capture proves cold MISS, repeated HIT, stable ETag, and bodyless 304. The cache contract purges only a valid committed generation; agenda repair and replay do not invalidate or broadcast early. |
 | D1 plans | The scale receipt records indexed submission plans and the bounded 5,000-row task plan together with achieved p95. |
 
-These tests run inside the existing protected unit and browser matrices, so a
-budget, cardinality, plan, resume, poison, repair, cache, or concurrency
-regression fails the release candidate without a separate mutable environment.
+The browser and resilience assertions run inside the existing protected
+matrices. The production-like timing suite runs uninstrumented in the separate
+`RAL-80 scale resilience` workflow and uploads its JSON receipt for 14 days;
+the coverage matrix skips that timing suite so instrumentation cannot distort
+its wall-clock budgets. A budget, cardinality, plan, resume, poison, repair,
+cache, or concurrency regression still fails the release candidate without a
+separate mutable environment.
