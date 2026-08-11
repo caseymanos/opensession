@@ -428,6 +428,7 @@ const submissionDetails = submissions.flatMap((submission, index) => {
     entity("submission_answers", `answer_${number}_abstract`, {
       "Field label snapshot": "Abstract",
       "Field stable key": "abstract",
+      "Form version snapshot": 2,
       Order: 1,
       Submission: links(submission.entityId),
       Type: "textarea",

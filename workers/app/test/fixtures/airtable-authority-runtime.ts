@@ -127,13 +127,6 @@ export class FixtureBaseAuthority extends BaseAuthority {
     `);
   }
 
-  downgradeAuthoritySchemaToV5ForTest(): void {
-    this.ctx.storage.sql.exec(`
-      ALTER TABLE cfp_form_plans DROP COLUMN failure_json;
-      UPDATE authority_schema SET version = 5 WHERE singleton = 1;
-    `);
-  }
-
   clearAlarmForTest(): Promise<void> {
     return this.ctx.storage.deleteAlarm();
   }
@@ -798,10 +791,6 @@ const fixtureHandler = {
     }
     if (url.pathname === "/downgrade-authority-schema-v3") {
       await authority(env).downgradeAuthoritySchemaToV3ForTest();
-      return new Response(null, { status: 204 });
-    }
-    if (url.pathname === "/downgrade-authority-schema-v5") {
-      await authority(env).downgradeAuthoritySchemaToV5ForTest();
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/ingest-webhook") {

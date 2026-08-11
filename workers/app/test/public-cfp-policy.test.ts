@@ -540,30 +540,35 @@ describe("authoritative public CFP policy", () => {
       expect.objectContaining({
         "Field label snapshot": "Original title",
         "Field stable key": "title",
+        "Form version snapshot": 1,
         Order: 1,
         Type: "short_text",
       }),
       expect.objectContaining({
         "Field label snapshot": "Original abstract",
         "Field stable key": "abstract",
+        "Form version snapshot": 1,
         Order: 2,
         Type: "long_text",
       }),
       expect.objectContaining({
         "Field label snapshot": "Original outcomes",
         "Field stable key": "outcomes",
+        "Form version snapshot": 1,
         Order: 3,
         Type: "long_text",
       }),
       expect.objectContaining({
         "Field label snapshot": "Original format",
         "Field stable key": "format",
+        "Form version snapshot": 1,
         Order: 4,
         Type: "single_select",
       }),
       expect.objectContaining({
         "Field label snapshot": "Original track",
         "Field stable key": "track",
+        "Form version snapshot": 1,
         Order: 5,
         Type: "single_select",
       }),
@@ -1152,6 +1157,24 @@ describe("authoritative public CFP policy", () => {
     ).toBe(409);
     expect(staleBody).toMatchObject({
       error: { code: "source_version_conflict" },
+    });
+
+    const versionRace = await server.fetch(
+      `/api/v1/public/events/open-cfp/submissions/${submissionId}`,
+      {
+        body: JSON.stringify({ ...draftRequest, form_version: 1 }),
+        headers: {
+          ...authHeaders("203.0.113.109"),
+          Cookie: authentication.cookie,
+          "Idempotency-Key": "request-key-route-version-race-0001",
+          "X-CSRF-Token": authentication.csrf,
+        },
+        method: "PUT",
+      },
+    );
+    expect(versionRace.status).toBe(409);
+    await expect(versionRace.json()).resolves.toMatchObject({
+      error: { code: "form_version_conflict" },
     });
 
     await environment.DB.prepare(

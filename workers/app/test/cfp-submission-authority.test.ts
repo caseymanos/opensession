@@ -56,8 +56,10 @@ function readMigrationStatements(): string[] {
     "0014_schedule_domain.sql",
     "0015_demo_bootstrap_authorization.sql",
     "0016_organizer_submissions.sql",
+    "0017_campaign_delivery_product.sql",
     "0018_schedule_publication.sql",
     "0019_speaker_profiles.sql",
+    "0020_versioned_cfp_forms.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -196,6 +198,7 @@ function submissionPlan(): CfpSubmissionPlanInput {
         fields: {
           "Field label snapshot": "Title",
           "Field stable key": "title",
+          "Form version snapshot": 3,
           Order: 1,
           Submission: {
             itemKey: "submission",

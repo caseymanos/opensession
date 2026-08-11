@@ -19,6 +19,7 @@ const detail: OrganizerSubmissionDetail = {
       {
         fieldKey: "private_file",
         fieldType: "file",
+        formVersion: 2,
         label: "Private attachment",
         order: 2,
         redacted: true,
@@ -27,6 +28,7 @@ const detail: OrganizerSubmissionDetail = {
       {
         fieldKey: "outcomes",
         fieldType: "multi_select",
+        formVersion: 2,
         label: "Outcomes",
         order: 1,
         redacted: false,

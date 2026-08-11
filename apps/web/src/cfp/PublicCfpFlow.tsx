@@ -69,6 +69,7 @@ import {
   publicCfpRuleFields,
   publicCfpRuleFieldsFromConfiguration,
   publicCfpRuleAnswers,
+  publicCfpRuleAnswersForConfiguration,
   publicCfpSteps,
   publicCfpTrackRoutes,
   resumedPublicCfpDraft,
@@ -305,8 +306,13 @@ function isDraft(value: unknown): value is StoredPublicCfpDraft {
   );
 }
 
-function normalizeDraft(draft: StoredPublicCfpDraft): PublicCfpDraft {
-  const route = resolveCfpTrackRoute(publicCfpTrackRoutes, draft.track);
+function normalizeDraft(
+  draft: StoredPublicCfpDraft,
+  fixture = false,
+): PublicCfpDraft {
+  const route = fixture
+    ? resolveCfpTrackRoute(publicCfpTrackRoutes, draft.track)
+    : null;
   const hydrated: PublicCfpDraft = {
     ...draft,
     additionalAnswers: draft.additionalAnswers ?? {},
@@ -318,14 +324,12 @@ function normalizeDraft(draft: StoredPublicCfpDraft): PublicCfpDraft {
         ? draft.workshopPrerequisites
         : "",
   };
+  if (!fixture) return hydrated;
   const evaluation = evaluateCfpRules(
     publicCfpRuleFields,
     publicCfpRuleAnswers(hydrated),
   );
-
-  return {
-    ...publicCfpDraftWithRuleAnswers(hydrated, evaluation.answers),
-  };
+  return publicCfpDraftWithRuleAnswers(hydrated, evaluation.answers);
 }
 
 function readDraft(fixtureState?: PublicCfpFixtureState): PublicCfpDraft {
@@ -346,7 +350,7 @@ function readDraft(fixtureState?: PublicCfpFixtureState): PublicCfpDraft {
     if (!isDraft(stored)) {
       return emptyPublicCfpDraft;
     }
-    const parsed = normalizeDraft(stored);
+    const parsed = normalizeDraft(stored, Boolean(fixtureState));
     if (
       parsed.step === "confirmation" &&
       (!fixtureState || !readStorage(confirmationStorageKey))
@@ -1933,6 +1937,8 @@ function InteractivePublicCfpFlow({
   );
   const lastSavedFingerprint = useRef<string | null>(null);
   const latestDraft = useRef(draft);
+  const configurationRef = useRef(configuration);
+  const requestedFormVersionRef = useRef(requestedFormVersion);
   const saveChain = useRef<Promise<boolean>>(Promise.resolve(true));
   const saveEpoch = useRef(0);
   const finalized = useRef(false);
@@ -1960,6 +1966,11 @@ function InteractivePublicCfpFlow({
         : publicCfpRuleFields,
     [configuration],
   );
+
+  useEffect(() => {
+    configurationRef.current = configuration;
+    requestedFormVersionRef.current = requestedFormVersion;
+  }, [configuration, requestedFormVersion]);
 
   useEffect(() => {
     if (fixtureState) return;
@@ -2099,6 +2110,10 @@ function InteractivePublicCfpFlow({
           null;
 
         if (remote) {
+          if (configurationRef.current?.form.version !== remote.form_version) {
+            setConfigurationReady(false);
+            setConfigurationState("loading");
+          }
           setRequestedFormVersion(remote.form_version);
           setFormVersion(remote.form_version);
           setHasOwnedDraft(remote.status === "draft");
@@ -2181,6 +2196,10 @@ function InteractivePublicCfpFlow({
         }
 
         serverDraftRef.current = null;
+        if (requestedFormVersionRef.current !== null) {
+          setConfigurationReady(false);
+          setConfigurationState("loading");
+        }
         setRequestedFormVersion(null);
         setHasOwnedDraft(false);
         removeStorage(serverDraftStorageKey);
@@ -2256,6 +2275,7 @@ function InteractivePublicCfpFlow({
         );
       })
       .then((configuration) => {
+        if (controller.signal.aborted) return;
         setConfiguration(configuration);
         setFormVersion(configuration.form.version);
         const supported = publicCfpConfigurationSupportsFlow(configuration);
@@ -2276,7 +2296,10 @@ function InteractivePublicCfpFlow({
         } else if (supported) {
           const evaluation = evaluateCfpRules(
             publicCfpRuleFieldsFromConfiguration(configuration),
-            publicCfpRuleAnswers(latestDraft.current),
+            publicCfpRuleAnswersForConfiguration(
+              latestDraft.current,
+              configuration,
+            ),
           );
           const next = publicCfpDraftWithRuleAnswers(
             latestDraft.current,
@@ -2321,6 +2344,15 @@ function InteractivePublicCfpFlow({
     conflictWasOpen.current = true;
     const dialog = conflictDialog.current;
     if (!dialog) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (!dialog.contains(document.activeElement)) {
+        dialog
+          .querySelector<HTMLElement>(
+            'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          )
+          ?.focus();
+      }
+    });
     const containFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
       const controls = Array.from(
@@ -2340,8 +2372,11 @@ function InteractivePublicCfpFlow({
       }
     };
     dialog.addEventListener("keydown", containFocus);
-    return () => dialog.removeEventListener("keydown", containFocus);
-  }, [draftConflict]);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      dialog.removeEventListener("keydown", containFocus);
+    };
+  }, [configurationState, draftConflict]);
 
   function setServerDraftMetadata(metadata: ServerDraftMetadata | null) {
     serverDraftRef.current = metadata;
@@ -2505,6 +2540,10 @@ function InteractivePublicCfpFlow({
       draftConflict.local.email,
     );
     const metadata = metadataFromDraft(draftConflict.remote);
+    if (configuration?.form.version !== metadata.formVersion) {
+      setConfigurationReady(false);
+      setConfigurationState("loading");
+    }
     setRequestedFormVersion(metadata.formVersion);
     setFormVersion(metadata.formVersion);
     latestDraft.current = next;
@@ -2529,6 +2568,10 @@ function InteractivePublicCfpFlow({
       ...(terminal ? { consent: true, step: "confirmation" as const } : {}),
     };
     const metadata = metadataFromDraft(submission);
+    if (configuration?.form.version !== metadata.formVersion) {
+      setConfigurationReady(false);
+      setConfigurationState("loading");
+    }
     setRequestedFormVersion(
       requestedFormVersion === null &&
         configuration?.form.version === metadata.formVersion
@@ -2639,6 +2682,10 @@ function InteractivePublicCfpFlow({
     setDraft(next);
     writeStorage(draftStorageKey, JSON.stringify(next));
     setServerDraftMetadata(null);
+    if (requestedFormVersion !== null) {
+      setConfigurationReady(false);
+      setConfigurationState("loading");
+    }
     setRequestedFormVersion(null);
     lastSavedFingerprint.current = null;
     finalized.current = false;
@@ -3232,28 +3279,40 @@ function InteractivePublicCfpFlow({
       ? "account"
       : draft.step;
 
+  if (!fixtureState && configurationState !== "ready") {
+    return (
+      <div className="public-cfp-flow">
+        <header className="public-cfp-header">
+          <PublicCfpBrand />
+        </header>
+        <main>
+          <StatePanel
+            description={
+              configurationState === "loading"
+                ? "Checking the current form, deadline, and submission policy."
+                : configurationState === "unsupported"
+                  ? "This published form uses fields this application cannot safely render yet. The program team has been notified."
+                  : "The current form could not be loaded. Refresh before entering or changing a proposal."
+            }
+            state={configurationState === "loading" ? "loading" : "error"}
+            title={
+              configurationState === "loading"
+                ? "Loading the call for proposals"
+                : "The proposal form is unavailable"
+            }
+          />
+        </main>
+        <LiveRegion message={announcement} />
+      </div>
+    );
+  }
+
   const content =
     !fixtureState && sessionCheckFailed && sessionPrivacyRequired ? (
       <StatePanel
         description="Retry the secure session check before viewing or changing account data. Your device copy remains stored locally."
         state="error"
         title="We could not verify this session"
-      />
-    ) : !fixtureState && configurationState !== "ready" ? (
-      <StatePanel
-        description={
-          configurationState === "loading"
-            ? "Checking the current form, deadline, and submission policy."
-            : configurationState === "unsupported"
-              ? "This published form uses fields this application cannot safely render yet. The program team has been notified."
-              : "The current form could not be loaded. Refresh before entering or changing a proposal."
-        }
-        state={configurationState === "loading" ? "loading" : "error"}
-        title={
-          configurationState === "loading"
-            ? "Loading the call for proposals"
-            : "The proposal form is unavailable"
-        }
       />
     ) : effectiveStep === "welcome" ? (
       <Welcome event={event} onStart={() => moveTo("account")} />

@@ -29,6 +29,9 @@ const server = createTestHarness({
     },
   ],
 });
+const runtimeWorker = server.getWorker<{ DB: D1Database }>(
+  "opensession-airtable-authority-runtime",
+);
 
 function migrationStatements(): string[] {
   const statements: string[] = [];
@@ -50,7 +53,10 @@ function migrationStatements(): string[] {
     "0014_schedule_domain.sql",
     "0015_demo_bootstrap_authorization.sql",
     "0016_organizer_submissions.sql",
+    "0017_campaign_delivery_product.sql",
     "0018_schedule_publication.sql",
+    "0019_speaker_profiles.sql",
+    "0020_versioned_cfp_forms.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -313,7 +319,10 @@ describe("authoritative CFP form service", () => {
     expect(publishResponse.status, await publishResponse.clone().text()).toBe(
       200,
     );
-    await expect(publishResponse.json()).resolves.toMatchObject({
+    const published = organizerCfpFormMutationResponseSchema.parse(
+      await publishResponse.json(),
+    );
+    expect(published).toMatchObject({
       outcome: "applied",
       result: {
         form: {
@@ -325,6 +334,42 @@ describe("authoritative CFP form service", () => {
         publishedVersion: 2,
       },
     });
+    const mutationsAfterPublish = await providerMutationCount();
+    const publishReplay = await formService(
+      "publish",
+      {
+        commandId: "publish_cfp_forms_v2",
+        expectedFormId: saved.result.form.id,
+        expectedSourceVersion: saved.result.form.sourceVersion,
+      },
+      "2026-08-10T12:00:00.000Z",
+    );
+    expect(publishReplay.status).toBe(200);
+    await expect(publishReplay.json()).resolves.toMatchObject({
+      outcome: "replayed",
+      result: { form: { id: saved.result.form.id, status: "published" } },
+    });
+    expect(await providerMutationCount()).toBe(mutationsAfterPublish);
+
+    const closeRequest = {
+      commandId: "close_cfp_forms_v2",
+      expectedFormId: published.result.form.id,
+      expectedSourceVersion: published.result.form.sourceVersion,
+    };
+    const closeResponse = await formService("close", closeRequest);
+    expect(closeResponse.status).toBe(200);
+    await expect(closeResponse.json()).resolves.toMatchObject({
+      outcome: "applied",
+      result: { form: { id: saved.result.form.id, status: "closed" } },
+    });
+    const mutationsAfterClose = await providerMutationCount();
+    const closeReplay = await formService("close", closeRequest);
+    expect(closeReplay.status).toBe(200);
+    await expect(closeReplay.json()).resolves.toMatchObject({
+      outcome: "replayed",
+      result: { form: { id: saved.result.form.id, status: "closed" } },
+    });
+    expect(await providerMutationCount()).toBe(mutationsAfterClose);
 
     const providerResponse = await server.fetch(
       "/provider-records?table=forms",
@@ -415,7 +460,7 @@ describe("authoritative CFP form service", () => {
     expect(await providerMutationCount()).toBe(mutationsBeforeRejection);
     await expect(
       (await server.fetch("/cfp-form-plan-states")).json(),
-    ).resolves.toMatchObject({ complete: 3, rejected: 1 });
+    ).resolves.toMatchObject({ complete: 4, rejected: 1 });
     const projected = organizerCfpFormReadResponseSchema.parse(
       await (await formService("read")).json(),
     );
@@ -481,5 +526,36 @@ describe("authoritative CFP form service", () => {
         path: expect.stringMatching(/^fields\.field_[A-Za-z0-9_-]+\.type$/),
       }),
     );
+  });
+
+  it("reports malformed canonical routing metadata before publication", async () => {
+    const environment = await runtimeWorker.getEnv();
+    await environment.DB.prepare(
+      `UPDATE p_tracks SET cfp_aliases_json = '[1]'
+       WHERE organization_id = ?1 AND event_id = ?2`,
+    )
+      .bind(organizationId, eventId)
+      .run();
+    try {
+      const response = await formService("read");
+      expect(response.status).toBe(200);
+      const current = organizerCfpFormReadResponseSchema.parse(
+        await response.json(),
+      );
+      expect(current.publishable).toBe(false);
+      expect(current.diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: "invalid_track_catalog",
+          path: "event.tracks",
+        }),
+      );
+    } finally {
+      await environment.DB.prepare(
+        `UPDATE p_tracks SET cfp_aliases_json = '[]'
+         WHERE organization_id = ?1 AND event_id = ?2`,
+      )
+        .bind(organizationId, eventId)
+        .run();
+    }
   });
 });

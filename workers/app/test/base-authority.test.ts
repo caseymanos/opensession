@@ -451,7 +451,7 @@ describe("BaseAuthority Durable Object", () => {
     });
   });
 
-  it("upgrades a persisted v2 authority cursor to v6 without losing state", async () => {
+  it("upgrades a persisted v2 authority cursor to v5 without losing state", async () => {
     expect(
       (
         await post("/configure-webhook", {
@@ -467,7 +467,7 @@ describe("BaseAuthority Durable Object", () => {
     await expect(state.json()).resolves.toEqual({
       committedCursor: 37,
       committedRosterHash: null,
-      schemaVersion: 6,
+      schemaVersion: 5,
       webhookId: "webhook_v2_upgrade",
     });
   });
@@ -488,18 +488,8 @@ describe("BaseAuthority Durable Object", () => {
     await expect(state.json()).resolves.toEqual({
       committedCursor: 41,
       committedRosterHash: null,
-      schemaVersion: 6,
+      schemaVersion: 5,
       webhookId: "webhook_v3_upgrade",
     });
-  });
-
-  it("adds durable CFP plan rejection to a persisted v5 authority object", async () => {
-    expect((await post("/downgrade-authority-schema-v5")).status).toBe(204);
-    await evictAuthority();
-
-    const state = await server.fetch("/authority-state");
-    await expect(state.json()).resolves.toMatchObject({ schemaVersion: 6 });
-    const planStates = await server.fetch("/cfp-form-plan-states");
-    await expect(planStates.json()).resolves.toEqual({});
   });
 });

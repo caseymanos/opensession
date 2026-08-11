@@ -142,6 +142,7 @@ export const organizerSubmissionAnswerSchema = z
   .object({
     fieldKey: submissionIdentifierSchema,
     fieldType: z.string().trim().min(1).max(80),
+    formVersion: z.int().positive(),
     label: z.string().trim().min(1).max(240),
     order: z.int().nonnegative(),
     redacted: z.boolean(),

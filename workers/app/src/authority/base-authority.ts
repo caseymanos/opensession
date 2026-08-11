@@ -94,7 +94,7 @@ interface TenantRoster {
   }[];
 }
 
-export const authoritySchemaVersion = 6;
+export const authoritySchemaVersion = 5;
 const productionLeaseDurationMilliseconds = 180_000;
 const productionRecoveryDelayMilliseconds = 5_000;
 
@@ -1178,15 +1178,7 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
         updated_at_ms INTEGER NOT NULL,
         PRIMARY KEY (organization_id, event_id)
       ) WITHOUT ROWID, STRICT;
-      UPDATE authority_schema SET version = 6 WHERE singleton = 1;
-    `);
-  }
-
-  private migrateCfpFormRejectionSchema(): void {
-    this.ctx.storage.sql.exec(`
-      ALTER TABLE cfp_form_plans ADD COLUMN failure_json TEXT
-        CHECK (failure_json IS NULL OR json_valid(failure_json));
-      UPDATE authority_schema SET version = 6 WHERE singleton = 1;
+      UPDATE authority_schema SET version = 5 WHERE singleton = 1;
     `);
   }
 
@@ -1210,15 +1202,9 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
       version !== 1 &&
       version !== 2 &&
       version !== 3 &&
-      version !== 4 &&
-      version !== 5
+      version !== 4
     ) {
       throw new Error(`Unsupported BaseAuthority schema version ${version}.`);
-    }
-
-    if (version === 5) {
-      this.migrateCfpFormRejectionSchema();
-      return;
     }
 
     if (version === 4) {

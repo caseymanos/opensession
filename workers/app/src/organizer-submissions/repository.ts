@@ -353,7 +353,7 @@ export class D1OrganizerSubmissionRepository {
         this.#database
           .prepare(
             `SELECT field_stable_key, field_label_snapshot, answer_type,
-                    value_json, sort_order
+                    form_version_snapshot, value_json, sort_order
              FROM p_submission_answers
              WHERE organization_id = ?1 AND event_id = ?2 AND submission_id = ?3
                AND source_deleted_at IS NULL
@@ -364,6 +364,7 @@ export class D1OrganizerSubmissionRepository {
             answer_type: string;
             field_label_snapshot: string;
             field_stable_key: string;
+            form_version_snapshot: number;
             sort_order: number;
             value_json: string;
           }>(),
@@ -470,6 +471,7 @@ export class D1OrganizerSubmissionRepository {
         answers: answers.results.map((answer) => ({
           fieldKey: answer.field_stable_key,
           fieldType: answer.answer_type,
+          formVersion: answer.form_version_snapshot,
           label: answer.field_label_snapshot,
           order: answer.sort_order,
           ...parseAnswerValue(answer.answer_type, answer.value_json),

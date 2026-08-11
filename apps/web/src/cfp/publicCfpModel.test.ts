@@ -8,6 +8,7 @@ import {
   publicCfpDraftContent,
   publicCfpDraftForConfiguration,
   publicCfpEventFromConfiguration,
+  publicCfpRuleAnswersForConfiguration,
   publicCfpRuleFieldsFromConfiguration,
 } from "./publicCfpModel";
 
@@ -290,5 +291,35 @@ describe("public CFP presentation model", () => {
         form: { ...supportedConfiguration.form, submissionLimit: null },
       }).maxSubmissions,
     ).toBeNull();
+  });
+
+  it("drops device answers that do not exist in the requested form version", () => {
+    expect(
+      publicCfpRuleAnswersForConfiguration(
+        {
+          ...emptyPublicCfpDraft,
+          additionalAnswers: {
+            obsolete_v1_field: "must not cross versions",
+          },
+          title: "Versioned proposal",
+        },
+        supportedConfiguration,
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        title: "Versioned proposal",
+      }),
+    );
+    expect(
+      publicCfpRuleAnswersForConfiguration(
+        {
+          ...emptyPublicCfpDraft,
+          additionalAnswers: {
+            obsolete_v1_field: "must not cross versions",
+          },
+        },
+        supportedConfiguration,
+      ),
+    ).not.toHaveProperty("obsolete_v1_field");
   });
 });

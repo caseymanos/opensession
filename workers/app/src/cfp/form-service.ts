@@ -8,6 +8,7 @@ import {
 import {
   assertCfpFormTransition,
   nextCfpDraftVersion,
+  resolveCfpTrackRoute,
   validateCfpForm,
 } from "@sessionbox-killer/domain";
 
@@ -88,6 +89,7 @@ interface RuleRow {
 }
 
 interface TrackOptionRow {
+  cfp_aliases_json: string;
   cfp_selection: string | null;
   default_reviewer_group_id: string | null;
   route_key: string | null;
@@ -191,10 +193,6 @@ function providerReference(recordId: string): CfpFormPlanFieldValue {
 
 function itemReference(itemKey: string): CfpFormPlanFieldValue {
   return { itemKey, kind: "plan_item_record" };
-}
-
-function fieldItemKey(fieldId: string): string {
-  return `field_${fieldId}`;
 }
 
 function canonicalJson(value: unknown): string {
@@ -408,11 +406,11 @@ export class D1OrganizerCfpFormRepository {
   async response(state: FormState) {
     const form = await this.form(state);
     const diagnostics = [
-      ...validateCfpForm(form.fields),
       ...(form.status === "draft"
         ? await this.publicationDiagnostics(state, form)
         : []),
-    ];
+      ...validateCfpForm(form.fields),
+    ].slice(0, 512);
     const publishedVersion =
       state.forms
         .filter(
@@ -530,7 +528,7 @@ export class D1OrganizerCfpFormRepository {
     const [trackRows, formatRows] = await Promise.all([
       this.#database
         .prepare(
-          `SELECT cfp_selection, route_key, submission_track,
+          `SELECT cfp_selection, cfp_aliases_json, route_key, submission_track,
                   default_reviewer_group_id
            FROM p_tracks
            WHERE organization_id = ?1 AND event_id = ?2
@@ -551,19 +549,89 @@ export class D1OrganizerCfpFormRepository {
         .bind(state.event.organization_id, state.event.id)
         .all<FormatOptionRow>(),
     ]);
-    const canonicalTracks = trackRows.results
-      .filter(
-        (row) =>
-          row.cfp_selection?.trim() &&
-          row.route_key?.trim() &&
-          row.submission_track?.trim() &&
-          row.default_reviewer_group_id?.trim(),
-      )
-      .map((row) => row.cfp_selection as string);
+    if (trackRows.results.length > 64) {
+      diagnostics.push({
+        code: "too_many_tracks",
+        message: "The event track catalog exceeds the 64-track CFP limit.",
+        path: "event.tracks",
+      });
+    }
+    if (formatRows.results.length > 64) {
+      diagnostics.push({
+        code: "too_many_formats",
+        message: "The event format catalog exceeds the 64-format CFP limit.",
+        path: "event.formats",
+      });
+    }
+    const routes = trackRows.results.slice(0, 64).flatMap((row) => {
+      let aliases: string[];
+      try {
+        const parsed: unknown = JSON.parse(row.cfp_aliases_json);
+        if (
+          !Array.isArray(parsed) ||
+          parsed.length > 64 ||
+          parsed.some(
+            (alias) =>
+              typeof alias !== "string" || !alias.trim() || alias.length > 240,
+          )
+        ) {
+          throw new TypeError("invalid aliases");
+        }
+        aliases = parsed;
+      } catch {
+        diagnostics.push({
+          code: "invalid_track_catalog",
+          message: "A track has invalid CFP aliases and cannot be published.",
+          path: "event.tracks",
+        });
+        return [];
+      }
+      if (
+        !row.cfp_selection?.trim() ||
+        !row.route_key?.trim() ||
+        !row.submission_track?.trim() ||
+        !row.default_reviewer_group_id?.trim()
+      ) {
+        diagnostics.push({
+          code: "invalid_track_catalog",
+          message:
+            "Every event track needs a CFP selection, route key, submission track, and reviewer group.",
+          path: "event.tracks",
+        });
+        return [];
+      }
+      return [
+        {
+          aliases,
+          defaultReviewerGroupId: row.default_reviewer_group_id,
+          routeKey: row.route_key,
+          selection: row.cfp_selection,
+          submissionTrack: row.submission_track,
+        },
+      ];
+    });
+    const routeCandidates = new Set<string>();
+    for (const route of routes) {
+      for (const candidate of [route.selection, ...(route.aliases ?? [])]) {
+        const normalized = candidate.trim().toLocaleLowerCase("en-US");
+        if (routeCandidates.has(normalized)) {
+          diagnostics.push({
+            code: "invalid_track_catalog",
+            message:
+              "Track selections and aliases must be unique before publishing.",
+            path: "event.tracks",
+          });
+          break;
+        }
+        routeCandidates.add(normalized);
+      }
+    }
     if (
       track &&
-      (track.options.length !== canonicalTracks.length ||
-        track.options.some((option) => !canonicalTracks.includes(option)))
+      (track.options.length !== routes.length ||
+        track.options.some(
+          (option) => resolveCfpTrackRoute(routes, option) === null,
+        ))
     ) {
       diagnostics.push({
         code: "unroutable_track_option",
@@ -575,10 +643,20 @@ export class D1OrganizerCfpFormRepository {
       });
     }
     const canonicalFormats = new Set(
-      formatRows.results.map((row) =>
-        row.name.trim().toLocaleLowerCase("en-US"),
-      ),
+      formatRows.results
+        .slice(0, 64)
+        .map((row) => row.name.trim().toLocaleLowerCase("en-US")),
     );
+    if (
+      canonicalFormats.size !== formatRows.results.slice(0, 64).length ||
+      canonicalFormats.has("")
+    ) {
+      diagnostics.push({
+        code: "invalid_format_catalog",
+        message: "Event format names must be non-empty and unique.",
+        path: "event.formats",
+      });
+    }
     if (
       format &&
       format.options.some(
@@ -677,9 +755,16 @@ export class CfpFormService {
       table: "forms",
     });
 
-    for (const field of [...request.form.fields].sort(
+    const sortedFields = [...request.form.fields].sort(
       (left, right) => left.order - right.order,
-    )) {
+    );
+    const itemKeyByFieldId = new Map(
+      sortedFields.map((field, index) => [
+        field.id,
+        `field_${String(index + 1).padStart(3, "0")}`,
+      ]),
+    );
+    for (const field of sortedFields) {
       const entityId = await derivedId("field", `${formId}\u0000${field.id}`);
       items.push({
         entityId,
@@ -695,7 +780,7 @@ export class CfpFormService {
           "Stable key": field.key,
           "Validation JSON": canonicalJson(field.validation),
         },
-        itemKey: fieldItemKey(field.id),
+        itemKey: itemKeyByFieldId.get(field.id) as string,
         table: "form_fields",
       });
     }
@@ -704,9 +789,7 @@ export class CfpFormService {
       request.form.fields.map((field) => [field.key, field]),
     );
     let ruleOrder = 0;
-    for (const field of [...request.form.fields].sort(
-      (left, right) => left.order - right.order,
-    )) {
+    for (const field of sortedFields) {
       for (const rule of field.rules) {
         const source = fieldByKey.get(rule.sourceKey);
         if (!source) continue;
@@ -719,11 +802,15 @@ export class CfpFormService {
             Form: itemReference("form_snapshot"),
             Operator: rule.operator === "includes" ? "contains" : "equals",
             Order: ruleOrder,
-            "Source field": itemReference(fieldItemKey(source.id)),
-            "Target field": itemReference(fieldItemKey(field.id)),
+            "Source field": itemReference(
+              itemKeyByFieldId.get(source.id) as string,
+            ),
+            "Target field": itemReference(
+              itemKeyByFieldId.get(field.id) as string,
+            ),
             "Value JSON": canonicalJson(rule.value),
           },
-          itemKey: `rule_${rule.id}`,
+          itemKey: `rule_${String(ruleOrder).padStart(3, "0")}`,
           table: "form_rules",
         });
       }
@@ -775,9 +862,9 @@ export class CfpFormService {
     assertCfpFormTransition("draft", "published");
     const form = await this.#repository.form(state);
     const diagnostics = [
-      ...validateCfpForm(form.fields),
       ...(await this.#repository.publicationDiagnostics(state, form)),
-    ];
+      ...validateCfpForm(form.fields),
+    ].slice(0, 512);
     if (diagnostics.length > 0) throw new CfpFormValidationError(diagnostics);
     const prior = state.forms.find(
       (candidate) => candidate.status === "published",

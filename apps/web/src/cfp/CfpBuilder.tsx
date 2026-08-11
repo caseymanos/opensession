@@ -1363,20 +1363,12 @@ export function CfpBuilder({ eventKey }: { eventKey: string }) {
               </li>
             ))}
           </ul>
-          {ruleDiagnostics.length || serverDiagnostics.length ? (
+          {serverDiagnostics.length ? (
             <div className="cfp-publish-errors" role="alert">
               <strong>
-                Resolve {ruleDiagnostics.length + serverDiagnostics.length} form
-                issue before publishing
+                Resolve {serverDiagnostics.length} form issue before publishing
               </strong>
               <ul>
-                {ruleDiagnostics.map((diagnostic, index) => (
-                  <li
-                    key={`${diagnostic.code}-${diagnostic.ruleId ?? diagnostic.fieldKey}-${index}`}
-                  >
-                    {diagnostic.message}
-                  </li>
-                ))}
                 {serverDiagnostics.map((diagnostic, index) => (
                   <li key={`${diagnostic.path}-${diagnostic.code}-${index}`}>
                     {diagnostic.message}

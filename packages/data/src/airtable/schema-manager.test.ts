@@ -59,14 +59,14 @@ function completeSchema(): AirtableBaseSchema {
 
 describe("Airtable schema", () => {
   it("defines every authoritative table with lifecycle fields", () => {
-    expect(expectedAirtableSchema.version).toBe(6);
+    expect(expectedAirtableSchema.version).toBe(7);
     expect(expectedAirtableSchema.tables).toHaveLength(30);
     expect(
       expectedAirtableSchema.tables.reduce(
         (count, table) => count + table.fields.length,
         0,
       ),
-    ).toBe(447);
+    ).toBe(448);
     expect(
       expectedAirtableSchema.tables.every(
         (table) =>
@@ -111,7 +111,7 @@ describe("Airtable schema", () => {
     const report = compareAirtableSchema(schema);
     const index = createAirtableSchemaIndex(schema);
 
-    expect(report).toMatchObject({ ready: true, schemaVersion: 6 });
+    expect(report).toMatchObject({ ready: true, schemaVersion: 7 });
     expect(report.issues).toEqual([]);
     expect(index.tables.get("events")?.id).toBe("tbl_1");
   });
@@ -151,7 +151,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v6", "schema v1");
+      table.description = table.description?.replace("schema v7", "schema v1");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -159,7 +159,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v6",
+                  "schema v7",
                   "schema v1",
                 ),
               }
@@ -247,7 +247,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v6", "schema v2");
+      table.description = table.description?.replace("schema v7", "schema v2");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -255,7 +255,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v6",
+                  "schema v7",
                   "schema v2",
                 ),
               }
@@ -321,7 +321,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v6", "schema v3");
+      table.description = table.description?.replace("schema v7", "schema v3");
       table.fields = table.fields
         .filter(
           (field) => table.name !== "Events" || !newFields.has(field.name),
@@ -331,7 +331,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v6",
+                  "schema v7",
                   "schema v3",
                 ),
               }
@@ -450,6 +450,100 @@ describe("Airtable schema", () => {
       "field:Updated at",
       "field:Submission",
     ]);
+  });
+
+  it("upgrades v6 after the operator adds the new managed select choices", async () => {
+    const schema = completeSchema();
+    const formFields = schema.tables.find(
+      (table) => table.name === "Form Fields",
+    );
+    const submissionAnswers = schema.tables.find(
+      (table) => table.name === "Submission Answers",
+    );
+    const blockType = formFields?.fields.find(
+      (field) => field.name === "Block type",
+    );
+    if (!blockType || !submissionAnswers) {
+      throw new Error("Fixture is incomplete");
+    }
+    blockType.options = {
+      choices: [
+        "text",
+        "textarea",
+        "select",
+        "multiselect",
+        "checkbox",
+        "file",
+        "participant",
+      ].map((name) => ({ name })),
+    };
+    submissionAnswers.fields = submissionAnswers.fields.filter(
+      (field) => field.name !== "Form version snapshot",
+    );
+
+    const created: string[] = [];
+    const manager = new AirtableSchemaManager({
+      createField: async (tableId, write) => {
+        const table = schema.tables.find(
+          (candidate) => candidate.id === tableId,
+        );
+        if (!table) throw new Error("Missing fixture table");
+        const field: AirtableFieldSchema = {
+          ...(write.description ? { description: write.description } : {}),
+          id: `fld_v7_${created.length}`,
+          name: write.name,
+          ...(write.options ? { options: write.options } : {}),
+          type: write.type,
+        };
+        table.fields.push(field);
+        created.push(write.name);
+        return field;
+      },
+      createTable: async () => {
+        throw new Error("v7 does not create tables");
+      },
+      getBaseSchema: async () => schema,
+    });
+
+    expect(compareAirtableSchema(schema).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_select_choice",
+          expected: "section",
+          field: "Block type",
+        }),
+        expect.objectContaining({
+          code: "missing_select_choice",
+          expected: "url",
+          field: "Block type",
+        }),
+        expect.objectContaining({
+          code: "missing_field",
+          field: "Form version snapshot",
+          table: "Submission Answers",
+        }),
+      ]),
+    );
+    await expect(manager.bootstrap()).rejects.toBeInstanceOf(
+      AirtableSchemaDriftError,
+    );
+    expect(created).toEqual([]);
+
+    blockType.options = {
+      choices: [
+        "text",
+        "textarea",
+        "select",
+        "multiselect",
+        "checkbox",
+        "file",
+        "participant",
+        "section",
+        "url",
+      ].map((name) => ({ name })),
+    };
+    await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
+    expect(created).toEqual(["Form version snapshot"]);
   });
 
   it("reports missing, incompatible, and link-target drift", () => {
@@ -637,8 +731,8 @@ describe("Airtable schema", () => {
     if (!events || !venue) throw new Error("Fixture is incomplete");
     events.name = "Conference Events";
     venue.name = "Location";
-    events.description = events.description?.replace("schema v6", "schema v7");
-    venue.description = venue.description?.replace("schema v6", "schema v7");
+    events.description = events.description?.replace("schema v7", "schema v8");
+    venue.description = venue.description?.replace("schema v7", "schema v8");
 
     let writes = 0;
     const manager = new AirtableSchemaManager({

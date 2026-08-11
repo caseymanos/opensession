@@ -152,6 +152,69 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+test("production loading state does not reveal demo CFP content", async ({
+  page,
+}) => {
+  let releaseConfiguration: (() => void) | undefined;
+  const heldConfiguration = new Promise<void>((resolve) => {
+    releaseConfiguration = resolve;
+  });
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      await heldConfiguration;
+      await route.fulfill({ json: publicCfpConfiguration, status: 200 });
+    },
+  );
+
+  await page.goto(publicPath);
+  await expect(
+    page.getByRole("heading", { name: "Loading the call for proposals" }),
+  ).toBeVisible();
+  await expect(page.getByText("Proposals close")).toHaveCount(0);
+  await expect(page.getByText("program@aiengineersummit.com")).toHaveCount(0);
+  releaseConfiguration?.();
+  await expect(
+    page.getByRole("button", { name: "Start a proposal" }),
+  ).toBeVisible();
+});
+
+test("organizer display text stays escaped at the public runtime boundary", async ({
+  page,
+}) => {
+  const eventMarkup = '<img src="x" onerror="window.__cfpMarkupRan=1">';
+  const welcomeMarkup =
+    "<script>window.__cfpMarkupRan=1</script><b>Welcome safely</b>";
+  await page.route(
+    "**/api/v1/public/events/ai-engineer-summit/cfp*",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          ...publicCfpConfiguration,
+          event: { ...publicCfpConfiguration.event, name: eventMarkup },
+          form: {
+            ...publicCfpConfiguration.form,
+            welcomeContent: welcomeMarkup,
+          },
+        },
+        status: 200,
+      });
+    },
+  );
+
+  await page.goto(publicPath);
+  await expect(page.getByText(welcomeMarkup, { exact: true })).toBeVisible();
+  await expect(page.locator('.public-cfp-flow img[src="x"]')).toHaveCount(0);
+  await expect(page.locator(".public-cfp-flow script")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { __cfpMarkupRan?: number }).__cfpMarkupRan,
+      ),
+    )
+    .toBeUndefined();
+});
+
 const reviewDraft = {
   abstract:
     "Agent systems fail in production for reasons that rarely appear in benchmarks. This session turns real incident patterns into practical architecture, recovery, and observability techniques.",

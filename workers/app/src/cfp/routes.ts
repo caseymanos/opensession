@@ -72,6 +72,33 @@ interface CfpSubmissionPlanResumer {
   ): Promise<CfpSubmissionPlanReceipt | null>;
 }
 
+type AbuseCapacityPort = typeof requireAbuseCapacity;
+type TurnstileVerificationPort = typeof verifyTurnstile;
+
+export async function requireCfpSubmissionCapacity(
+  context: Context<AppContext>,
+  mode: "draft" | "submit",
+  eventId: string,
+  identity: string,
+  ip: string | null,
+  limiter: AbuseCapacityPort = requireAbuseCapacity,
+): Promise<Response | null> {
+  const operation = mode === "submit" ? "submit" : "autosave";
+  const actorLimited = await limiter(context, operation, { identity, ip });
+  return actorLimited ?? limiter(context, operation, { event: eventId });
+}
+
+export async function verifyCfpSubmissionChallenge(
+  context: Context<AppContext>,
+  request:
+    | ProtectedPublicCfpSubmissionRequest
+    | ProtectedPublicCfpSubmissionUpdateRequest,
+  verifier: TurnstileVerificationPort = verifyTurnstile,
+): Promise<void> {
+  if (request.mode !== "submit") return;
+  await verifier(context, request.turnstile_token, request.turnstile_action);
+}
+
 export async function resumeOwnedCfpSubmission(
   authority: CfpSubmissionPlanResumer,
   organizationId: string,
@@ -508,23 +535,15 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
 
       requireSubmissionReceiptReady(context, request.data);
 
-      const operation = request.data.mode === "submit" ? "submit" : "autosave";
-      const limited = await requireAbuseCapacity(context, operation, {
-        identity: session.user.id,
-        ip: context.req.header("CF-Connecting-IP") ?? null,
-      });
+      const limited = await requireCfpSubmissionCapacity(
+        context,
+        request.data.mode,
+        policy.eventId,
+        session.user.id,
+        context.req.header("CF-Connecting-IP") ?? null,
+      );
       if (limited) return limited;
-      const eventLimited = await requireAbuseCapacity(context, operation, {
-        event: policy.eventId,
-      });
-      if (eventLimited) return eventLimited;
-      if (request.data.mode === "submit") {
-        await verifyTurnstile(
-          context,
-          request.data.turnstile_token,
-          request.data.turnstile_action,
-        );
-      }
+      await verifyCfpSubmissionChallenge(context, request.data);
 
       const plan = await new D1CfpSubmissionCompiler(context.env.DB).compile(
         policy,
@@ -769,24 +788,15 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
 
         requireSubmissionReceiptReady(context, request.data);
 
-        const operation =
-          request.data.mode === "submit" ? "submit" : "autosave";
-        const limited = await requireAbuseCapacity(context, operation, {
-          identity: session.user.id,
-          ip: context.req.header("CF-Connecting-IP") ?? null,
-        });
+        const limited = await requireCfpSubmissionCapacity(
+          context,
+          request.data.mode,
+          policy.eventId,
+          session.user.id,
+          context.req.header("CF-Connecting-IP") ?? null,
+        );
         if (limited) return limited;
-        const eventLimited = await requireAbuseCapacity(context, operation, {
-          event: policy.eventId,
-        });
-        if (eventLimited) return eventLimited;
-        if (request.data.mode === "submit") {
-          await verifyTurnstile(
-            context,
-            request.data.turnstile_token,
-            request.data.turnstile_action,
-          );
-        }
+        await verifyCfpSubmissionChallenge(context, request.data);
 
         const plan = await new D1CfpSubmissionCompiler(
           context.env.DB,

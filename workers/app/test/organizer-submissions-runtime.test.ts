@@ -220,6 +220,7 @@ async function seedAuthorityRecords(): Promise<void> {
   await seedProvider("submission_answers", "answer_alpha_abstract", {
     "Field label snapshot": "What will organizers learn?",
     "Field stable key": "abstract",
+    "Form version snapshot": 2,
     Order: 1,
     Submission: [recordId("submissions", "submission_alpha")],
     Type: "textarea",
@@ -228,6 +229,7 @@ async function seedAuthorityRecords(): Promise<void> {
   await seedProvider("submission_answers", "answer_alpha_file", {
     "Field label snapshot": "Private supporting file",
     "Field stable key": "private_file",
+    "Form version snapshot": 2,
     Order: 2,
     Submission: [recordId("submissions", "submission_alpha")],
     Type: "file",
@@ -239,6 +241,7 @@ async function seedAuthorityRecords(): Promise<void> {
   await seedProvider("submission_answers", "answer_snapshot_v1", {
     "Field label snapshot": "Original v1 prompt",
     "Field stable key": "abstract",
+    "Form version snapshot": 1,
     Order: 1,
     Submission: [recordId("submissions", "submission_snapshot")],
     Type: "textarea",
@@ -565,6 +568,7 @@ describe.sequential("organizer submission runtime", () => {
       answerSnapshot: {
         answers: {
           fieldKey: string;
+          formVersion: number;
           label: string;
           redacted: boolean;
           value: unknown;
@@ -580,11 +584,13 @@ describe.sequential("organizer submission runtime", () => {
       expect.arrayContaining([
         expect.objectContaining({
           fieldKey: "abstract",
+          formVersion: 2,
           label: "What will organizers learn?",
           redacted: false,
         }),
         expect.objectContaining({
           fieldKey: "private_file",
+          formVersion: 2,
           redacted: true,
           value: null,
         }),
