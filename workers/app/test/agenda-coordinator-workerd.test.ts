@@ -1,4 +1,5 @@
 import {
+  calendarChangeIntentSchema,
   scheduleCommandResponseSchema,
   scheduleCommittedEventSchema,
   scheduleSnapshotSchema,
@@ -808,7 +809,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     }
     const oldPublicVersion = published.event.publicationVersion;
 
-    const rescheduled = await execute({
+    const rescheduleCommand = {
       commandId: "cmd_public_change_reschedule",
       durationMinutes: rescheduledSession.durationMinutes,
       eventId: demoEventId,
@@ -816,9 +817,28 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
       roomId: rescheduledSession.slot.roomId,
       sessionId: rescheduledSession.id,
       startAt: rescheduledSession.slot.startAt,
-      type: "reschedule_session",
+      type: "reschedule_session" as const,
+    };
+    await environment.DB.prepare(
+      `CREATE TRIGGER fail_calendar_change_handoff
+       BEFORE INSERT ON outbox_events
+       WHEN NEW.event_type = 'calendar.change.requested'
+       BEGIN SELECT RAISE(ABORT, 'injected calendar handoff failure'); END`,
+    ).run();
+    const calendarPending = await execute(rescheduleCommand);
+    expect(calendarPending).toMatchObject({
+      error: {
+        code: "schedule_authority_pending",
+        state: "projection_pending",
+      },
+      ok: false,
     });
+    await environment.DB.prepare(
+      "DROP TRIGGER fail_calendar_change_handoff",
+    ).run();
+    const rescheduled = await execute(rescheduleCommand);
     if (!rescheduled.ok) throw new Error(JSON.stringify(rescheduled.error));
+    expect(rescheduled.result.replayed).toBe(true);
     const canceled = await execute({
       commandId: "cmd_public_change_cancel",
       eventId: demoEventId,
@@ -829,7 +849,9 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     if (!canceled.ok) throw new Error(JSON.stringify(canceled.error));
 
     const facts = await environment.DB.prepare(
-      `SELECT command_id, change_type, source_publication_version
+      `SELECT command_id, change_type, source_publication_version,
+              request_id, actor_type, actor_id,
+              calendar_intent_enqueued_at, calendar_outbox_id
        FROM schedule_public_changes
        WHERE organization_id = ? AND event_id = ?
          AND command_id IN (?, ?) ORDER BY command_id`,
@@ -842,20 +864,73 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
       )
       .all<{
         change_type: string;
+        actor_id: string;
+        actor_type: string;
+        calendar_intent_enqueued_at: string;
+        calendar_outbox_id: string;
         command_id: string;
+        request_id: string;
         source_publication_version: number;
       }>();
-    expect(facts.results).toEqual([
-      {
+    expect(facts.results).toMatchObject([
+      expect.objectContaining({
+        actor_id: "usr_demo_owner",
+        actor_type: "user",
         change_type: "canceled",
         command_id: "cmd_public_change_cancel",
+        request_id: "req_cmd_public_change_cancel",
         source_publication_version: oldPublicVersion,
-      },
-      {
+      }),
+      expect.objectContaining({
+        actor_id: "usr_demo_owner",
+        actor_type: "user",
         change_type: "rescheduled",
         command_id: "cmd_public_change_reschedule",
+        request_id: "req_cmd_public_change_reschedule",
         source_publication_version: oldPublicVersion,
-      },
+      }),
+    ]);
+    for (const fact of facts.results) {
+      expect(fact.calendar_intent_enqueued_at).toMatch(/Z$/);
+      expect(fact.calendar_outbox_id).toMatch(/^out_[0-9a-f]{26}$/);
+    }
+    const calendarChanges = await environment.DB.prepare(
+      `SELECT payload_json FROM outbox_events
+       WHERE organization_id = ? AND event_id = ?
+         AND event_type = 'calendar.change.requested'
+       ORDER BY idempotency_key`,
+    )
+      .bind(demoOrganizationId, demoEventId)
+      .all<{ payload_json: string }>();
+    expect(
+      calendarChanges.results
+        .map(({ payload_json }) =>
+          calendarChangeIntentSchema.parse(JSON.parse(payload_json)),
+        )
+        .sort((left, right) => left.commandId.localeCompare(right.commandId)),
+    ).toEqual([
+      expect.objectContaining({
+        changeType: "canceled",
+        commandId: "cmd_public_change_cancel",
+        previousPlacement: {
+          endAt: canceledSession.slot.endAt,
+          roomId: canceledSession.slot.roomId,
+          startAt: canceledSession.slot.startAt,
+        },
+        requestId: "req_cmd_public_change_cancel",
+        sourcePublicationVersion: oldPublicVersion,
+      }),
+      expect.objectContaining({
+        changeType: "rescheduled",
+        commandId: "cmd_public_change_reschedule",
+        previousPlacement: {
+          endAt: rescheduledSession.slot.endAt,
+          roomId: rescheduledSession.slot.roomId,
+          startAt: rescheduledSession.slot.startAt,
+        },
+        requestId: "req_cmd_public_change_reschedule",
+        sourcePublicationVersion: oldPublicVersion,
+      }),
     ]);
     const publicBeforeRetry = await new D1PublicScheduleProjectionReader(
       environment.DB,

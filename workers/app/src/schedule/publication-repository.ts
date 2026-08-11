@@ -1,7 +1,10 @@
 import {
+  calendarChangeIntentSchema,
   publicScheduleProjectionSchema,
   scheduleCommandResultSchema,
+  scheduleSessionSchema,
   scheduleSnapshotSchema,
+  type CalendarChangeIntent,
   type PublicScheduleProjection,
   type PublishScheduleCommand,
   type ScheduleCommand,
@@ -9,6 +12,10 @@ import {
   type ScheduleSnapshot,
 } from "@sessionbox-killer/contracts";
 
+import {
+  D1CalendarIntentOutbox,
+  type CalendarOutboxResult,
+} from "../calendar/outbox.js";
 import { D1PublicScheduleProjectionReader } from "../public-schedule/projection.js";
 
 interface PublicationRepositoryOptions {
@@ -36,6 +43,27 @@ interface PublicationIdentity {
 
 interface ExistingPublicationRow {
   publication_version: number;
+}
+
+interface PublicChangeRow {
+  actor_id: string | null;
+  actor_type: "api_key" | "portal" | "system" | "user";
+  calendar_intent_enqueued_at: string | null;
+  calendar_outbox_id: string | null;
+  change_type: "canceled" | "rescheduled" | "unassigned";
+  command_id: string;
+  event_id: string;
+  id: string;
+  occurred_at: string;
+  organization_id: string;
+  previous_public_session_json: string;
+  request_id: string;
+  session_id: string;
+  source_publication_version: number;
+}
+
+interface CalendarChangeRepair extends CalendarOutboxResult {
+  factId: string;
 }
 
 function canonicalJson(value: unknown): string {
@@ -111,12 +139,14 @@ function changedPublicSession(
 
 export class D1SchedulePublicationRepository {
   readonly #actorId: string;
+  readonly #calendarOutbox: D1CalendarIntentOutbox;
   readonly #database: D1Database;
   readonly #publicProjection: D1PublicScheduleProjectionReader;
   readonly #requestId: string;
 
   constructor(options: PublicationRepositoryOptions) {
     this.#actorId = options.actorId;
+    this.#calendarOutbox = new D1CalendarIntentOutbox(options.database);
     this.#database = options.database;
     this.#publicProjection = new D1PublicScheduleProjectionReader(
       options.database,
@@ -176,6 +206,62 @@ export class D1SchedulePublicationRepository {
     }
     await this.#commitDraftChange(input);
     return null;
+  }
+
+  async repairCalendarChange(
+    eventId: string,
+    commandId: string,
+  ): Promise<CalendarChangeRepair | null> {
+    const rows = await this.#database
+      .prepare(
+        `SELECT id, organization_id, event_id, session_id, command_id,
+                request_id, actor_type, actor_id, source_publication_version,
+                change_type, previous_public_session_json, occurred_at,
+                calendar_intent_enqueued_at, calendar_outbox_id
+         FROM schedule_public_changes
+         WHERE event_id = ?1 AND command_id = ?2
+         ORDER BY organization_id, session_id LIMIT 2`,
+      )
+      .bind(eventId, commandId)
+      .all<PublicChangeRow>();
+    if (rows.results.length > 1) {
+      throw new Error("Calendar change repair resolved multiple public facts.");
+    }
+    const fact = rows.results[0];
+    if (!fact || fact.calendar_intent_enqueued_at) return null;
+    const intent = this.#calendarChangeIntent(fact);
+    const result = await this.#calendarOutbox.enqueueChange(intent);
+    const now = new Date().toISOString();
+    const marked = await this.#database
+      .prepare(
+        `UPDATE schedule_public_changes
+         SET calendar_intent_enqueued_at = ?2, calendar_outbox_id = ?3
+         WHERE id = ?1 AND calendar_intent_enqueued_at IS NULL
+           AND calendar_outbox_id IS NULL`,
+      )
+      .bind(fact.id, now, result.outboxId)
+      .run();
+    if (marked.meta.changes !== 1) {
+      const current = await this.#database
+        .prepare(
+          `SELECT calendar_intent_enqueued_at, calendar_outbox_id
+           FROM schedule_public_changes WHERE id = ?`,
+        )
+        .bind(fact.id)
+        .first<
+          Pick<
+            PublicChangeRow,
+            "calendar_intent_enqueued_at" | "calendar_outbox_id"
+          >
+        >();
+      if (
+        !current?.calendar_intent_enqueued_at ||
+        current.calendar_outbox_id !== result.outboxId
+      ) {
+        throw new Error("Calendar change repair could not record its handoff.");
+      }
+    }
+    return { ...result, factId: fact.id };
   }
 
   async #commitPublication(
@@ -346,12 +432,14 @@ export class D1SchedulePublicationRepository {
     const auditId = await stableId("aud", factIdentity);
     const outboxId = await stableId("out", factIdentity);
     const payload = {
+      actor: { id: this.#actorId, type: "user" as const },
       changeType: change.changeType,
       commandId: input.command.commandId,
       eventId: input.command.eventId,
       kind: "schedule.public_change.recorded",
       nextDraftSession: change.draft,
       previousPublicSession: change.prior,
+      requestId: this.#requestId,
       sessionId: change.prior.id,
       sourcePublicationVersion: change.sourcePublicationVersion,
       version: 1,
@@ -361,10 +449,14 @@ export class D1SchedulePublicationRepository {
         .prepare(
           `INSERT INTO schedule_public_changes (
              id, organization_id, event_id, session_id, command_id,
+             request_id, actor_type, actor_id,
              source_publication_version, change_type,
              previous_public_session_json, next_draft_session_json,
              occurred_at, created_at
-           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`,
+           ) VALUES (
+             ?1, ?2, ?3, ?4, ?5, ?6, 'user', ?7,
+             ?8, ?9, ?10, ?11, ?12, ?12
+           )`,
         )
         .bind(
           factId,
@@ -372,6 +464,8 @@ export class D1SchedulePublicationRepository {
           input.command.eventId,
           change.prior.id,
           input.command.commandId,
+          this.#requestId,
+          this.#actorId,
           change.sourcePublicationVersion,
           change.changeType,
           JSON.stringify(change.prior),
@@ -426,6 +520,43 @@ export class D1SchedulePublicationRepository {
         ),
       this.#completeReceiptStatement(input, result, now),
     ]);
+    await this.repairCalendarChange(
+      input.command.eventId,
+      input.command.commandId,
+    );
+  }
+
+  #calendarChangeIntent(fact: PublicChangeRow): CalendarChangeIntent {
+    const previous = scheduleSessionSchema.parse(
+      JSON.parse(fact.previous_public_session_json) as unknown,
+    );
+    if (!previous.slot) {
+      throw new Error(
+        "A public calendar change is missing its prior placement.",
+      );
+    }
+    const actor =
+      fact.actor_type === "system"
+        ? ({ id: null, type: "system" } as const)
+        : { id: fact.actor_id, type: fact.actor_type };
+    return calendarChangeIntentSchema.parse({
+      actor,
+      changeType: fact.change_type,
+      commandId: fact.command_id,
+      eventId: fact.event_id,
+      kind: "calendar.change",
+      occurredAt: fact.occurred_at,
+      organizationId: fact.organization_id,
+      previousPlacement: {
+        endAt: previous.slot.endAt,
+        roomId: previous.slot.roomId,
+        startAt: previous.slot.startAt,
+      },
+      requestId: fact.request_id,
+      sessionId: fact.session_id,
+      sourcePublicationVersion: fact.source_publication_version,
+      version: 1,
+    });
   }
 
   #completeReceiptStatement(

@@ -289,6 +289,12 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     if (applying) {
       await this.#resumeReceipt(applying, false);
     }
+    const calendarRepair = await this.#readCalendarRepairReceipt(
+      command.eventId,
+    );
+    if (calendarRepair) {
+      await this.#resumeReceipt(calendarRepair, true);
+    }
 
     const snapshot = await this.read(command.eventId);
     if (!snapshot) {
@@ -381,9 +387,31 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       .first<CommandReceiptRow>();
   }
 
+  async #readCalendarRepairReceipt(
+    eventId: string,
+  ): Promise<CommandReceiptRow | null> {
+    return this.#database
+      .prepare(
+        `SELECT receipt.event_id, receipt.command_id, receipt.command_hash,
+                receipt.state, receipt.operations_json, receipt.result_json
+         FROM schedule_command_receipts AS receipt
+         JOIN schedule_public_changes AS public_change
+           ON public_change.event_id = receipt.event_id
+          AND public_change.command_id = receipt.command_id
+         WHERE receipt.event_id = ?1 AND receipt.state = 'complete'
+           AND public_change.calendar_intent_enqueued_at IS NULL
+         ORDER BY public_change.created_at, public_change.id
+         LIMIT 1`,
+      )
+      .bind(eventId)
+      .first<CommandReceiptRow>();
+  }
+
   async resumePending(eventId: string): Promise<ScheduleCommandResult | null> {
     const receipt = await this.#readApplyingReceipt(eventId);
-    return receipt ? this.#resumeReceipt(receipt, false) : null;
+    if (receipt) return this.#resumeReceipt(receipt, false);
+    const calendarRepair = await this.#readCalendarRepairReceipt(eventId);
+    return calendarRepair ? this.#resumeReceipt(calendarRepair, true) : null;
   }
 
   async #resumeReceipt(
@@ -393,7 +421,30 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     const stored = parseStoredReceipt(
       JSON.parse(receipt.result_json) as unknown,
     );
-    if (complete) return { ...stored.result, replayed: true };
+    if (complete) {
+      let repaired = false;
+      try {
+        if (stored.command) {
+          repaired = Boolean(
+            await this.#publication(
+              stored.actorId ?? this.#actorId,
+              stored.requestId ?? this.#requestId,
+            ).repairCalendarChange(
+              stored.command.eventId,
+              stored.command.commandId,
+            ),
+          );
+        }
+      } catch {
+        throw new ScheduleAuthorityPendingError(
+          stored.result.commandId,
+          "projection_pending",
+        );
+      }
+      const result = { ...stored.result, replayed: true };
+      if (repaired) this.#onCommitted?.(result);
+      return result;
+    }
     const operations = (JSON.parse(receipt.operations_json) as unknown[]).map(
       parseBaseAuthorityCommand,
     );

@@ -64,6 +64,10 @@ CREATE TABLE schedule_public_changes (
   event_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   command_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  actor_type TEXT NOT NULL
+    CHECK (actor_type IN ('system', 'user', 'api_key', 'portal')),
+  actor_id TEXT,
   source_publication_version INTEGER NOT NULL
     CHECK (source_publication_version > 0),
   change_type TEXT NOT NULL
@@ -77,7 +81,17 @@ CREATE TABLE schedule_public_changes (
     json_type(next_draft_session_json) = 'object'
   ),
   occurred_at TEXT NOT NULL,
+  calendar_intent_enqueued_at TEXT,
+  calendar_outbox_id TEXT,
   created_at TEXT NOT NULL,
+  CHECK (
+    (actor_type = 'system' AND actor_id IS NULL) OR
+    (actor_type <> 'system' AND actor_id IS NOT NULL)
+  ),
+  CHECK (
+    (calendar_intent_enqueued_at IS NULL AND calendar_outbox_id IS NULL) OR
+    (calendar_intent_enqueued_at IS NOT NULL AND calendar_outbox_id IS NOT NULL)
+  ),
   UNIQUE (organization_id, event_id, command_id, session_id, change_type),
   FOREIGN KEY (organization_id, event_id)
     REFERENCES p_events(organization_id, id)
