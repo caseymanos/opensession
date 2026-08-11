@@ -180,7 +180,7 @@ describe("production provider acceptance", () => {
     ).toThrow(ProviderAcceptanceUnavailableError);
   });
 
-  it("queues the official provider cases once without returning addresses", async () => {
+  it("returns stable no-op replays while queued and after provider outcomes", async () => {
     assertProviderAcceptanceWindow({
       config,
       environment: "production",
@@ -209,14 +209,94 @@ describe("production provider acceptance", () => {
       config,
       database: environment.DB,
       event,
-      now: () => new Date(timestamp),
+      now: () => new Date("2026-08-11T20:05:00.000Z"),
       phase: "initial",
       queue: queue.queue,
     });
     expect(
       duplicate.messages.every(({ outcome }) => outcome === "already_queued"),
     ).toBe(true);
+    expect(duplicate.messages.map(({ messageId }) => messageId)).toEqual(
+      first.messages.map(({ messageId }) => messageId),
+    );
     expect(queue.sent).toHaveLength(4);
+
+    await environment.DB.prepare(
+      `UPDATE provider_messages
+       SET status = CASE contact_id
+             WHEN 'contact_speaker_01' THEN 'delivered'
+             WHEN 'contact_speaker_02' THEN 'bounced'
+             WHEN 'contact_speaker_03' THEN 'complained'
+             WHEN 'contact_speaker_04' THEN 'suppressed'
+           END,
+           attempt_count = 1, queue_payload_json = NULL
+       WHERE organization_id = ?1 AND campaign_id = 'campaign_acceptance_demo'
+         AND contact_id IN (
+           'contact_speaker_01', 'contact_speaker_02',
+           'contact_speaker_03', 'contact_speaker_04'
+         )`,
+    )
+      .bind(event.organizationId)
+      .run();
+
+    const terminal = await runProviderAcceptance({
+      commandId: "ral59_provider_initial",
+      config,
+      database: environment.DB,
+      event,
+      now: () => new Date("2026-08-11T20:10:00.000Z"),
+      phase: "initial",
+      queue: queue.queue,
+    });
+    expect(terminal.messages).toEqual([
+      {
+        messageId: first.messages[0]?.messageId,
+        outcome: "already_terminal",
+        status: "delivered",
+      },
+      {
+        messageId: first.messages[1]?.messageId,
+        outcome: "already_terminal",
+        status: "bounced",
+      },
+      {
+        messageId: first.messages[2]?.messageId,
+        outcome: "already_terminal",
+        status: "complained",
+      },
+      {
+        messageId: first.messages[3]?.messageId,
+        outcome: "already_terminal",
+        status: "suppressed",
+      },
+    ]);
+    expect(queue.sent).toHaveLength(4);
+    expect(JSON.stringify(terminal)).not.toContain("@resend.dev");
+
+    const terminalDuplicate = await runProviderAcceptance({
+      commandId: "ral59_provider_initial",
+      config,
+      database: environment.DB,
+      event,
+      now: () => new Date("2026-08-11T20:15:00.000Z"),
+      phase: "initial",
+      queue: queue.queue,
+    });
+    expect(terminalDuplicate).toEqual(terminal);
+    expect(queue.sent).toHaveLength(4);
+
+    const attempts = await environment.DB.prepare(
+      `SELECT SUM(attempt_count) AS count
+       FROM provider_messages
+       WHERE organization_id = ?1 AND campaign_id = 'campaign_acceptance_demo'
+         AND contact_id IN (
+           'contact_speaker_01', 'contact_speaker_02',
+           'contact_speaker_03', 'contact_speaker_04'
+         )`,
+    )
+      .bind(event.organizationId)
+      .first<{ count: number }>();
+    expect(attempts?.count).toBe(4);
   });
 
   it("proves subsequent sends are stopped by application suppressions", async () => {

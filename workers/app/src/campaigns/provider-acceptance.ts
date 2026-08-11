@@ -38,6 +38,24 @@ const phaseRecipients: Readonly<
   ],
 };
 
+async function providerAcceptanceQueuedAt(options: {
+  readonly database: D1Database;
+  readonly fallback: string;
+  readonly messageId: string;
+  readonly organizationId: string;
+}): Promise<string> {
+  const existing = await options.database
+    .prepare(
+      `SELECT scheduled_at
+       FROM provider_messages
+       WHERE organization_id = ?1 AND id = ?2 AND kind = 'campaign'
+       LIMIT 1`,
+    )
+    .bind(options.organizationId, options.messageId)
+    .first<{ scheduled_at: string | null }>();
+  return existing?.scheduled_at ?? options.fallback;
+}
+
 export class ProviderAcceptanceUnavailableError extends Error {
   constructor(message = "The provider acceptance window is unavailable.") {
     super(message);
@@ -147,6 +165,12 @@ export async function runProviderAcceptance(options: {
       templateId,
       templateVersion,
     });
+    const durableQueuedAt = await providerAcceptanceQueuedAt({
+      database: options.database,
+      fallback: queuedAt,
+      messageId,
+      organizationId: options.event.organizationId,
+    });
     const result = await coordinator.enqueue({
       campaign_id: campaignId,
       contact_id: contactId,
@@ -162,7 +186,7 @@ export async function runProviderAcceptance(options: {
       kind: "campaign.email.requested",
       message_id: messageId,
       organization_id: options.event.organizationId,
-      queued_at: queuedAt,
+      queued_at: durableQueuedAt,
       request_id: `${options.commandId}_${options.phase}`,
       template_id: templateId,
       template_version: templateVersion,
