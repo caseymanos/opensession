@@ -7,6 +7,10 @@ import {
   type AuthSessionResponse,
   type ProtectedMagicLinkRequest,
 } from "@sessionbox-killer/contracts";
+import {
+  speakerPortalInvitationRecoverySchema,
+  type SpeakerPortalInvitationRecovery,
+} from "@sessionbox-killer/contracts/portal";
 
 type Fetch = (
   input: RequestInfo | URL,
@@ -17,6 +21,7 @@ interface StandardErrorBody {
   error?: {
     code?: unknown;
     message?: unknown;
+    recovery?: unknown;
   };
   request_id?: unknown;
 }
@@ -38,18 +43,21 @@ const authSessionIdentitySchema = authSessionResponseSchema.pick({
 
 export class AuthApiError extends Error {
   readonly code: string;
+  readonly recovery: SpeakerPortalInvitationRecovery | null;
   readonly requestId: string | undefined;
   readonly status: number;
 
   constructor(options: {
     code: string;
     message: string;
+    recovery?: SpeakerPortalInvitationRecovery | null;
     requestId?: string | undefined;
     status: number;
   }) {
     super(options.message);
     this.name = "AuthApiError";
     this.code = options.code;
+    this.recovery = options.recovery ?? null;
     this.requestId = options.requestId;
     this.status = options.status;
   }
@@ -74,9 +82,13 @@ function responseError(response: Response, body: unknown): AuthApiError {
     candidate?.error && typeof candidate.error.message === "string"
       ? candidate.error.message
       : "The authentication service returned an invalid response.";
+  const recovery = speakerPortalInvitationRecoverySchema.safeParse(
+    candidate?.error?.recovery,
+  );
   return new AuthApiError({
     code,
     message,
+    recovery: recovery.success ? recovery.data : null,
     requestId:
       typeof candidate?.request_id === "string"
         ? candidate.request_id

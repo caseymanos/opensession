@@ -128,7 +128,7 @@ The public CFP mirrors the competition reference sequence: **Welcome → Account
 - Assignment cards state what, why, owner session, due date, required/approval, and current state.
 - File upload includes allowed types/size, progress, scan/processing state, replace, and downloadable version.
 - Session page shows title/abstract, schedule, participants, calendar action, related tasks.
-- Expired links retain event branding and email, with throttled resend rather than a dead end.
+- Expired or redeemed links retain only allowlisted event branding and a masked invited-email hint, with throttled event-scoped resend rather than a dead end. Revoked and wrong-event access never render speaker, task, or session data.
 
 ## Public surfaces
 
@@ -170,4 +170,3 @@ Every high-value page receives explicit designs/tests for:
 - 768×1024: all flows usable; agenda may use horizontal room scrolling with frozen time axis.
 - 1440×900: organizer primary demo viewport.
 - 200% zoom at 1280 CSS px remains functional without clipped controls.
-

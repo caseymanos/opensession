@@ -955,9 +955,6 @@ export class EmailQueueDeliveryService {
     ) {
       return { action: "ack" };
     }
-    if (delivery.delivery_state === "pending") {
-      return { action: "retry", delaySeconds: 30 };
-    }
     const recipientHash = await sha256Hex(message.to.trim().toLowerCase());
     const payloadHash = await sha256Hex(
       serializeMagicLinkDeliveryBinding(message),
@@ -969,6 +966,23 @@ export class EmailQueueDeliveryService {
       throw new TypeError(
         "Magic-link queue message does not match durable state.",
       );
+    }
+    if (delivery.delivery_state === "pending") {
+      const promoted = await this.#database
+        .prepare(
+          `UPDATE magic_link_tokens
+           SET delivery_state = 'queued'
+           WHERE id = ?1
+             AND delivery_state = 'pending'
+             AND revoked_at IS NULL
+             AND consumed_at IS NULL`,
+        )
+        .bind(message.delivery_id)
+        .run();
+      if (promoted.meta.changes !== 1) {
+        return { action: "retry", delaySeconds: 30 };
+      }
+      delivery.delivery_state = "queued";
     }
     if (
       delivery.delivery_mode !== null &&

@@ -908,7 +908,7 @@ describe("magic-link email delivery", () => {
     expect(eventCount?.count).toBe(1);
   });
 
-  it("waits for post-enqueue finalization and rejects altered link payloads", async () => {
+  it("promotes a proven queue handoff and rejects altered link payloads", async () => {
     const env = await server.getWorker<Env>().getEnv();
     const pending = magicLinkMessage("pending");
     await seedMagicLinkDelivery(env.DB, pending, "pending");
@@ -918,15 +918,6 @@ describe("magic-link email delivery", () => {
       now: () => new Date(timestamp),
     });
 
-    await expect(service.process(pending)).resolves.toEqual({
-      action: "retry",
-      delaySeconds: 30,
-    });
-    await env.DB.prepare(
-      "UPDATE magic_link_tokens SET delivery_state = 'queued' WHERE id = ?1",
-    )
-      .bind(pending.delivery_id)
-      .run();
     const altered = {
       ...pending,
       link: "https://attacker.example.test/capture",
@@ -934,6 +925,13 @@ describe("magic-link email delivery", () => {
     await expect(service.process(altered)).rejects.toThrow(
       "Magic-link queue message does not match durable state.",
     );
+    await expect(
+      env.DB.prepare(
+        "SELECT delivery_state FROM magic_link_tokens WHERE id = ?1",
+      )
+        .bind(pending.delivery_id)
+        .first(),
+    ).resolves.toMatchObject({ delivery_state: "pending" });
     await expect(service.process(pending)).resolves.toEqual({ action: "ack" });
   });
 

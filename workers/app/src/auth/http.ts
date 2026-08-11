@@ -52,7 +52,11 @@ export function authFailure(context: Context<AppContext>, error: unknown) {
         : 400;
   return context.json(
     {
-      error: { code: error.code, message: error.message },
+      error: {
+        code: error.code,
+        message: error.message,
+        ...(error.recovery ? { recovery: error.recovery } : {}),
+      },
       request_id: context.get("requestId"),
     },
     status,

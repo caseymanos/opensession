@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { build } from "esbuild";
 
 import { createTestHarness } from "wrangler";
 
@@ -6,10 +7,47 @@ const hostname = "127.0.0.1";
 const port = 8787;
 const origin = `http://${hostname}:${port}`;
 const harness = createTestHarness({
-  workers: [{ configPath: "workers/app/wrangler.jsonc" }],
+  workers: [
+    {
+      configPath: "workers/app/wrangler.jsonc",
+      secrets: {
+        AUTH_HASH_PEPPER:
+          "portal-browser-proof-pepper-with-at-least-32-characters",
+      },
+      vars: {
+        FEATURE_FLAGS: {
+          ai: false,
+          embeds: false,
+          email: true,
+          integrations: false,
+          webhooks: false,
+          writes: true,
+        },
+      },
+    },
+  ],
 });
 
 await harness.listen();
+const worker = harness.getWorker();
+const migrateD1 = worker["apply" + "D1Migrations"].bind(worker);
+await migrateD1("DB");
+const fixtureBundle = await build({
+  bundle: true,
+  entryPoints: ["tests/e2e/portal-authority-fixture.ts"],
+  format: "esm",
+  platform: "node",
+  target: "node22",
+  write: false,
+});
+const fixtureSource = fixtureBundle.outputFiles[0]?.text;
+if (!fixtureSource) throw new Error("Portal authority fixture did not build.");
+const fixtureModule = await import(
+  `data:text/javascript;base64,${Buffer.from(fixtureSource).toString("base64")}`
+);
+const environment = await worker.getEnv();
+await fixtureModule.seedPortalAuthorityBrowserProof(environment.DB);
+let invitationCounter = 0;
 
 async function requestBody(request) {
   const chunks = [];
@@ -19,6 +57,24 @@ async function requestBody(request) {
 
 const server = createServer(async (incoming, outgoing) => {
   try {
+    const requestUrl = new URL(incoming.url ?? "/", origin);
+    if (
+      incoming.method === "POST" &&
+      requestUrl.pathname === fixtureModule.portalAuthorityInvitationEndpoint
+    ) {
+      invitationCounter += 1;
+      const token = await fixtureModule.issuePortalAuthorityBrowserProof(
+        environment.DB,
+        origin,
+        `run_${invitationCounter}`,
+      );
+      outgoing.writeHead(201, {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+      });
+      outgoing.end(JSON.stringify({ token }));
+      return;
+    }
     const headers = [];
     for (const [name, value] of Object.entries(incoming.headers)) {
       if (Array.isArray(value)) {

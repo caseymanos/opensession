@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   CalendarDays,
@@ -16,13 +16,22 @@ import {
 
 import { Button, StatePanel, StatusPill } from "@sessionbox-killer/ui";
 
+import { logoutAuthSession } from "../auth/authClient";
 import {
-  AuthApiError,
-  logoutAuthSession,
-  readAuthSession,
-  type AuthSessionIdentity,
-} from "../auth/authClient";
-import { speakerPortalFixture, type PortalTaskView } from "./portalModel";
+  TurnstileWidget,
+  type TurnstileWidgetHandle,
+} from "../security/TurnstileWidget";
+import {
+  readSpeakerPortal,
+  requestSpeakerPortalLink,
+  SpeakerPortalApiError,
+} from "./portalClient";
+import {
+  speakerPortalFixture,
+  speakerPortalView,
+  type PortalTaskView,
+  type SpeakerPortalView,
+} from "./portalModel";
 import { SpeakerProfileWorkspace } from "./SpeakerProfileWorkspace";
 import {
   SpeakerTaskWorkspace,
@@ -36,9 +45,12 @@ type PortalState =
 export type PortalFixtureState = Exclude<PortalState, "active"> | "default";
 export type PortalFixtureView = "home" | "profile" | "task";
 
-type PortalAuthentication =
-  | { session: AuthSessionIdentity; state: "authenticated" }
-  | { session: null; state: "checking" | "error" | "unauthenticated" };
+type PortalRuntime =
+  | { data: SpeakerPortalView; state: "active" }
+  | {
+      data: null;
+      state: "checking" | "error" | "permission" | "unauthenticated";
+    };
 
 function initials(name: string) {
   return name
@@ -76,23 +88,23 @@ function TaskRow({
   fixtureRoute: boolean;
   task: PortalTaskView;
 }) {
-  const complete = task.status === "complete";
-  const action =
-    task.id === "final-slides"
+  const complete =
+    task.sourceStatus === "complete" || task.sourceStatus === "waived";
+  const action = fixtureRoute
+    ? task.id === "final-slides"
       ? {
           label: "Review submission",
-          path: fixtureRoute
-            ? "/fixtures/portal-task/default"
-            : "/portal/ai-engineer-summit/tasks/final-slides",
+          path: "/fixtures/portal-task/default",
         }
       : {
           label: task.id === "headshot" ? "Upload headshot" : "Review profile",
-          path: fixtureRoute
-            ? "/fixtures/portal/profile"
-            : "/portal/ai-engineer-summit/profile",
-        };
+          path: "/fixtures/portal/profile",
+        }
+    : null;
   return (
-    <article className={`portal-task is-${task.status}`}>
+    <article
+      className={`portal-task is-${task.status} is-${task.sourceStatus}${task.required ? "" : " is-optional"}`}
+    >
       <span className="portal-task-check" aria-hidden="true">
         {complete ? <Check size={15} /> : null}
       </span>
@@ -101,7 +113,7 @@ function TaskRow({
         <p>{task.description}</p>
       </div>
       <span className="portal-task-due">{task.dueLabel}</span>
-      {!complete ? (
+      {!complete && action ? (
         <button
           onClick={() => {
             window.location.href = action.path;
@@ -119,6 +131,7 @@ function TaskRow({
 function PortalHeader({
   activeSection,
   displayName,
+  eventSlug,
   fixtureRoute,
   onSignOut,
   openTaskCount,
@@ -126,6 +139,7 @@ function PortalHeader({
 }: {
   activeSection: "home" | "profile" | "tasks";
   displayName: string;
+  eventSlug: string;
   fixtureRoute: boolean;
   onSignOut?: (() => void) | undefined;
   openTaskCount: number;
@@ -133,10 +147,10 @@ function PortalHeader({
 }) {
   const homePath = fixtureRoute
     ? "/fixtures/portal/active"
-    : "/portal/ai-engineer-summit";
+    : `/portal/${encodeURIComponent(eventSlug)}`;
   const profilePath = fixtureRoute
     ? "/fixtures/portal/profile"
-    : "/portal/ai-engineer-summit/profile";
+    : `${homePath}#portal-profile`;
   return (
     <header className="portal-topbar">
       <PortalBrand href={homePath} />
@@ -157,12 +171,14 @@ function PortalHeader({
         <a href={`${homePath}#portal-sessions`}>
           <Mic2 aria-hidden="true" size={16} /> Sessions
         </a>
-        <a
-          aria-current={activeSection === "profile" ? "page" : undefined}
-          href={profilePath}
-        >
-          <UserRound aria-hidden="true" size={16} /> Profile
-        </a>
+        {fixtureRoute ? (
+          <a
+            aria-current={activeSection === "profile" ? "page" : undefined}
+            href={profilePath}
+          >
+            <UserRound aria-hidden="true" size={16} /> Profile
+          </a>
+        ) : null}
       </nav>
       <div className="portal-profile-chip">
         <span>{initials(displayName)}</span>
@@ -285,14 +301,50 @@ function InvitationState({
 }
 
 function PortalAuthenticationState({
+  eventSlug,
   onRetry,
+  onSignOut,
+  signOutError,
+  signingOut,
   state,
 }: {
+  eventSlug: string;
   onRetry: () => void;
-  state: "checking" | "error" | "unauthenticated";
+  onSignOut: () => void;
+  signOutError: string;
+  signingOut: boolean;
+  state: "checking" | "error" | "permission" | "unauthenticated";
 }) {
-  const returnPath = window.location.pathname;
-  const signInPath = `/auth/sign-in?return_to=${encodeURIComponent(returnPath)}`;
+  const [email, setEmail] = useState("");
+  const [requestError, setRequestError] = useState("");
+  const [requestState, setRequestState] = useState<
+    "editing" | "sending" | "sent"
+  >("editing");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstile = useRef<TurnstileWidgetHandle>(null);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!turnstileToken) {
+      setRequestError("Complete the security check before requesting a link.");
+      return;
+    }
+    setRequestError("");
+    setRequestState("sending");
+    try {
+      await requestSpeakerPortalLink(eventSlug, email, turnstileToken);
+      setRequestState("sent");
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "We couldn’t request a link just now. Try again.",
+      );
+      setRequestState("editing");
+    } finally {
+      turnstile.current?.reset();
+      setTurnstileToken(null);
+    }
+  };
   const panel =
     state === "checking"
       ? {
@@ -308,16 +360,23 @@ function PortalAuthenticationState({
             panelState: "permission" as const,
             title: "Sign in to your speaker portal",
           }
-        : {
-            description:
-              "Your speaker information remains private. Check your connection and try loading the portal again.",
-            panelState: "error" as const,
-            title: "We couldn’t verify your session",
-          };
+        : state === "permission"
+          ? {
+              description:
+                "This signed-in account is not an active speaker for this event. Sign out, then use the email address that received the invitation.",
+              panelState: "permission" as const,
+              title: "This portal is not available to this account",
+            }
+          : {
+              description:
+                "Your speaker information remains private. Check your connection and try loading the portal again.",
+              panelState: "error" as const,
+              title: "We couldn’t verify your session",
+            };
 
   return (
     <div className="portal-invitation-page">
-      <PortalBrand />
+      <PortalBrand href={`/portal/${encodeURIComponent(eventSlug)}`} />
       <main className="portal-invitation-card">
         <div className="portal-invitation-event">
           <span>OS</span>
@@ -329,8 +388,53 @@ function PortalAuthenticationState({
         <StatePanel
           action={
             state === "unauthenticated" ? (
-              <Button onClick={() => window.location.assign(signInPath)}>
-                Email me a sign-in link
+              requestState === "sent" ? (
+                <p className="portal-invitation-requested" role="status">
+                  If <strong>{email}</strong> still has access, a private link
+                  is on its way. It expires in 15 minutes and works once.
+                </p>
+              ) : (
+                <form className="portal-link-form" onSubmit={submit}>
+                  <label htmlFor="portal-link-email">Invited email</label>
+                  <input
+                    autoComplete="email"
+                    id="portal-link-email"
+                    inputMode="email"
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="speaker@example.com"
+                    required
+                    type="email"
+                    value={email}
+                  />
+                  <TurnstileWidget
+                    action="sign_in"
+                    onTokenChange={setTurnstileToken}
+                    ref={turnstile}
+                  />
+                  {requestError ? (
+                    <p className="portal-auth-error" role="alert">
+                      {requestError}
+                    </p>
+                  ) : null}
+                  <Button
+                    disabled={
+                      requestState === "sending" || !turnstileToken || !email
+                    }
+                    type="submit"
+                  >
+                    {requestState === "sending"
+                      ? "Sending private link…"
+                      : "Email me a sign-in link"}
+                  </Button>
+                </form>
+              )
+            ) : state === "permission" ? (
+              <Button
+                disabled={signingOut}
+                onClick={onSignOut}
+                variant="secondary"
+              >
+                {signingOut ? "Signing out…" : "Sign out and use invited email"}
               </Button>
             ) : undefined
           }
@@ -339,57 +443,13 @@ function PortalAuthenticationState({
           state={panel.panelState}
           title={panel.title}
         />
-      </main>
-      <p>Speaker and session details stay hidden until access is verified.</p>
-    </div>
-  );
-}
-
-function PortalVerifiedSessionState({
-  displayName,
-  onSignOut,
-  signOutError,
-  signingOut,
-}: {
-  displayName: string;
-  onSignOut: () => void;
-  signOutError: string;
-  signingOut: boolean;
-}) {
-  return (
-    <div className="portal-invitation-page">
-      <PortalBrand />
-      <main className="portal-invitation-card">
-        <div className="portal-invitation-event">
-          <span>{initials(displayName)}</span>
-          <div>
-            <strong>Signed in as {displayName}</strong>
-            <small>Speaker portal session verified</small>
-          </div>
-        </div>
-        <StatePanel
-          action={
-            <Button
-              disabled={signingOut}
-              onClick={onSignOut}
-              variant="secondary"
-            >
-              {signingOut ? "Signing out…" : "Sign out and use invited link"}
-            </Button>
-          }
-          description="Your sign-in is valid, but this URL cannot yet verify your speaker relationship to the event. No speaker, task, or session data has been shown. Open the event-specific invitation from your email or contact the program team."
-          state="permission"
-          title="We couldn’t verify access to this event"
-        />
         {signOutError ? (
           <p className="portal-auth-error" role="alert">
             {signOutError}
           </p>
         ) : null}
       </main>
-      <p>
-        Event-scoped access is checked before private portal data is loaded.
-      </p>
+      <p>Speaker and session details stay hidden until access is verified.</p>
     </div>
   );
 }
@@ -404,9 +464,12 @@ export function SpeakerPortal({
   fixtureView?: PortalFixtureView | undefined;
 } = {}) {
   const fixtureRoute = window.location.pathname.startsWith("/fixtures/");
+  const eventSlug = fixtureRoute
+    ? "ai-engineer-summit"
+    : (window.location.pathname.split("/")[2] ?? "");
   const [authenticationAttempt, setAuthenticationAttempt] = useState(0);
-  const [authentication, setAuthentication] = useState<PortalAuthentication>({
-    session: null,
+  const [runtime, setRuntime] = useState<PortalRuntime>({
+    data: null,
     state: "checking",
   });
   const [signOutState, setSignOutState] = useState<"idle" | "signing-out">(
@@ -417,25 +480,30 @@ export function SpeakerPortal({
   useEffect(() => {
     if (fixtureRoute) return;
     const controller = new AbortController();
-    void readAuthSession(window.fetch.bind(window), controller.signal)
-      .then((session) => {
-        setAuthentication({ session, state: "authenticated" });
+    void readSpeakerPortal(
+      eventSlug,
+      window.fetch.bind(window),
+      controller.signal,
+    )
+      .then((response) => {
+        setRuntime({ data: speakerPortalView(response), state: "active" });
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
-        setAuthentication({
-          session: null,
+        setRuntime({
+          data: null,
           state:
-            error instanceof AuthApiError &&
-            (error.status === 401 || error.status === 403)
+            error instanceof SpeakerPortalApiError && error.status === 401
               ? "unauthenticated"
-              : "error",
+              : error instanceof SpeakerPortalApiError && error.status === 403
+                ? "permission"
+                : "error",
         });
       });
     return () => controller.abort();
-  }, [authenticationAttempt, fixtureRoute]);
+  }, [authenticationAttempt, eventSlug, fixtureRoute]);
 
   const state: PortalState =
     fixtureState === "default" ? "active" : fixtureState;
@@ -448,30 +516,12 @@ export function SpeakerPortal({
     return <InvitationState state={state} />;
   }
 
-  if (authentication.state !== "authenticated" && !fixtureRoute) {
-    return (
-      <PortalAuthenticationState
-        onRetry={() => {
-          setAuthentication({ session: null, state: "checking" });
-          setAuthenticationAttempt((attempt) => attempt + 1);
-        }}
-        state={authentication.state}
-      />
-    );
-  }
-
-  const authenticatedDisplayName =
-    authentication.state === "authenticated"
-      ? (authentication.session.user.display_name ??
-        authentication.session.user.email)
-      : speakerPortalFixture.speakerName;
   const signOut = async () => {
     setSignOutError("");
     setSignOutState("signing-out");
     try {
       await logoutAuthSession(document.cookie);
-      const returnPath = encodeURIComponent(window.location.pathname);
-      window.location.assign(`/auth/sign-in?return_to=${returnPath}`);
+      window.location.assign(`/portal/${encodeURIComponent(eventSlug)}`);
     } catch (error) {
       setSignOutError(
         error instanceof Error
@@ -482,27 +532,46 @@ export function SpeakerPortal({
     }
   };
 
-  if (!fixtureRoute && authentication.state === "authenticated") {
+  if (runtime.state !== "active" && !fixtureRoute) {
     return (
-      <PortalVerifiedSessionState
-        displayName={authenticatedDisplayName}
+      <PortalAuthenticationState
+        eventSlug={eventSlug}
+        onRetry={() => {
+          setRuntime({ data: null, state: "checking" });
+          setAuthenticationAttempt((attempt) => attempt + 1);
+        }}
         onSignOut={signOut}
         signOutError={signOutError}
         signingOut={signOutState === "signing-out"}
+        state={runtime.state}
       />
     );
   }
 
-  const sessions = state === "empty" ? [] : speakerPortalFixture.sessions;
-  const openTasks = speakerPortalFixture.tasks.filter(
-    (task) => task.status !== "complete",
+  const portal = fixtureRoute ? speakerPortalFixture : runtime.data;
+  if (!portal) return null;
+  const authenticatedDisplayName = portal.speakerName;
+  const sessions = state === "empty" ? [] : portal.sessions;
+  const openTasks = portal.tasks.filter((task) => task.status !== "complete");
+  const actionableRequiredTasks = openTasks.filter(
+    (task) => task.required && task.sourceStatus !== "submitted",
   );
+  const actionableOverdueTasks = actionableRequiredTasks.filter(
+    (task) => task.status === "overdue",
+  );
+  const submittedRequiredTasks = openTasks.filter(
+    (task) => task.required && task.sourceStatus === "submitted",
+  );
+  const optionalTasks = portal.tasks.filter((task) => !task.required);
   const profileActive =
-    fixtureView === "profile" || window.location.pathname.endsWith("/profile");
+    fixtureRoute &&
+    (fixtureView === "profile" ||
+      window.location.pathname.endsWith("/profile"));
   const taskActive =
-    fixtureView === "task" ||
-    Boolean(fixtureTaskState) ||
-    window.location.pathname.endsWith("/tasks/final-slides");
+    fixtureRoute &&
+    (fixtureView === "task" ||
+      Boolean(fixtureTaskState) ||
+      window.location.pathname.endsWith("/tasks/final-slides"));
 
   if (profileActive) {
     return (
@@ -510,6 +579,7 @@ export function SpeakerPortal({
         <PortalHeader
           activeSection="profile"
           displayName={authenticatedDisplayName}
+          eventSlug={eventSlug}
           fixtureRoute={fixtureRoute}
           openTaskCount={openTasks.length}
         />
@@ -524,6 +594,7 @@ export function SpeakerPortal({
         <PortalHeader
           activeSection="tasks"
           displayName={authenticatedDisplayName}
+          eventSlug={eventSlug}
           fixtureRoute={fixtureRoute}
           openTaskCount={openTasks.length}
         />
@@ -537,8 +608,11 @@ export function SpeakerPortal({
       <PortalHeader
         activeSection="home"
         displayName={authenticatedDisplayName}
+        eventSlug={eventSlug}
         fixtureRoute={fixtureRoute}
+        onSignOut={fixtureRoute ? undefined : signOut}
         openTaskCount={openTasks.length}
+        signingOut={signOutState === "signing-out"}
       />
 
       <main className="portal-main">
@@ -550,7 +624,9 @@ export function SpeakerPortal({
         <section className="portal-hero">
           <div>
             <p className="overline">Your speaker home</p>
-            <h1>You’re on the program, Mina.</h1>
+            <h1>
+              You’re on the program, {portal.speakerName.split(/\s+/)[0]}.
+            </h1>
             <p>
               Everything the team needs from you is collected here, with the
               next deadline always clear.
@@ -558,18 +634,17 @@ export function SpeakerPortal({
             <div className="portal-hero-meta">
               <span>
                 <CalendarDays aria-hidden="true" size={16} />{" "}
-                {speakerPortalFixture.eventDateLabel}
+                {portal.eventDateLabel}
               </span>
               <span>
-                <MapPin aria-hidden="true" size={16} />{" "}
-                {speakerPortalFixture.location}
+                <MapPin aria-hidden="true" size={16} /> {portal.location}
               </span>
             </div>
           </div>
           <div className="portal-countdown">
-            <span>9</span>
-            <strong>days to go</strong>
-            <small>Tuesday, August 18</small>
+            <span>{portal.countdownValue}</span>
+            <strong>{portal.countdownLabel}</strong>
+            <small>{portal.eventDateLabel}</small>
           </div>
         </section>
 
@@ -581,46 +656,99 @@ export function SpeakerPortal({
             <div className="portal-card-heading">
               <div>
                 <p className="overline">Speaker readiness</p>
-                <h2 id="portal-readiness-title">Three of six complete</h2>
+                <h2 id="portal-readiness-title">
+                  {portal.readinessStatus === "not_configured"
+                    ? "No required tasks assigned"
+                    : `${portal.completedTasks} of ${portal.totalTasks} required complete`}
+                </h2>
               </div>
-              <StatusPill tone="warning">2 need attention</StatusPill>
+              <StatusPill
+                tone={
+                  portal.readinessStatus === "not_configured"
+                    ? "neutral"
+                    : actionableRequiredTasks.length > 0
+                      ? "warning"
+                      : portal.outstandingTasks > 0
+                        ? "preview"
+                        : "success"
+                }
+              >
+                {portal.readinessStatus === "not_configured"
+                  ? "Not configured"
+                  : actionableRequiredTasks.length > 0 &&
+                      submittedRequiredTasks.length > 0
+                    ? `${actionableRequiredTasks.length} your action · ${submittedRequiredTasks.length} submitted`
+                    : actionableRequiredTasks.length > 0
+                      ? `${actionableRequiredTasks.length} required ${actionableRequiredTasks.length === 1 ? "task needs" : "tasks need"} attention`
+                      : submittedRequiredTasks.length > 0
+                        ? `${submittedRequiredTasks.length} submitted to program team`
+                        : portal.outstandingTasks > 0
+                          ? `${portal.outstandingTasks} required outstanding`
+                          : "Required tasks ready"}
+              </StatusPill>
             </div>
-            <div
-              className="portal-readiness-progress"
-              role="progressbar"
-              aria-label="3 of 6 speaker tasks complete"
-              aria-valuemin={0}
-              aria-valuemax={6}
-              aria-valuenow={3}
-            >
-              <span style={{ width: "50%" }} />
-            </div>
+            {portal.totalTasks > 0 ? (
+              <div
+                className="portal-readiness-progress"
+                role="progressbar"
+                aria-label={`${portal.completedTasks} of ${portal.totalTasks} required speaker tasks complete`}
+                aria-valuemin={0}
+                aria-valuemax={portal.totalTasks}
+                aria-valuenow={portal.completedTasks}
+              >
+                <span
+                  style={{
+                    width: `${(portal.completedTasks / portal.totalTasks) * 100}%`,
+                  }}
+                />
+              </div>
+            ) : null}
             <p>
-              Your headshot is overdue. Complete all three open tasks to be
-              ready for publication.
+              {portal.readinessStatus === "not_configured"
+                ? optionalTasks.length > 0
+                  ? `No required tasks are assigned. ${optionalTasks.length} optional ${optionalTasks.length === 1 ? "request appears" : "requests appear"} below.`
+                  : "The program team has not assigned any speaker tasks yet."
+                : actionableOverdueTasks.length > 0
+                  ? `${actionableOverdueTasks.length} overdue required ${actionableOverdueTasks.length === 1 ? "task needs" : "tasks need"} your attention.${submittedRequiredTasks.length > 0 ? ` ${submittedRequiredTasks.length} submitted required ${submittedRequiredTasks.length === 1 ? "task remains" : "tasks remain"} with the program team.` : ""}`
+                  : actionableRequiredTasks.length > 0
+                    ? submittedRequiredTasks.length > 0
+                      ? `Finish ${actionableRequiredTasks.length} open required ${actionableRequiredTasks.length === 1 ? "task" : "tasks"} on your side. ${submittedRequiredTasks.length} submitted required ${submittedRequiredTasks.length === 1 ? "task remains" : "tasks remain"} with the program team.`
+                      : `Complete ${actionableRequiredTasks.length} open required ${actionableRequiredTasks.length === 1 ? "task" : "tasks"} to be ready.`
+                    : submittedRequiredTasks.length > 0
+                      ? `${submittedRequiredTasks.length} required ${submittedRequiredTasks.length === 1 ? "task is" : "tasks are"} submitted and being processed by the program team. No speaker action is needed right now.`
+                      : portal.outstandingTasks > 0
+                        ? "The program team is processing your submitted work. No speaker action is needed right now."
+                        : "Every required speaker task is complete. Optional requests may still appear below."}
             </p>
-            <Button
-              onClick={() => {
-                window.location.href =
-                  "/portal/ai-engineer-summit/tasks/final-slides";
-              }}
-            >
-              Review final presentation{" "}
-              <ArrowRight aria-hidden="true" size={16} />
-            </Button>
+            {actionableRequiredTasks.length > 0 ? (
+              <Button
+                onClick={() =>
+                  document
+                    .querySelector("#portal-tasks")
+                    ?.scrollIntoView({ behavior: "smooth" })
+                }
+              >
+                Review required tasks{" "}
+                <ArrowRight aria-hidden="true" size={16} />
+              </Button>
+            ) : null}
           </section>
           <aside className="portal-event-card">
             <div className="portal-event-art">
-              <span>AI</span>
-              <span>ENGINEER</span>
-              <span>SUMMIT</span>
+              {portal.eventName
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 3)
+                .map((word) => (
+                  <span key={word}>{word.toLocaleUpperCase("en-US")}</span>
+                ))}
             </div>
             <div>
-              <strong>{speakerPortalFixture.eventName}</strong>
+              <strong>{portal.eventName}</strong>
               <p>
-                {speakerPortalFixture.eventDateLabel}
+                {portal.eventDateLabel}
                 <br />
-                {speakerPortalFixture.location}
+                {portal.location}
               </p>
               <a href="#portal-resources">
                 View speaker resources{" "}
@@ -644,13 +772,21 @@ export function SpeakerPortal({
               <span>{openTasks.length} open</span>
             </div>
             <div className="portal-task-list">
-              {speakerPortalFixture.tasks.map((task) => (
-                <TaskRow
-                  fixtureRoute={fixtureRoute}
-                  key={task.id}
-                  task={task}
+              {portal.tasks.length > 0 ? (
+                portal.tasks.map((task) => (
+                  <TaskRow
+                    fixtureRoute={fixtureRoute}
+                    key={task.id}
+                    task={task}
+                  />
+                ))
+              ) : (
+                <StatePanel
+                  description="There is nothing you need to complete right now. New requests from the program team will appear here."
+                  state="empty"
+                  title="No speaker tasks assigned"
                 />
-              ))}
+              )}
             </div>
           </section>
 
@@ -677,24 +813,32 @@ export function SpeakerPortal({
                   <div className="portal-session-schedule">
                     <CalendarDays aria-hidden="true" size={17} />
                     <span>
-                      <strong>{session.scheduleLabel}</strong>
-                      <small>{session.room}</small>
+                      <strong>
+                        {session.scheduleLabel ?? "Schedule to be announced"}
+                      </strong>
+                      <small>{session.room ?? "Room to be announced"}</small>
                     </span>
                   </div>
-                  <div className="portal-session-actions">
-                    <Button variant="secondary">Review session details</Button>
-                    <button type="button">
-                      Public preview{" "}
-                      <ExternalLink aria-hidden="true" size={14} />
-                    </button>
-                  </div>
+                  {session.coSpeakers.length > 0 ? (
+                    <p className="portal-session-speakers">
+                      With {session.coSpeakers.join(", ")}
+                    </p>
+                  ) : null}
+                  {fixtureRoute ? (
+                    <div className="portal-session-actions">
+                      <Button variant="secondary">
+                        Review session details
+                      </Button>
+                      <button type="button">
+                        Public preview{" "}
+                        <ExternalLink aria-hidden="true" size={14} />
+                      </button>
+                    </div>
+                  ) : null}
                 </article>
               ))
             ) : (
               <StatePanel
-                action={
-                  <Button variant="secondary">Contact the program team</Button>
-                }
                 description="Your portal is active, but no sessions are assigned yet. The program team will notify you when the schedule is ready."
                 state="empty"
                 title="No sessions assigned yet"
@@ -712,10 +856,20 @@ export function SpeakerPortal({
               within one business day.
             </p>
           </div>
-          <a href="#guide">
-            <FileText aria-hidden="true" size={15} /> Speaker guide
-          </a>
-          <a href="mailto:speakers@aiengineersummit.com">Email speakers@…</a>
+          {fixtureRoute ? (
+            <>
+              <a href="#guide">
+                <FileText aria-hidden="true" size={15} /> Speaker guide
+              </a>
+              <a href="mailto:speakers@aiengineersummit.com">
+                Email speakers@…
+              </a>
+            </>
+          ) : (
+            <span>
+              Reply to your invitation email to reach the program team.
+            </span>
+          )}
         </section>
       </main>
     </div>

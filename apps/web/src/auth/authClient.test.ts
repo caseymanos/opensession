@@ -91,6 +91,48 @@ describe("auth HTTP client", () => {
     });
   });
 
+  it("retains only validated portal recovery context from a failed exchange", async () => {
+    const fetcher = vi.fn(async () =>
+      response(
+        {
+          error: {
+            code: "invalid_magic_link",
+            message: "This speaker invitation is no longer available.",
+            recovery: {
+              email_hint: "m***@example.com",
+              event: {
+                brand: {
+                  accent: "#cde878",
+                  background: "#f5f2ea",
+                  ink: "#10201d",
+                },
+                name: "AI Engineer Summit",
+                slug: "ai-engineer-summit",
+              },
+              reason: "expired",
+            },
+          },
+          request_id: "req_recovery",
+        },
+        400,
+      ),
+    );
+
+    const error = await exchangeMagicLink(
+      `token-${"t".repeat(40)}`,
+      fetcher,
+    ).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AuthApiError);
+    expect(error).toMatchObject({
+      code: "invalid_magic_link",
+      recovery: {
+        email_hint: "m***@example.com",
+        event: { name: "AI Engineer Summit", slug: "ai-engineer-summit" },
+        reason: "expired",
+      },
+    });
+  });
+
   it("accepts the server session identity without inventing a CSRF field", async () => {
     const fetcher = vi.fn(async () =>
       response({
