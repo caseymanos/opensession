@@ -239,6 +239,7 @@ export const projectionSpecs: Readonly<
       text("Default reviewer group ID", "default_reviewer_group_id"),
       text("Submitted at", "submitted_at"),
       text("Decision note", "decision_note"),
+      json("Decision snapshot JSON", "decision_snapshot_json", "object", "{}"),
       text("Organizer activity at", "organizer_activity_at"),
     ],
     scope: "event",

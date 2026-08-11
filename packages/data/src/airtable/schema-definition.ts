@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 9;
+export const AIRTABLE_SCHEMA_VERSION = 10;
 
 export type AirtableTableKey =
   | "organizations"
@@ -352,6 +352,7 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       text("Default reviewer group ID"),
       dateTime("Submitted at"),
       longText("Decision note"),
+      longText("Decision snapshot JSON"),
       dateTime("Organizer activity at"),
     ]),
     table("submission_answers", "Submission Answers", [

@@ -61,6 +61,7 @@ function readMigrationStatements(): string[] {
     "0019_speaker_profiles.sql",
     "0020_versioned_cfp_forms.sql",
     "0023_review_scoring.sql",
+    "0024_review_decisions.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),

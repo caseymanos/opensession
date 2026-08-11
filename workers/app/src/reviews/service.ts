@@ -6,6 +6,7 @@ import {
   type ReviewOperationsCommand,
   type ReviewOperationsCommandResult,
   type ReviewScoringCommand,
+  type RecordDecisionCommand,
 } from "@sessionbox-killer/contracts";
 
 import type { BaseAuthority } from "../authority/base-authority.js";
@@ -76,6 +77,14 @@ interface AssignmentRow extends EntityRow {
 interface SubmissionRow extends EntityRow {
   default_reviewer_group_id: string | null;
   route_key: string | null;
+  status:
+    | "accepted"
+    | "declined"
+    | "draft"
+    | "in_review"
+    | "submitted"
+    | "waitlisted"
+    | "withdrawn";
 }
 
 interface ReviewerRow extends EntityRow {
@@ -101,9 +110,10 @@ function authorityConflict(error: unknown): boolean {
 
 function entityType(
   operation: BaseAuthorityCommand,
-): "assignment" | "group" | "rubric" {
+): "assignment" | "group" | "rubric" | "submission" {
   if (operation.table === "reviews") return "assignment";
   if (operation.table === "reviewer_groups") return "group";
+  if (operation.table === "submissions") return "submission";
   return "rubric";
 }
 
@@ -141,7 +151,8 @@ export class AirtableReviewOperationsCommandService {
   }
 
   async execute(
-    command: ReviewOperationsCommand | ReviewScoringCommand,
+    command:
+      ReviewOperationsCommand | ReviewScoringCommand | RecordDecisionCommand,
   ): Promise<ReviewOperationsCommandResult> {
     const commandHash = await hashAuthorityValue({
       actorId: this.#actorId,
@@ -282,7 +293,8 @@ export class AirtableReviewOperationsCommandService {
   }
 
   async #operation(
-    command: ReviewOperationsCommand | ReviewScoringCommand,
+    command:
+      ReviewOperationsCommand | ReviewScoringCommand | RecordDecisionCommand,
   ): Promise<BaseAuthorityCommand> {
     if (command.type === "publish_rubric") return this.#publishRubric(command);
     if (command.type === "upsert_group") return this.#upsertGroup(command);
@@ -296,7 +308,8 @@ export class AirtableReviewOperationsCommandService {
       return this.#writeReview(command, false);
     if (command.type === "submit_review")
       return this.#writeReview(command, true);
-    return this.#reopenReview(command);
+    if (command.type === "reopen_review") return this.#reopenReview(command);
+    return this.#recordDecision(command);
   }
 
   async #publishRubric(
@@ -690,6 +703,58 @@ export class AirtableReviewOperationsCommandService {
     );
   }
 
+  async #recordDecision(
+    command: RecordDecisionCommand,
+  ): Promise<BaseAuthorityCommand> {
+    if (this.#permittedReviewerId !== undefined) {
+      throw new ReviewOperationsNotFoundError();
+    }
+    const submission = await this.#submission(command.submissionId);
+    if (!submission) throw new ReviewOperationsNotFoundError();
+    this.#version(command.expectedVersion, submission.source_version);
+    if (submission.status === "draft" || submission.status === "withdrawn") {
+      throw new ReviewOperationsValidationError(
+        "submissionId",
+        "Only an active submitted proposal can receive a decision.",
+      );
+    }
+    const decidedAt = new Date().toISOString();
+    const snapshot = {
+      action: command.decision,
+      actorId: this.#actorId,
+      at: decidedAt,
+      audience: command.audience,
+      commandId: command.commandId,
+      messageMode: command.messageMode,
+      privateNote: command.privateNote || null,
+      reason: command.reason,
+      template: command.template,
+    };
+    const auditSnapshot = {
+      action: snapshot.action,
+      audience: snapshot.audience,
+      commandId: snapshot.commandId,
+      messageMode: snapshot.messageMode,
+      privateNote: snapshot.privateNote,
+      reason: snapshot.reason,
+      template: snapshot.template,
+    };
+    return this.#authorityCommand(
+      command.commandId,
+      command.submissionId,
+      command.expectedVersion,
+      {
+        "Decision note": command.privateNote,
+        "Decision snapshot JSON": JSON.stringify(snapshot),
+        "Organizer activity at": decidedAt,
+        Status: command.decision,
+      },
+      "submissions.decision.record",
+      "submissions",
+      auditSnapshot,
+    );
+  }
+
   #authorityCommand(
     commandId: string,
     entityId: string,
@@ -818,7 +883,8 @@ export class AirtableReviewOperationsCommandService {
   async #submission(id: string): Promise<SubmissionRow | null> {
     return this.#database
       .prepare(
-        `SELECT source_record_id, source_version, default_reviewer_group_id, route_key
+        `SELECT source_record_id, source_version, default_reviewer_group_id,
+                route_key, status
          FROM p_submissions
          WHERE organization_id = ?1 AND event_id = ?2 AND id = ?3
            AND source_deleted_at IS NULL LIMIT 1`,
@@ -889,7 +955,9 @@ export class AirtableReviewOperationsCommandService {
         ? "p_reviews"
         : table === "reviewer_groups"
           ? "p_reviewer_groups"
-          : "p_rubrics";
+          : table === "submissions"
+            ? "p_submissions"
+            : "p_rubrics";
     const row = await this.#database
       .prepare(
         `SELECT source_version FROM ${projectedTable}
