@@ -31,6 +31,12 @@ import {
 } from "../email-templates/repository.js";
 import { CampaignProjectionError, D1CampaignRepository } from "./repository.js";
 import {
+  assertProviderAcceptanceWindow,
+  ProviderAcceptanceUnavailableError,
+  runProviderAcceptance,
+  type ProviderAcceptancePhase,
+} from "./provider-acceptance.js";
+import {
   CampaignConfirmationConflictError,
   CampaignNotFoundError,
   CampaignPreviewChangedError,
@@ -40,6 +46,7 @@ import {
 
 const requestBodyLimitBytes = 32 * 1_024;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
+const providerAcceptanceCommandPattern = /^ral59_[A-Za-z0-9_]{6,48}$/;
 
 type EventResolution =
   | { kind: "ambiguous" | "forbidden" | "not_found" }
@@ -254,6 +261,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
   for (const path of [
     "/api/events/:eventKey/campaigns/preview",
     "/api/events/:eventKey/campaigns/confirm",
+    "/api/events/:eventKey/campaigns/provider-acceptance",
     "/api/events/:eventKey/campaigns/:campaignId/replay",
   ]) {
     app.use(
@@ -382,6 +390,94 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
       return campaignFailure(context, error);
     }
   });
+
+  app.post(
+    "/api/events/:eventKey/campaigns/provider-acceptance",
+    async (context) => {
+      const input = await parsedJson(context);
+      const candidate =
+        input && typeof input === "object" && !Array.isArray(input)
+          ? (input as Record<string, unknown>)
+          : null;
+      if (
+        !candidate ||
+        (candidate.phase !== "initial" && candidate.phase !== "subsequent") ||
+        typeof candidate.commandId !== "string" ||
+        !providerAcceptanceCommandPattern.test(candidate.commandId) ||
+        Object.keys(candidate).some(
+          (key) => key !== "commandId" && key !== "phase",
+        )
+      ) {
+        return standardError(
+          context,
+          400,
+          "invalid_provider_acceptance",
+          "The provider acceptance command is invalid.",
+        );
+      }
+      const repository = new D1CampaignRepository(context.env.DB);
+      try {
+        const config = parseEmailDeliveryConfig(
+          context.env.EMAIL_DELIVERY_CONFIG,
+          context.env.APP_ENV,
+        );
+        assertProviderAcceptanceWindow({
+          config,
+          environment: context.env.APP_ENV,
+          featureFlags: context.env.FEATURE_FLAGS,
+        });
+        const { resolution, session } = await authenticatedEvent(
+          context,
+          repository,
+        );
+        if (resolution.kind !== "resolved") {
+          return eventFailure(context, resolution);
+        }
+        const access = await loadEventAccess(
+          context.env.DB,
+          session.user,
+          resolution.event.organizationId,
+          resolution.event.id,
+        );
+        if (!hasEventPermission(access, "organization:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organization owner access is required for provider acceptance.",
+          );
+        }
+        if (!(await verifyMutation(context, session))) {
+          return standardError(
+            context,
+            403,
+            "invalid_origin",
+            "This request must originate from OpenSession.",
+          );
+        }
+        return context.json(
+          await runProviderAcceptance({
+            commandId: candidate.commandId,
+            config,
+            database: context.env.DB,
+            event: resolution.event,
+            phase: candidate.phase as ProviderAcceptancePhase,
+            queue: context.env.EMAIL_QUEUE,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof ProviderAcceptanceUnavailableError) {
+          return standardError(
+            context,
+            503,
+            "provider_acceptance_unavailable",
+            error.message,
+          );
+        }
+        return campaignFailure(context, error);
+      }
+    },
+  );
 
   app.get(
     "/api/events/:eventKey/campaigns/:campaignId/delivery",
