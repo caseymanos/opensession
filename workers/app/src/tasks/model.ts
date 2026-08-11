@@ -9,6 +9,9 @@ import {
   type TaskDefinition,
   type TaskDefinitionDraft,
   type TaskReadiness,
+  type TaskResponseHistory,
+  type TaskSubmissionReceipt,
+  type TaskSubmissionResponse,
 } from "@sessionbox-killer/contracts/tasks";
 import {
   evaluateTaskReadiness,
@@ -41,6 +44,7 @@ export interface TaskAssignmentRow {
   definition_id: string;
   due_at: string | null;
   event_id: string;
+  file_object_ids_json?: string;
   id: string;
   required: number;
   response_json: string;
@@ -312,11 +316,32 @@ export function assignmentEnvelopeFromRow(
     return parsed.data;
   }
   return {
+    current_response: null,
     history: [],
-    schema_version: 1,
+    response_history: [],
+    schema_version: 2,
     state: legacyAssignmentState(row),
+    submission_receipts: [],
     version: row.source_version,
   };
+}
+
+export function assignmentCurrentResponse(
+  envelope: TaskAssignmentResponseEnvelope,
+): TaskSubmissionResponse | null {
+  return envelope.schema_version === 2 ? envelope.current_response : null;
+}
+
+export function assignmentResponseHistory(
+  envelope: TaskAssignmentResponseEnvelope,
+): TaskResponseHistory[] {
+  return envelope.schema_version === 2 ? envelope.response_history : [];
+}
+
+export function assignmentSubmissionReceipts(
+  envelope: TaskAssignmentResponseEnvelope,
+): TaskSubmissionReceipt[] {
+  return envelope.schema_version === 2 ? envelope.submission_receipts : [];
 }
 
 export function taskAssignmentFromRow(row: TaskAssignmentRow): TaskAssignment {
@@ -390,9 +415,15 @@ export function contractTaskAssignment(
   });
 }
 
-export function assignmentResponseJson(assignment: DomainAssignment): string {
+export function assignmentResponseJson(
+  assignment: DomainAssignment,
+  response: TaskSubmissionResponse | null = null,
+  responseHistory: readonly TaskResponseHistory[] = [],
+  submissionReceipts: readonly TaskSubmissionReceipt[] = [],
+): string {
   return JSON.stringify(
     taskAssignmentResponseEnvelopeSchema.parse({
+      current_response: response,
       history: assignment.history.map((entry) => ({
         actor_id: entry.actorId,
         actor_type: entry.actorType,
@@ -403,8 +434,10 @@ export function assignmentResponseJson(assignment: DomainAssignment): string {
         to: entry.to,
         version: entry.version,
       })),
-      schema_version: 1,
+      response_history: responseHistory,
+      schema_version: 2,
       state: assignment.state,
+      submission_receipts: submissionReceipts,
       version: assignment.version,
     }),
   );

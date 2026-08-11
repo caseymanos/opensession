@@ -430,7 +430,8 @@
   color: var(--danger-700);
 }
 
-.portal-task > button {
+.portal-task > button,
+.portal-task-action {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -746,7 +747,8 @@
     grid-column: 2;
   }
 
-  .portal-task > button {
+  .portal-task > button,
+  .portal-task-action {
     grid-column: 2;
   }
 

@@ -5,8 +5,7 @@ import { mockPortalAuth } from "./portal-auth";
 
 const portalPath = "/fixtures/portal/active";
 const speakerTaskPath = "/fixtures/portal-task/default";
-const organizerTaskPath =
-  "/app/ai-engineer-summit/people/mina-okafor/tasks/final-slides";
+const organizerTaskPath = "/fixtures/organizer-task/default";
 
 test.beforeEach(async ({ page }) => mockPortalAuth(page));
 

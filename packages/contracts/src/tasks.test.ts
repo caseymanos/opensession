@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  taskAssignmentReviewCommandSchema,
   taskAssignmentResponseEnvelopeSchema,
+  taskAssignmentSubmissionCommandSchema,
   taskBackfillPreviewSchema,
   taskDefinitionCommandSchema,
   taskDefinitionDraftSchema,
@@ -160,6 +162,65 @@ describe("task contracts", () => {
         version: 2,
       }).success,
     ).toBe(false);
+  });
+
+  it("bounds typed submissions and requires reasons for every review", () => {
+    expect(
+      taskAssignmentSubmissionCommandSchema.parse({
+        command_id: "command_submit_slides",
+        expected_version: 2,
+        response: {
+          acknowledged: true,
+          file_ids: ["file_slides_v2"],
+          kind: "file",
+          notes: "Captions are embedded.",
+        },
+        type: "submit_assignment",
+      }),
+    ).toBeTruthy();
+    expect(
+      taskAssignmentSubmissionCommandSchema.safeParse({
+        command_id: "command_duplicate_files",
+        expected_version: 2,
+        response: {
+          acknowledged: true,
+          file_ids: ["file_slides_v2", "file_slides_v2"],
+          kind: "file",
+          notes: "",
+        },
+        type: "submit_assignment",
+      }).success,
+    ).toBe(false);
+    expect(
+      taskAssignmentReviewCommandSchema.safeParse({
+        command_id: "command_approve_without_reason",
+        decision: "approve",
+        expected_version: 3,
+        reason: "",
+        type: "review_assignment",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts the response-history envelope while retaining v1 reads", () => {
+    expect(
+      taskAssignmentResponseEnvelopeSchema.parse({
+        current_response: { acknowledged: true, kind: "ack" },
+        history: [],
+        response_history: [
+          {
+            actor_id: "contact_speaker",
+            at: "2026-08-10T18:00:00.000Z",
+            command_id: "command_typed_response",
+            response: { acknowledged: true, kind: "ack" },
+            version: 2,
+          },
+        ],
+        schema_version: 2,
+        state: "complete",
+        version: 2,
+      }),
+    ).toBeTruthy();
   });
 
   it("makes zero-required readiness explainable and never ready", () => {

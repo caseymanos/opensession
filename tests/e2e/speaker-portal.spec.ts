@@ -423,6 +423,129 @@ test("real invitation exchange creates a session and denies a foreign event", as
   await page.reload();
   await expect(page.getByText("Authority Browser Summit")).toBeVisible();
   await expect(page.getByText("Real Authority in the Browser")).toBeVisible();
+  await expect(page.getByText("Confirm your biography")).toBeVisible();
+  const taskApi = `/api/events/${portalAuthoritySlug}/task-assignments/task_portal_e2e`;
+  const detailResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === taskApi,
+  );
+  await page.getByRole("link", { name: "Open task" }).click();
+  const initialDetailResponse = await detailResponsePromise;
+  expect(initialDetailResponse.ok()).toBe(true);
+  const initialDetail = await initialDetailResponse.json();
+  await expect(page).toHaveURL(
+    `/portal/${portalAuthoritySlug}/tasks/task_portal_e2e`,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Confirm your biography" }),
+  ).toBeVisible();
+  await expect(page.getByText("Private event response")).toBeVisible();
+  await expect(page.locator(".task-completion")).not.toContainText("r2://");
+  const taskResults = await new AxeBuilder({ page })
+    .include(".task-completion")
+    .analyze();
+  expect(taskResults.violations).toEqual([]);
+
+  const submittedCommands: Record<string, unknown>[] = [];
+  await page.route(`**${taskApi}/submissions`, async (route) => {
+    submittedCommands.push(route.request().postDataJSON());
+    if (submittedCommands.length === 1) {
+      await route.fulfill({
+        json: {
+          ok: true,
+          repair_pending: true,
+          replayed: false,
+          result: {
+            audit: {
+              action: "tasks.assignment.submit",
+              id: "audit_portal_repair",
+              recorded_at: "2026-08-11T07:00:00.000Z",
+            },
+            detail: initialDetail,
+          },
+        },
+        status: 202,
+      });
+      return;
+    }
+    const commandId = String(submittedCommands[1]?.command_id);
+    const recordedAt = "2026-08-11T07:01:00.000Z";
+    await route.fulfill({
+      json: {
+        ok: true,
+        repair_pending: false,
+        replayed: true,
+        result: {
+          audit: {
+            action: "tasks.assignment.submit",
+            id: "audit_portal_repaired",
+            recorded_at: recordedAt,
+          },
+          detail: {
+            ...initialDetail,
+            assignment: {
+              ...initialDetail.assignment,
+              history: [
+                ...initialDetail.assignment.history,
+                {
+                  actor_id: "contact_portal_e2e",
+                  actor_type: "speaker",
+                  at: recordedAt,
+                  command_id: commandId,
+                  from: "incomplete",
+                  reason: null,
+                  to: "complete",
+                  version: 2,
+                },
+              ],
+              state: "complete",
+              version: 2,
+            },
+            current_response: { acknowledged: true, kind: "ack" },
+            generated_at: recordedAt,
+            overdue: false,
+            readiness: {
+              configuration: "configured",
+              explanation: "All required tasks are complete.",
+              next_due: null,
+              outstanding_count: 0,
+              overdue_count: 0,
+              ratio: { complete: 1, percent: 100, total: 1 },
+              status: "ready",
+            },
+            response_history: [
+              ...initialDetail.response_history,
+              {
+                actor_id: "contact_portal_e2e",
+                at: recordedAt,
+                command_id: commandId,
+                response: { acknowledged: true, kind: "ack" },
+                version: 2,
+              },
+            ],
+          },
+        },
+      },
+      status: 200,
+    });
+  });
+
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Save response" }).click();
+  await expect(
+    page.getByText("Response recorded; readiness is synchronizing"),
+  ).toBeVisible();
+  await expect(page.getByText("Complete", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Check task status" }).click();
+  await expect(page.getByText("Complete", { exact: true })).toBeVisible();
+  expect(submittedCommands).toHaveLength(2);
+  expect(submittedCommands[1]?.command_id).toBe(
+    submittedCommands[0]?.command_id,
+  );
+  expect(submittedCommands[1]?.expected_version).toBe(
+    submittedCommands[0]?.expected_version,
+  );
 
   await page.goto(`/portal/${portalAuthorityForeignSlug}`);
   await expect(

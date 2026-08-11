@@ -37,6 +37,7 @@ import {
   SpeakerTaskWorkspace,
   type TaskFixtureState,
 } from "../tasks/TaskCompletionWorkspace";
+import { ProductionSpeakerTaskWorkspace } from "../tasks/ProductionTaskCompletionWorkspace";
 
 import "./speaker-portal.css";
 
@@ -82,9 +83,11 @@ function PortalBrand({
 }
 
 function TaskRow({
+  eventSlug,
   fixtureRoute,
   task,
 }: {
+  eventSlug: string;
   fixtureRoute: boolean;
   task: PortalTaskView;
 }) {
@@ -100,7 +103,15 @@ function TaskRow({
           label: task.id === "headshot" ? "Upload headshot" : "Review profile",
           path: "/fixtures/portal/profile",
         }
-    : null;
+    : {
+        label:
+          task.assignmentState === "submitted"
+            ? "Review submission"
+            : task.assignmentState === "rejected"
+              ? "Respond to changes"
+              : "Open task",
+        path: `/portal/${encodeURIComponent(eventSlug)}/tasks/${encodeURIComponent(task.id)}`,
+      };
   return (
     <article
       className={`portal-task is-${task.status} is-${task.sourceStatus}${task.required ? "" : " is-optional"}`}
@@ -113,7 +124,7 @@ function TaskRow({
         <p>{task.description}</p>
       </div>
       <span className="portal-task-due">{task.dueLabel}</span>
-      {!complete && action ? (
+      {!complete && action && fixtureRoute ? (
         <button
           onClick={() => {
             window.location.href = action.path;
@@ -123,6 +134,11 @@ function TaskRow({
           {action.label}
           <ArrowRight aria-hidden="true" size={15} />
         </button>
+      ) : !complete && action ? (
+        <a className="portal-task-action" href={action.path}>
+          {action.label}
+          <ArrowRight aria-hidden="true" size={15} />
+        </a>
       ) : null}
     </article>
   );
@@ -568,10 +584,15 @@ export function SpeakerPortal({
     (fixtureView === "profile" ||
       window.location.pathname.endsWith("/profile"));
   const taskActive =
-    fixtureRoute &&
-    (fixtureView === "task" ||
-      Boolean(fixtureTaskState) ||
-      window.location.pathname.endsWith("/tasks/final-slides"));
+    (fixtureRoute &&
+      (fixtureView === "task" ||
+        Boolean(fixtureTaskState) ||
+        window.location.pathname.endsWith("/tasks/final-slides"))) ||
+    (!fixtureRoute &&
+      /^\/portal\/[^/]+\/tasks\/[^/]+\/?$/.test(window.location.pathname));
+  const productionAssignmentId = !fixtureRoute
+    ? (window.location.pathname.split("/")[4] ?? "")
+    : "";
 
   if (profileActive) {
     return (
@@ -598,7 +619,14 @@ export function SpeakerPortal({
           fixtureRoute={fixtureRoute}
           openTaskCount={openTasks.length}
         />
-        <SpeakerTaskWorkspace fixtureState={fixtureTaskState ?? "default"} />
+        {fixtureRoute ? (
+          <SpeakerTaskWorkspace fixtureState={fixtureTaskState ?? "default"} />
+        ) : (
+          <ProductionSpeakerTaskWorkspace
+            assignmentId={productionAssignmentId}
+            eventKey={eventSlug}
+          />
+        )}
       </div>
     );
   }
@@ -775,6 +803,7 @@ export function SpeakerPortal({
               {portal.tasks.length > 0 ? (
                 portal.tasks.map((task) => (
                   <TaskRow
+                    eventSlug={eventSlug}
                     fixtureRoute={fixtureRoute}
                     key={task.id}
                     task={task}

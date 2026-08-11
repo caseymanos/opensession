@@ -1,8 +1,13 @@
 import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type {
+  UploadFinalizeResponse,
+  UploadIntentResponse,
+} from "@sessionbox-killer/contracts";
 import type { TaskDefinitionDraft } from "@sessionbox-killer/contracts/tasks";
 import { sha256Hex } from "../src/auth/crypto";
+import type { AuthenticatedSession } from "../src/auth/service";
 import {
   AuthorityOutcomeUnknownError,
   parseBaseAuthorityCommand,
@@ -14,14 +19,18 @@ import {
   TaskAuthorityService,
   TaskIdempotencyConflictError,
   TaskVersionConflictError,
+  verifyTaskDownloadReceipt,
   type TaskCommandActor,
   type TaskEventScope,
 } from "../src/tasks/service";
+import { UploadService } from "../src/uploads/service";
+import type { UploadError } from "../src/uploads/service";
 
 const now = "2026-08-10T18:00:00.000Z";
 const contentHash = "a".repeat(64);
 const authPepper = "task-readiness-test-pepper-with-at-least-32-characters";
 const sessionToken = `task-readiness-session-${"s".repeat(36)}`;
+const speakerSessionToken = `task-speaker-session-${"p".repeat(36)}`;
 const server = createTestHarness({
   workers: [
     {
@@ -75,6 +84,125 @@ function targetPolicy(scope: "contact" | "session"): string {
           : null,
     },
   });
+}
+
+async function seedReadyTaskFile(options: {
+  byteSize?: number;
+  id: string;
+  lineageId: string;
+  replacesFileId?: string;
+  version: number;
+}): Promise<void> {
+  await database.batch([
+    database
+      .prepare(
+        `INSERT INTO file_objects (
+           id, organization_id, event_id, owner_contact_id, object_key,
+           display_filename, declared_mime_type, detected_mime_type,
+           byte_size, checksum_sha256, status, created_at, finalized_at,
+           purpose, lineage_id, version_number, replaces_file_id,
+           r2_version, r2_etag, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'application/pdf',
+                   'application/pdf', ?7, ?8, 'ready', ?9, ?9, 'slides',
+                   ?10, ?11, ?12, ?13, ?14, ?9)`,
+      )
+      .bind(
+        options.id,
+        event.organizationId,
+        event.eventId,
+        speaker.actorId,
+        `private/${options.id}`,
+        `slides-v${options.version}.pdf`,
+        options.byteSize ?? 1_024,
+        String(options.version).repeat(64).slice(0, 64),
+        now,
+        options.lineageId,
+        options.version,
+        options.replacesFileId ?? null,
+        `r2-version-${options.version}`,
+        `etag-${options.version}`,
+      ),
+    database
+      .prepare(
+        `INSERT INTO file_upload_intents (
+           id, file_object_id, token_hash, status, expires_at, cleanup_after,
+           attempts, created_at, updated_at, uploaded_at, finalized_at
+         ) VALUES (?1, ?2, ?3, 'finalized', '2099-01-01T00:00:00.000Z',
+                   '2099-01-02T00:00:00.000Z', 1, ?4, ?4, ?4, ?4)`,
+      )
+      .bind(
+        `intent_${options.id}`,
+        options.id,
+        String(options.version + 4)
+          .repeat(64)
+          .slice(0, 64),
+        now,
+      ),
+  ]);
+}
+
+async function sha256Bytes(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function uploadPdf(
+  filename: string,
+  body: ArrayBuffer,
+  replacesFileId?: string,
+): Promise<UploadFinalizeResponse> {
+  const checksum = await sha256Bytes(body);
+  const authenticationHeaders = {
+    Cookie: `__Host-opensession-session=${speakerSessionToken}`,
+    Origin: origin,
+    "Sec-Fetch-Site": "same-origin",
+    "X-CSRF-Token": "task-speaker-csrf",
+  };
+  const intentResponse = await server.fetch("/api/uploads/intents", {
+    body: JSON.stringify({
+      byte_size: body.byteLength,
+      checksum_sha256: checksum,
+      content_type: "application/pdf",
+      event_id: event.eventId,
+      filename,
+      organization_id: event.organizationId,
+      owner_contact_id: "contact_speaker",
+      purpose: "slides",
+      ...(replacesFileId ? { replaces_file_id: replacesFileId } : {}),
+    }),
+    headers: { ...authenticationHeaders, "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (intentResponse.status !== 201) {
+    throw new Error(`Upload intent failed: ${await intentResponse.text()}`);
+  }
+  const intent = (await intentResponse.json()) as UploadIntentResponse;
+  const stored = await server.fetch(intent.upload.url, {
+    body,
+    headers: {
+      ...intent.upload.headers,
+      "Content-Length": String(body.byteLength),
+      Origin: origin,
+      "Sec-Fetch-Site": "same-origin",
+    },
+    method: "PUT",
+  });
+  if (stored.status !== 201) {
+    throw new Error(`Upload storage failed: ${await stored.text()}`);
+  }
+  const finalized = await server.fetch(
+    `/api/uploads/${intent.file.id}/finalize`,
+    {
+      headers: { ...authenticationHeaders, "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (!finalized.ok) {
+    throw new Error(`Upload finalize failed: ${await finalized.text()}`);
+  }
+  return (await finalized.json()) as UploadFinalizeResponse;
 }
 
 function definitionDraft(
@@ -343,13 +471,19 @@ class ProjectingAuthority {
         .run();
       return;
     }
-    if (command.operation === "tasks.assignment.transition") {
+    if (
+      command.operation === "tasks.assignment.transition" ||
+      command.operation === "tasks.assignment.submit" ||
+      command.operation === "tasks.assignment.review"
+    ) {
+      const fileIds = fields["File object IDs JSON"];
       await this.#database
         .prepare(
           `UPDATE p_task_assignments
            SET status = ?3, completed_at = ?4, approved_at = ?5,
-               response_json = ?6, source_version = ?7, projected_at = ?8,
-               updated_at = ?8
+               response_json = ?6,
+               file_object_ids_json = COALESCE(?7, file_object_ids_json),
+               source_version = ?8, projected_at = ?9, updated_at = ?9
            WHERE organization_id = ?1 AND id = ?2`,
         )
         .bind(
@@ -359,7 +493,31 @@ class ProjectingAuthority {
           optionalStringField(fields, "Completed at"),
           optionalStringField(fields, "Approved at"),
           stringField(fields, "Response JSON"),
+          typeof fileIds === "string" ? fileIds : null,
           command.expectedVersion + 1,
+          now,
+        )
+        .run();
+      await this.#database
+        .prepare(
+          `INSERT OR REPLACE INTO audit_events (
+             id, organization_id, event_id, actor_type, actor_id, action,
+             entity_type, entity_id, request_id, command_id,
+             redaction_version, safe_diff_json, metadata_json, created_at
+           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'task_assignments', ?7, ?8,
+                     ?9, 1, ?10, '{}', ?11)`,
+        )
+        .bind(
+          `aud_mock_${command.commandId}`,
+          command.organizationId,
+          command.audit.eventId ?? null,
+          command.audit.actorType,
+          command.audit.actorId ?? null,
+          command.audit.action,
+          command.entityId,
+          command.audit.requestId,
+          command.commandId,
+          JSON.stringify(command.audit.safeDiff),
           now,
         )
         .run();
@@ -368,6 +526,7 @@ class ProjectingAuthority {
 }
 
 let database: D1Database;
+let uploadBucket: R2Bucket;
 let authority: ProjectingAuthority;
 let tasks: TaskAuthorityService;
 let origin = "";
@@ -376,9 +535,13 @@ beforeAll(async () => {
   origin = (await server.listen()).url.origin;
   const worker = server.getWorker<Env>();
   await worker.applyD1Migrations("DB");
-  database = (await worker.getEnv()).DB;
+  const environment = await worker.getEnv();
+  database = environment.DB;
+  uploadBucket = environment.UPLOADS;
   const tokenHash = await sha256Hex(sessionToken);
+  const speakerTokenHash = await sha256Hex(speakerSessionToken);
   const csrfHash = await sha256Hex("task-readiness-csrf");
+  const speakerCsrfHash = await sha256Hex("task-speaker-csrf");
   const seedSql = `
     INSERT INTO tenant_registry
       (organization_id, base_key, source_record_id, created_at, updated_at,
@@ -391,6 +554,8 @@ beforeAll(async () => {
       (id, email_normalized, display_name, created_at, updated_at)
     VALUES
       ('usr_organizer', 'organizer@example.test', 'Olivia Organizer',
+       ${sql(now)}, ${sql(now)}),
+      ('usr_speaker', 'speaker@example.test', 'Sam Speaker',
        ${sql(now)}, ${sql(now)});
 
     INSERT INTO organization_memberships
@@ -403,12 +568,15 @@ beforeAll(async () => {
       (id, user_id, token_hash, created_at, expires_at, last_seen_at)
     VALUES
       ('auth_task_readiness', 'usr_organizer', ${sql(tokenHash)}, ${sql(now)},
+       '2099-01-01T00:00:00.000Z', ${sql(now)}),
+      ('auth_task_speaker', 'usr_speaker', ${sql(speakerTokenHash)}, ${sql(now)},
        '2099-01-01T00:00:00.000Z', ${sql(now)});
 
     INSERT INTO auth_session_secrets
       (session_id, csrf_token_hash, created_at)
     VALUES
-      ('auth_task_readiness', ${sql(csrfHash)}, ${sql(now)});
+      ('auth_task_readiness', ${sql(csrfHash)}, ${sql(now)}),
+      ('auth_task_speaker', ${sql(speakerCsrfHash)}, ${sql(now)});
 
     INSERT INTO p_events
       (id, organization_id, name, slug, timezone, status, brand_json,
@@ -490,6 +658,7 @@ beforeAll(async () => {
   tasks = new TaskAuthorityService({
     authority,
     database,
+    downloadReceiptSecret: authPepper,
     now: () => new Date(now),
   });
 });
@@ -620,7 +789,7 @@ describe("task/readiness Workerd behavior", () => {
       {
         command_id: "cmd_slides_approve",
         expected_version: 2,
-        reason: null,
+        reason: "Reviewed the submitted slide deck.",
         to: "approved",
         type: "transition_assignment",
       },
@@ -644,7 +813,7 @@ describe("task/readiness Workerd behavior", () => {
       {
         command_id: "cmd_slides_approve",
         expected_version: 2,
-        reason: null,
+        reason: "Reviewed the submitted slide deck.",
         to: "approved",
         type: "transition_assignment",
       },
@@ -696,6 +865,537 @@ describe("task/readiness Workerd behavior", () => {
     expect(JSON.stringify(transitionAudit)).not.toContain("object");
   });
 
+  it("atomically submits, replaces, reviews, and revokes task file receipts", async () => {
+    await database
+      .prepare(
+        `INSERT INTO p_task_assignments (
+           id, organization_id, event_id, definition_id, contact_id,
+           session_id, due_at, required, status, completed_at, approved_at,
+           response_json, file_object_ids_json, updated_at, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES (?1, ?2, ?3, 'def_slides', 'contact_speaker', NULL,
+                   '2026-08-09T18:00:00.000Z', 0, 'not_started', NULL, NULL,
+                   ?4, '[]', ?5, ?6, 1, ?7, ?5)`,
+      )
+      .bind(
+        "assignment_file_response",
+        event.organizationId,
+        event.eventId,
+        JSON.stringify({
+          current_response: null,
+          history: [],
+          response_history: [],
+          schema_version: 2,
+          state: "incomplete",
+          version: 1,
+        }),
+        now,
+        "rec_assignment_file_response",
+        contentHash,
+      )
+      .run();
+    await seedReadyTaskFile({
+      id: "file_task_v1",
+      lineageId: "file_task_v1",
+      version: 1,
+    });
+
+    const firstCommand = {
+      command_id: "cmd_file_response_v1",
+      expected_version: 1,
+      response: {
+        acknowledged: true as const,
+        file_ids: ["file_task_v1"],
+        kind: "file" as const,
+        notes: "Captions are embedded.",
+      },
+      type: "submit_assignment" as const,
+    };
+    const submitted = await tasks.submitAssignment(
+      event,
+      "assignment_file_response",
+      firstCommand,
+      speaker,
+      "req_file_response_v1",
+    );
+    expect(submitted).toMatchObject({
+      ok: true,
+      replayed: false,
+      result: {
+        audit: { action: "tasks.assignment.submit" },
+        detail: {
+          assignment: { state: "submitted", version: 2 },
+          overdue: false,
+          response_history: [{ command_id: "cmd_file_response_v1" }],
+        },
+      },
+    });
+    const firstDetail = submitted.ok ? submitted.result.detail : null;
+    const firstFile = firstDetail?.files[0];
+    expect(firstFile).toMatchObject({
+      id: "file_task_v1",
+      status: "current",
+      version: 1,
+    });
+    expect(firstFile?.download?.url).toContain("receipt=");
+    expect(JSON.stringify(firstDetail)).not.toContain("private/file_task_v1");
+    expect(JSON.stringify(firstDetail)).not.toContain("object_key");
+
+    const replay = await tasks.submitAssignment(
+      event,
+      "assignment_file_response",
+      firstCommand,
+      speaker,
+      "req_file_response_v1_replay",
+    );
+    expect(replay).toMatchObject({ ok: true, replayed: true });
+    await expect(
+      tasks.submitAssignment(
+        event,
+        "assignment_file_response",
+        {
+          ...firstCommand,
+          response: { ...firstCommand.response, notes: "Payload drift" },
+        },
+        speaker,
+        "req_file_response_v1_drift",
+      ),
+    ).rejects.toBeInstanceOf(TaskIdempotencyConflictError);
+
+    await expect(
+      tasks.reviewAssignment(
+        event,
+        "assignment_file_response",
+        {
+          command_id: "cmd_file_review_blank",
+          decision: "approve",
+          expected_version: 2,
+          reason: " ",
+          type: "review_assignment",
+        },
+        organizer,
+        "req_file_review_blank",
+      ),
+    ).rejects.toMatchObject({ code: "reason_required" });
+    const rejected = await tasks.reviewAssignment(
+      event,
+      "assignment_file_response",
+      {
+        command_id: "cmd_file_review_reject",
+        decision: "reject",
+        expected_version: 2,
+        reason: "Please replace the draft with the captioned export.",
+        type: "review_assignment",
+      },
+      organizer,
+      "req_file_review_reject",
+    );
+    expect(rejected).toMatchObject({
+      ok: true,
+      result: { detail: { assignment: { state: "rejected", version: 3 } } },
+    });
+
+    await seedReadyTaskFile({
+      id: "file_task_v2",
+      lineageId: "file_task_v1",
+      replacesFileId: "file_task_v1",
+      version: 2,
+    });
+    await seedReadyTaskFile({
+      id: "file_task_unrelated",
+      lineageId: "file_task_unrelated",
+      version: 7,
+    });
+    await database
+      .prepare(
+        `UPDATE p_task_definitions
+         SET file_policy_json = ?1
+         WHERE organization_id = ?2 AND event_id = ?3 AND id = 'def_slides'`,
+      )
+      .bind(
+        JSON.stringify({
+          extensions: ["pdf"],
+          kind: "file",
+          max_bytes: 20_000_000,
+          max_files: 2,
+          private: true,
+        }),
+        event.organizationId,
+        event.eventId,
+      )
+      .run();
+    try {
+      await expect(
+        tasks.submitAssignment(
+          event,
+          "assignment_file_response",
+          {
+            command_id: "cmd_file_mixed_lineage",
+            expected_version: 3,
+            response: {
+              acknowledged: true,
+              file_ids: ["file_task_v2", "file_task_unrelated"],
+              kind: "file",
+              notes: "One replacement plus an unrelated upload.",
+            },
+            type: "submit_assignment",
+          },
+          speaker,
+          "req_file_mixed_lineage",
+        ),
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    } finally {
+      await database
+        .prepare(
+          `UPDATE p_task_definitions
+           SET file_policy_json = ?1
+           WHERE organization_id = ?2 AND event_id = ?3 AND id = 'def_slides'`,
+        )
+        .bind(
+          JSON.stringify({
+            extensions: ["pdf"],
+            kind: "file",
+            max_bytes: 20_000_000,
+            max_files: 1,
+            private: true,
+          }),
+          event.organizationId,
+          event.eventId,
+        )
+        .run();
+    }
+    await expect(
+      tasks.submitAssignment(
+        event,
+        "assignment_file_response",
+        {
+          command_id: "cmd_file_duplicate_old",
+          expected_version: 3,
+          response: firstCommand.response,
+          type: "submit_assignment",
+        },
+        speaker,
+        "req_file_duplicate_old",
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    const replacement = await tasks.submitAssignment(
+      event,
+      "assignment_file_response",
+      {
+        command_id: "cmd_file_response_v2",
+        expected_version: 3,
+        response: {
+          acknowledged: true,
+          file_ids: ["file_task_v2"],
+          kind: "file",
+          notes: "Captioned final export.",
+        },
+        type: "submit_assignment",
+      },
+      speaker,
+      "req_file_response_v2",
+    );
+    expect(replacement).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          assignment: { state: "submitted", version: 4 },
+          files: [
+            { id: "file_task_v2", status: "current", version: 2 },
+            { id: "file_task_v1", status: "replaced", version: 1 },
+          ],
+        },
+      },
+    });
+    expect(
+      await tasks
+        .reads()
+        .fileIsCurrent(event, "assignment_file_response", "file_task_v1"),
+    ).toBe(false);
+    expect(
+      await tasks
+        .reads()
+        .fileIsCurrent(event, "assignment_file_response", "file_task_v2"),
+    ).toBe(true);
+
+    await seedReadyTaskFile({
+      id: "file_task_v3",
+      lineageId: "file_task_v1",
+      replacesFileId: "file_task_v2",
+      version: 3,
+    });
+    await expect(
+      tasks.reviewAssignment(
+        event,
+        "assignment_file_response",
+        {
+          command_id: "cmd_file_review_obsolete",
+          decision: "approve",
+          expected_version: 4,
+          reason: "This decision raced with a newer finalized file.",
+          type: "review_assignment",
+        },
+        organizer,
+        "req_file_review_obsolete",
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    const latest = await tasks.submitAssignment(
+      event,
+      "assignment_file_response",
+      {
+        command_id: "cmd_file_response_v3",
+        expected_version: 4,
+        response: {
+          acknowledged: true,
+          file_ids: ["file_task_v3"],
+          kind: "file",
+          notes: "Final show-day export.",
+        },
+        type: "submit_assignment",
+      },
+      speaker,
+      "req_file_response_v3",
+    );
+    expect(latest).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          assignment: { state: "submitted", version: 5 },
+          files: expect.arrayContaining([
+            expect.objectContaining({
+              id: "file_task_v3",
+              status: "current",
+              version: 3,
+            }),
+          ]),
+        },
+      },
+    });
+
+    const approved = await tasks.reviewAssignment(
+      event,
+      "assignment_file_response",
+      {
+        command_id: "cmd_file_review_approve",
+        decision: "approve",
+        expected_version: 5,
+        reason: "Verified captions, fonts, and show-day compatibility.",
+        type: "review_assignment",
+      },
+      organizer,
+      "req_file_review_approve",
+    );
+    expect(approved).toMatchObject({
+      ok: true,
+      result: {
+        audit: { action: "tasks.assignment.review" },
+        detail: { assignment: { state: "approved", version: 6 } },
+      },
+    });
+    await expect(
+      tasks.reviewAssignment(
+        event,
+        "assignment_file_response",
+        {
+          command_id: "cmd_file_review_stale",
+          decision: "reject",
+          expected_version: 5,
+          reason: "Stale concurrent decision.",
+          type: "review_assignment",
+        },
+        organizer,
+        "req_file_review_stale",
+      ),
+    ).rejects.toBeInstanceOf(TaskVersionConflictError);
+
+    const receiptUrl = firstFile?.download?.url;
+    if (!receiptUrl) throw new Error("The first download receipt is missing.");
+    const receipt = new URL(
+      receiptUrl,
+      "https://opensession.test",
+    ).searchParams.get("receipt");
+    if (!receipt) throw new Error("The receipt token is missing.");
+    await expect(
+      verifyTaskDownloadReceipt(
+        authPepper,
+        event,
+        "assignment_file_response",
+        "file_task_v1",
+        receipt,
+        new Date("2026-08-10T18:06:00.000Z"),
+      ),
+    ).resolves.toBe("expired");
+    await expect(
+      verifyTaskDownloadReceipt(
+        authPepper,
+        { ...event, eventId: "evt_foreign" },
+        "assignment_file_response",
+        "file_task_v1",
+        receipt,
+        new Date("2026-08-10T18:01:00.000Z"),
+      ),
+    ).resolves.toBe("invalid");
+  });
+
+  it("completes the real R2 upload, replacement, approval, and old-file denial path", async () => {
+    const session: AuthenticatedSession = {
+      csrfTokenHash: "c".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      id: "auth_task_speaker",
+      tokenHash: "d".repeat(64),
+      user: {
+        displayName: "Sam Speaker",
+        email: "speaker@example.test",
+        id: "usr_speaker",
+      },
+    };
+    const uploads = new UploadService({
+      bucket: uploadBucket,
+      database,
+      now: () => new Date(now),
+      tokenFactory: () => `task-upload-token-${crypto.randomUUID()}`,
+    });
+    await database
+      .prepare(
+        `INSERT INTO p_sessions (
+           id, organization_id, event_id, friendly_id, title, status,
+           updated_at, source_record_id, source_version, source_content_hash,
+           projected_at
+         ) VALUES ('session_r2_demo', ?1, ?2, 'TASK-R2', 'R2 demo',
+                   'scheduled', ?3, 'rec_session_r2_demo', 1, ?4, ?3)`,
+      )
+      .bind(event.organizationId, event.eventId, now, contentHash)
+      .run();
+    await database
+      .prepare(
+        `INSERT INTO p_task_assignments (
+           id, organization_id, event_id, definition_id, contact_id,
+           session_id, due_at, required, status, completed_at, approved_at,
+           response_json, file_object_ids_json, updated_at, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES (?1, ?2, ?3, 'def_slides', 'contact_speaker', 'session_r2_demo',
+                   NULL, 1, 'not_started', NULL, NULL, ?4, '[]', ?5, ?6, 1,
+                   ?7, ?5)`,
+      )
+      .bind(
+        "assignment_r2_demo",
+        event.organizationId,
+        event.eventId,
+        JSON.stringify({
+          current_response: null,
+          history: [],
+          response_history: [],
+          schema_version: 2,
+          state: "incomplete",
+          submission_receipts: [],
+          version: 1,
+        }),
+        now,
+        "rec_assignment_r2_demo",
+        contentHash,
+      )
+      .run();
+
+    const first = await uploadPdf(
+      "architecture-v1.pdf",
+      new TextEncoder().encode("%PDF-1.7\nOpenSession version one\n%%EOF")
+        .buffer as ArrayBuffer,
+    );
+    const submitted = await tasks.submitAssignment(
+      event,
+      "assignment_r2_demo",
+      {
+        command_id: "cmd_r2_demo_submit_v1",
+        expected_version: 1,
+        response: {
+          acknowledged: true,
+          file_ids: [first.id],
+          kind: "file",
+          notes: "Initial slides.",
+        },
+        type: "submit_assignment",
+      },
+      speaker,
+      "req_r2_demo_submit_v1",
+    );
+    expect(submitted).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          assignment: { state: "submitted", version: 2 },
+          files: [{ id: first.id, status: "current", version: 1 }],
+        },
+      },
+    });
+
+    const replacement = await uploadPdf(
+      "architecture-v2.pdf",
+      new TextEncoder().encode("%PDF-1.7\nOpenSession version two\n%%EOF")
+        .buffer as ArrayBuffer,
+      first.id,
+    );
+    expect(replacement.version).toBe(2);
+    await expect(uploads.download(session, first.id)).rejects.toMatchObject({
+      code: "file_not_found",
+    } satisfies Partial<UploadError>);
+
+    const replaced = await tasks.submitAssignment(
+      event,
+      "assignment_r2_demo",
+      {
+        command_id: "cmd_r2_demo_submit_v2",
+        expected_version: 2,
+        response: {
+          acknowledged: true,
+          file_ids: [replacement.id],
+          kind: "file",
+          notes: "Final slides.",
+        },
+        type: "submit_assignment",
+      },
+      speaker,
+      "req_r2_demo_submit_v2",
+    );
+    expect(replaced).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          files: [
+            { id: replacement.id, status: "current", version: 2 },
+            { id: first.id, status: "replaced", version: 1 },
+          ],
+        },
+      },
+    });
+    const approved = await tasks.reviewAssignment(
+      event,
+      "assignment_r2_demo",
+      {
+        command_id: "cmd_r2_demo_approve",
+        decision: "approve",
+        expected_version: 3,
+        reason: "Verified the final deck and show-day compatibility.",
+        type: "review_assignment",
+      },
+      organizer,
+      "req_r2_demo_approve",
+    );
+    expect(approved).toMatchObject({
+      ok: true,
+      result: {
+        audit: { action: "tasks.assignment.review" },
+        detail: { assignment: { state: "approved", version: 4 } },
+      },
+    });
+    expect(
+      await tasks.reads().fileIsCurrent(event, "assignment_r2_demo", first.id),
+    ).toBe(false);
+    const currentDownload = await uploads.download(session, replacement.id);
+    await expect(new Response(currentDownload.body).text()).resolves.toContain(
+      "OpenSession version two",
+    );
+  });
+
   it("resumes an outcome-unknown materialization without duplicate assignments", async () => {
     authority.returnOutcomeUnknownAfterCommitOnce();
     const command = {
@@ -733,6 +1433,109 @@ describe("task/readiness Workerd behavior", () => {
       ({ session_id }) => session_id === "session_beta",
     );
     expect(betaAssignments).toHaveLength(1);
+  });
+
+  it("keeps task mutation receipts explicit until a pending projection is repaired", async () => {
+    await database
+      .prepare(
+        `INSERT INTO p_task_assignments (
+           id, organization_id, event_id, definition_id, contact_id,
+           session_id, due_at, required, status, completed_at, approved_at,
+           response_json, file_object_ids_json, updated_at, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES (?1, ?2, ?3, 'def_profile', 'contact_speaker', 'session_alpha',
+                   NULL, 0, 'not_started', NULL, NULL, ?4, '[]', ?5, ?6, 1,
+                   ?7, ?5)`,
+      )
+      .bind(
+        "assignment_submit_repair",
+        event.organizationId,
+        event.eventId,
+        JSON.stringify({
+          current_response: null,
+          history: [],
+          response_history: [],
+          schema_version: 2,
+          state: "incomplete",
+          submission_receipts: [],
+          version: 1,
+        }),
+        now,
+        "rec_assignment_submit_repair",
+        contentHash,
+      )
+      .run();
+    const command = {
+      command_id: "cmd_submit_repair",
+      expected_version: 1,
+      response: { acknowledged: true as const, kind: "ack" as const },
+      type: "submit_assignment" as const,
+    };
+
+    authority.returnRepairPendingOnce();
+    const pending = await tasks.submitAssignment(
+      event,
+      "assignment_submit_repair",
+      command,
+      speaker,
+      "req_submit_repair",
+    );
+    expect(pending).toMatchObject({
+      ok: true,
+      repair_pending: true,
+      replayed: false,
+      result: {
+        audit: { action: "tasks.assignment.submit" },
+        detail: {
+          assignment: { state: "incomplete", version: 1 },
+          current_response: null,
+        },
+      },
+    });
+
+    const pendingReplay = await tasks.submitAssignment(
+      event,
+      "assignment_submit_repair",
+      command,
+      speaker,
+      "req_submit_repair_before_projection",
+    );
+    expect(pendingReplay).toMatchObject({
+      ok: true,
+      repair_pending: true,
+      replayed: true,
+      result: {
+        detail: {
+          assignment: { state: "incomplete", version: 1 },
+          current_response: null,
+        },
+      },
+    });
+    const captured = authority.captured.filter(
+      ({ commandId }) => commandId === command.command_id,
+    );
+    expect(captured).toHaveLength(2);
+    expect(captured[1]).toEqual(captured[0]);
+
+    await authority.repairProjection();
+    const repaired = await tasks.submitAssignment(
+      event,
+      "assignment_submit_repair",
+      command,
+      speaker,
+      "req_submit_repair_replay",
+    );
+    expect(repaired).toMatchObject({
+      ok: true,
+      repair_pending: false,
+      replayed: true,
+      result: {
+        detail: {
+          assignment: { state: "complete", version: 2 },
+          current_response: { acknowledged: true, kind: "ack" },
+        },
+      },
+    });
   });
 
   it("reports projection failure, then exposes the repaired projection", async () => {
@@ -836,6 +1639,76 @@ describe("task/readiness Workerd behavior", () => {
     expect(unauthenticated.status).toBe(401);
   });
 
+  it("scopes assignment detail and forces speakers through typed submissions", async () => {
+    const profile = (await tasks.reads().assignments(event)).find(
+      ({ definition_id }) => definition_id === "def_profile",
+    );
+    if (!profile) throw new Error("The profile assignment is missing.");
+    const speakerHeaders = {
+      Accept: "application/json",
+      Cookie: `__Host-opensession-session=${speakerSessionToken}`,
+      "Content-Type": "application/json",
+      Origin: origin,
+      "Sec-Fetch-Site": "same-origin",
+      "User-Agent": "OpenSession speaker task route test",
+      "X-CSRF-Token": "task-speaker-csrf",
+    };
+    const detail = await server.fetch(
+      `/api/events/evt_tasks/task-assignments/${profile.assignment_id}`,
+      { headers: speakerHeaders },
+    );
+    expect(detail.status, await detail.clone().text()).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({
+      assignment: { assignment_id: profile.assignment_id },
+      permissions: { can_review: false, can_submit: true },
+      speaker: { contact_id: "contact_speaker" },
+    });
+    expect(detail.headers.get("Cache-Control")).toBe("private, no-store");
+
+    const legacyTransition = await server.fetch(
+      `/api/events/evt_tasks/task-assignments/${profile.assignment_id}/transitions`,
+      {
+        body: JSON.stringify({
+          command_id: "cmd_speaker_legacy_transition",
+          expected_version: profile.version,
+          reason: null,
+          to: "submitted",
+          type: "transition_assignment",
+        }),
+        headers: speakerHeaders,
+        method: "POST",
+      },
+    );
+    expect(legacyTransition.status).toBe(403);
+    await expect(legacyTransition.json()).resolves.toMatchObject({
+      error: { code: "forbidden" },
+    });
+
+    const mismatchedTypedResponse = await server.fetch(
+      `/api/events/evt_tasks/task-assignments/${profile.assignment_id}/submissions`,
+      {
+        body: JSON.stringify({
+          command_id: "cmd_speaker_mismatched_response",
+          expected_version: profile.version,
+          response: { answers: [], kind: "form" },
+          type: "submit_assignment",
+        }),
+        headers: speakerHeaders,
+        method: "POST",
+      },
+    );
+    expect(mismatchedTypedResponse.status).toBe(422);
+    await expect(mismatchedTypedResponse.json()).resolves.toMatchObject({
+      error: { code: "task_invalid_request" },
+    });
+
+    const foreign = await server.fetch(
+      `/api/events/evt_foreign/task-assignments/${profile.assignment_id}`,
+      { headers: speakerHeaders },
+    );
+    expect(foreign.status).toBe(403);
+  });
+
   it("maps preview, idempotency, version, and transition failures at the route boundary", async () => {
     const headers = {
       Accept: "application/json",
@@ -844,6 +1717,7 @@ describe("task/readiness Workerd behavior", () => {
       Origin: origin,
       "Sec-Fetch-Site": "same-origin",
       "User-Agent": "OpenSession task command route test",
+      "X-CSRF-Token": "task-readiness-csrf",
     };
     const post = (path: string, body: unknown, requestHeaders = headers) =>
       server.fetch(path, {
@@ -946,8 +1820,8 @@ describe("task/readiness Workerd behavior", () => {
       {
         command_id: "cmd_missing_route",
         expected_version: 1,
-        reason: null,
-        to: "submitted",
+        reason: "Administrative reset.",
+        to: "incomplete",
         type: "transition_assignment",
       },
     );

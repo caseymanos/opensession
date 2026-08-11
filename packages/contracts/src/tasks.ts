@@ -222,7 +222,103 @@ export const taskAssignmentHistorySchema = z
     }
   });
 
-export const taskAssignmentResponseEnvelopeSchema = z
+const taskResponseTextSchema = z.string().max(4_000);
+
+const taskAcknowledgementResponseSchema = z
+  .object({
+    acknowledged: z.literal(true),
+    kind: z.literal("ack"),
+  })
+  .strict();
+
+const taskLinkResponseSchema = z
+  .object({
+    acknowledged: z.literal(true),
+    kind: z.literal("link"),
+  })
+  .strict();
+
+const taskFormAnswerSchema = z
+  .object({
+    field_id: taskStableIdSchema,
+    value: z.union([
+      z.boolean(),
+      taskResponseTextSchema,
+      z.array(taskResponseTextSchema).max(100),
+    ]),
+  })
+  .strict();
+
+const taskFormResponseSchema = z
+  .object({
+    answers: z.array(taskFormAnswerSchema).max(100),
+    kind: z.literal("form"),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const fieldIds = new Set<string>();
+    response.answers.forEach((answer, index) => {
+      if (fieldIds.has(answer.field_id)) {
+        context.addIssue({
+          code: "custom",
+          message: "Form responses cannot contain duplicate field IDs.",
+          path: ["answers", index, "field_id"],
+        });
+      }
+      fieldIds.add(answer.field_id);
+    });
+  });
+
+const taskFileResponseSchema = z
+  .object({
+    acknowledged: z.literal(true),
+    file_ids: z.array(taskStableIdSchema).min(1).max(20),
+    kind: z.literal("file"),
+    notes: z.string().max(2_000),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    if (new Set(response.file_ids).size !== response.file_ids.length) {
+      context.addIssue({
+        code: "custom",
+        message: "File responses cannot contain duplicate file IDs.",
+        path: ["file_ids"],
+      });
+    }
+  });
+
+export const taskSubmissionResponseSchema = z
+  .discriminatedUnion("kind", [
+    taskAcknowledgementResponseSchema,
+    taskLinkResponseSchema,
+    taskFormResponseSchema,
+    taskFileResponseSchema,
+  ])
+  .refine((response) => JSON.stringify(response).length <= 4_096, {
+    message: "Task responses cannot exceed 4 KiB.",
+  });
+
+export const taskResponseHistorySchema = z
+  .object({
+    actor_id: taskStableIdSchema,
+    at: z.iso.datetime(),
+    command_id: taskStableIdSchema,
+    response: taskSubmissionResponseSchema,
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+export const taskSubmissionReceiptSchema = z
+  .object({
+    actor_id: taskStableIdSchema,
+    at: z.iso.datetime(),
+    command_id: taskStableIdSchema,
+    request_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+const taskAssignmentResponseEnvelopeV1Schema = z
   .object({
     history: z.array(taskAssignmentHistorySchema).max(500),
     schema_version: z.literal(1),
@@ -230,6 +326,29 @@ export const taskAssignmentResponseEnvelopeSchema = z
     version: z.number().int().positive(),
   })
   .strict();
+
+const taskAssignmentResponseEnvelopeV2Schema = z
+  .object({
+    current_response: taskSubmissionResponseSchema.nullable(),
+    history: z.array(taskAssignmentHistorySchema).max(500),
+    response_history: z.array(taskResponseHistorySchema).max(8),
+    schema_version: z.literal(2),
+    state: taskAssignmentStateSchema,
+    submission_receipts: z
+      .array(taskSubmissionReceiptSchema)
+      .max(200)
+      .default([]),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+export const taskAssignmentResponseEnvelopeSchema = z.discriminatedUnion(
+  "schema_version",
+  [
+    taskAssignmentResponseEnvelopeV1Schema,
+    taskAssignmentResponseEnvelopeV2Schema,
+  ],
+);
 
 export const taskAssignmentSchema = z
   .object({
@@ -254,6 +373,25 @@ export const taskAssignmentTransitionCommandSchema = z
     reason: z.string().trim().min(1).max(2_000).nullable(),
     to: taskAssignmentStateSchema,
     type: z.literal("transition_assignment"),
+  })
+  .strict();
+
+export const taskAssignmentSubmissionCommandSchema = z
+  .object({
+    command_id: taskStableIdSchema,
+    expected_version: z.number().int().positive(),
+    response: taskSubmissionResponseSchema,
+    type: z.literal("submit_assignment"),
+  })
+  .strict();
+
+export const taskAssignmentReviewCommandSchema = z
+  .object({
+    command_id: taskStableIdSchema,
+    decision: z.enum(["approve", "reject"]),
+    expected_version: z.number().int().positive(),
+    reason: z.string().trim().min(1).max(2_000),
+    type: z.literal("review_assignment"),
   })
   .strict();
 
@@ -377,6 +515,85 @@ export const taskReadinessResponseSchema = z
   })
   .strict();
 
+export const taskFileReceiptSchema = z
+  .object({
+    byte_size: z.number().int().nonnegative(),
+    checksum_sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    declared_mime_type: z.string().trim().min(1).max(200),
+    detected_mime_type: z.string().trim().min(1).max(200).nullable(),
+    display_filename: z.string().trim().min(1).max(512),
+    download: z
+      .object({
+        expires_at: z.iso.datetime(),
+        url: z.string().startsWith("/api/").max(2_048),
+      })
+      .strict()
+      .nullable(),
+    finalized_at: z.iso.datetime().nullable(),
+    id: taskStableIdSchema,
+    status: z.enum(["current", "replaced", "unavailable"]),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+export const taskAssignmentDetailSchema = z
+  .object({
+    assignment: taskAssignmentSchema,
+    current_response: taskSubmissionResponseSchema.nullable(),
+    definition: taskDefinitionSchema,
+    event: z
+      .object({
+        id: taskStableIdSchema,
+        name: z.string().trim().min(1).max(200),
+        slug: taskStableIdSchema,
+        timezone: z.string().trim().min(1).max(100),
+      })
+      .strict(),
+    files: z.array(taskFileReceiptSchema).max(500),
+    generated_at: z.iso.datetime(),
+    organization_id: taskStableIdSchema,
+    overdue: z.boolean(),
+    permissions: z
+      .object({
+        can_review: z.boolean(),
+        can_submit: z.boolean(),
+      })
+      .strict(),
+    readiness: taskReadinessSchema,
+    response_history: z.array(taskResponseHistorySchema).max(8),
+    session: z
+      .object({
+        id: taskStableIdSchema,
+        title: z.string().trim().min(1).max(300),
+      })
+      .strict()
+      .nullable(),
+    speaker: z
+      .object({
+        contact_id: taskStableIdSchema,
+        display_name: z.string().trim().min(1).max(200),
+        email: z.email().max(320),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const taskAssignmentMutationReceiptSchema = z
+  .object({
+    audit: z
+      .object({
+        action: z.enum(["tasks.assignment.review", "tasks.assignment.submit"]),
+        id: taskStableIdSchema,
+        recorded_at: z.iso.datetime(),
+      })
+      .strict(),
+    detail: taskAssignmentDetailSchema,
+  })
+  .strict();
+
 const taskCommandErrorSchema = z
   .object({
     code: z.enum([
@@ -421,13 +638,43 @@ export const taskCommandResponseSchema = z.discriminatedUnion("ok", [
     .strict(),
 ]);
 
+export const taskAssignmentMutationResponseSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      repair_pending: z.boolean(),
+      replayed: z.boolean(),
+      result: taskAssignmentMutationReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      error: taskCommandErrorSchema,
+      ok: z.literal(false),
+    })
+    .strict(),
+]);
+
 export type TaskAcceptanceMaterializationCommand = z.infer<
   typeof taskAcceptanceMaterializationCommandSchema
 >;
 export type TaskAssignment = z.infer<typeof taskAssignmentSchema>;
+export type TaskAssignmentDetail = z.infer<typeof taskAssignmentDetailSchema>;
+export type TaskAssignmentMutationResponse = z.infer<
+  typeof taskAssignmentMutationResponseSchema
+>;
+export type TaskAssignmentMutationReceipt = z.infer<
+  typeof taskAssignmentMutationReceiptSchema
+>;
+export type TaskAssignmentReviewCommand = z.infer<
+  typeof taskAssignmentReviewCommandSchema
+>;
 export type TaskAssignmentState = z.infer<typeof taskAssignmentStateSchema>;
 export type TaskAssignmentResponseEnvelope = z.infer<
   typeof taskAssignmentResponseEnvelopeSchema
+>;
+export type TaskAssignmentSubmissionCommand = z.infer<
+  typeof taskAssignmentSubmissionCommandSchema
 >;
 export type TaskAssignmentTransitionCommand = z.infer<
   typeof taskAssignmentTransitionCommandSchema
@@ -442,3 +689,8 @@ export type TaskDefinitionCommand = z.infer<typeof taskDefinitionCommandSchema>;
 export type TaskDefinitionDraft = z.infer<typeof taskDefinitionDraftSchema>;
 export type TaskReadiness = z.infer<typeof taskReadinessSchema>;
 export type TaskReadinessResponse = z.infer<typeof taskReadinessResponseSchema>;
+export type TaskResponseHistory = z.infer<typeof taskResponseHistorySchema>;
+export type TaskSubmissionResponse = z.infer<
+  typeof taskSubmissionResponseSchema
+>;
+export type TaskSubmissionReceipt = z.infer<typeof taskSubmissionReceiptSchema>;
