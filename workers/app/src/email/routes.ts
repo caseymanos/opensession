@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { AppContext } from "../app-context.js";
 import { emitOperationalLog } from "../observability.js";
 import {
+  EmailProviderEventIdentityConflictError,
   EmailProviderEventNotReadyError,
   EmailProviderEventService,
   verifyResendWebhook,
@@ -59,10 +60,14 @@ export function registerEmailWebhookRoutes(app: Hono<AppContext>): void {
       return context.text("OK", 200);
     } catch (error) {
       const retryable = error instanceof EmailProviderEventNotReadyError;
+      const identityConflict =
+        error instanceof EmailProviderEventIdentityConflictError;
       emitOperationalLog("error", context.env, {
         error_type: retryable
           ? "provider_event_not_ready"
-          : "provider_event_failed",
+          : identityConflict
+            ? "provider_event_identity_conflict"
+            : "provider_event_failed",
         event: "email.webhook.failed",
         outcome: "failure",
         request_id: context.get("requestId"),
