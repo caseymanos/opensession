@@ -167,6 +167,55 @@ async function seedAuthorityRecords(): Promise<void> {
       Track: [recordId("tracks", "track_reliability")],
     });
   }
+  await seedProvider("submission_participants", "participant_assigned", {
+    Contact: [recordId("contacts", "contact_submitter")],
+    "Is primary": true,
+    Order: 1,
+    Role: "speaker",
+    Submission: [recordId("submissions", "submission_assigned")],
+  });
+  await seedProvider("submission_participants", "participant_unassigned", {
+    Contact: [recordId("contacts", "contact_submitter")],
+    "Is primary": true,
+    Order: 1,
+    Role: "speaker",
+    Submission: [recordId("submissions", "submission_unassigned")],
+  });
+  await seedProvider("email_templates", "template_acceptance", {
+    "Audience type": "speaker",
+    "Body document JSON": JSON.stringify({
+      blocks: [
+        {
+          text: "Your session {{session.title}} is accepted.",
+          type: "paragraph",
+        },
+      ],
+      previewText: "Your proposal has been accepted.",
+    }),
+    "Body HTML": "<p>Your session is accepted.</p>",
+    "Body text": "Your session is accepted.",
+    Event: [recordId("events", "event_alpha")],
+    "Merge schema version": 1,
+    Name: "Acceptance",
+    "Reply to": "program@example.test",
+    "Sender email": "notifications@example.test",
+    "Sender name": "OpenSession",
+    Status: "active",
+    Subject: "Accepted: {{session.title}}",
+    "Used merge fields JSON": JSON.stringify(["session.title"]),
+    Version: 1,
+  });
+  await seedProvider("task_definitions", "task_acceptance_ack", {
+    "Approval required": false,
+    Description: "Acknowledge the speaker code of conduct.",
+    Event: [recordId("events", "event_alpha")],
+    "File policy JSON": "{}",
+    "Form schema JSON": "{}",
+    Name: "Code of conduct",
+    "Required default": true,
+    "Target rule JSON": JSON.stringify({ roles: ["speaker"] }),
+    Type: "ack",
+  });
   await seedProvider("rubrics", "rubric_alpha", {
     "Criteria snapshot JSON": JSON.stringify(criteria),
     Event: [recordId("events", "event_alpha")],
@@ -769,6 +818,189 @@ describe.sequential("review operations runtime", () => {
         reason: command.reason,
       }),
     ]);
+  });
+
+  it("resumes a post-commit acceptance failure without duplicating downstream effects", async () => {
+    const command = {
+      audience: "Primary speaker",
+      commandId: "command_acceptance_injected_failure",
+      decision: "accepted",
+      expectedVersion: 1,
+      messageMode: "send_queued",
+      privateNote: "Exercise the durable workflow boundary.",
+      reason: "Strong program fit",
+      submissionId: "submission_unassigned",
+      template: "Accepted · OpenSession Summit",
+      type: "record_decision",
+    } as const;
+    let injected: unknown;
+    try {
+      await (
+        await runtime.getExport()
+      ).acceptWithInjectedFailure(command, "authority-commit:1");
+    } catch (error) {
+      injected = error;
+    }
+    expect(injected).toBeInstanceOf(Error);
+    expect((injected as Error).message).toContain(
+      "Injected acceptance failure",
+    );
+    const failedWorkspace = (await (
+      await request("/api/events/event_alpha/decisions", organizerAuth)
+    ).json()) as {
+      submissions: {
+        id: string;
+        sideEffects: { errorCode: string; status: string } | null;
+      }[];
+    };
+    expect(
+      failedWorkspace.submissions.find(
+        ({ id }) => id === "submission_unassigned",
+      )?.sideEffects,
+    ).toMatchObject({ errorCode: "Error", status: "failed" });
+
+    const resumed = await (
+      await runtime.getExport()
+    ).acceptWithInjectedFailure(command);
+    expect(resumed).toMatchObject({ outcome: "replayed", version: 2 });
+    await (await runtime.getExport()).acceptWithInjectedFailure(command);
+    const completedWorkspace = (await (
+      await request("/api/events/event_alpha/decisions", organizerAuth)
+    ).json()) as {
+      submissions: {
+        id: string;
+        sideEffects: { errorCode: string | null; status: string } | null;
+      }[];
+    };
+    expect(
+      completedWorkspace.submissions.find(
+        ({ id }) => id === "submission_unassigned",
+      )?.sideEffects,
+    ).toMatchObject({ errorCode: null, status: "complete" });
+
+    const env = await runtime.getEnv();
+    const session = await env.DB.prepare(
+      `SELECT id FROM p_sessions
+       WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+         AND source_submission_id = 'submission_unassigned'
+         AND source_deleted_at IS NULL`,
+    ).all<{ id: string }>();
+    expect(session.results).toHaveLength(1);
+    const sessionId = session.results[0]?.id;
+    const counts = await env.DB.batch<{ count: number }>([
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_session_participants
+         WHERE session_id = ?1 AND source_deleted_at IS NULL`,
+      ).bind(sessionId),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_event_contacts
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND contact_id = 'contact_submitter' AND portal_state IN ('active', 'invited')
+           AND source_deleted_at IS NULL`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_task_assignments
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND contact_id = 'contact_submitter' AND source_deleted_at IS NULL`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM provider_messages
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND contact_id = 'contact_submitter' AND kind = 'campaign'`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM outbox_events
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND aggregate_id = ?1 AND event_type = 'calendar.acceptance.requested'`,
+      ).bind(sessionId),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM workflow_runs
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND idempotency_key = 'decision-acceptance:v1:event_alpha:command_acceptance_injected_failure'
+           AND status = 'complete'`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE organization_id = 'org_alpha' AND event_id = 'event_alpha'
+           AND command_id = 'command_acceptance_injected_failure'
+           AND action = 'acceptance.email.queued'`,
+      ),
+    ]);
+    expect(counts.map((result) => result.results[0]?.count)).toEqual([
+      1, 1, 1, 1, 1, 1, 1,
+    ]);
+  });
+
+  it("keeps waitlist and decline workflows free of onboarding side effects", async () => {
+    await seedProvider("contacts", "contact_no_onboarding", {
+      "Display name": "Nora Waitlist",
+      "Email normalized": "nora@example.test",
+      Organization: [recordId("organizations", "org_alpha")],
+      "Social JSON": "{}",
+    });
+    await seedProvider("submissions", "submission_no_onboarding", {
+      "Default reviewer group ID": "group_reliability",
+      "Draft JSON": "{}",
+      Event: [recordId("events", "event_alpha")],
+      "Form version": 1,
+      Form: [recordId("forms", "form_alpha")],
+      "Friendly ID": "SUB-003",
+      "Route key": "reliability",
+      Status: "submitted",
+      "Submitted at": timestamp,
+      "Submitter contact": [recordId("contacts", "contact_no_onboarding")],
+      Title: "A proposal without onboarding",
+      Track: [recordId("tracks", "track_reliability")],
+    });
+    await seedProvider("submission_participants", "participant_no_onboarding", {
+      Contact: [recordId("contacts", "contact_no_onboarding")],
+      "Is primary": true,
+      Order: 1,
+      Role: "speaker",
+      Submission: [recordId("submissions", "submission_no_onboarding")],
+    });
+    await (await runtime.getExport()).synchronize(["org_alpha"]);
+
+    for (const [decision, expectedVersion] of [
+      ["waitlisted", 1],
+      ["declined", 2],
+    ] as const) {
+      const response = await request(
+        "/api/events/event_alpha/decisions/submission_no_onboarding/commands",
+        organizerAuth,
+        {
+          audience: "Primary speaker",
+          commandId: `command_no_onboarding_${decision}`,
+          decision,
+          expectedVersion,
+          messageMode: "recorded_only",
+          privateNote: "No onboarding is permitted.",
+          reason: "Limited program capacity",
+          submissionId: "submission_no_onboarding",
+          template: null,
+          type: "record_decision",
+        },
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+    }
+
+    const env = await runtime.getEnv();
+    const counts = await env.DB.batch<{ count: number }>([
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_sessions
+         WHERE source_submission_id = 'submission_no_onboarding'
+           AND source_deleted_at IS NULL`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_event_contacts
+         WHERE contact_id = 'contact_no_onboarding' AND source_deleted_at IS NULL`,
+      ),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM p_task_assignments
+         WHERE contact_id = 'contact_no_onboarding' AND source_deleted_at IS NULL`,
+      ),
+    ]);
+    expect(counts.map((result) => result.results[0]?.count)).toEqual([0, 0, 0]);
   });
 
   it("records conflicts durably, removes scoring access, and exposes authoritative audit history", async () => {

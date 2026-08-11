@@ -798,6 +798,11 @@ const templateDefinitions = [
     "Thank you for sharing {{submission.title}}.",
   ],
   [
+    "template_waitlist",
+    "Waitlist",
+    "{{submission.title}} is currently waitlisted.",
+  ],
+  [
     "template_task_reminder",
     "Task reminder",
     "Your next task is {{task.name}}.",
@@ -811,7 +816,11 @@ const templateDefinitions = [
 
 const templates = templateDefinitions.map(([id, name, body]) =>
   entity("email_templates", id, {
-    "Audience type": name === "Submission receipt" ? "submitter" : "speaker",
+    "Audience type": ["Decline", "Submission receipt", "Waitlist"].includes(
+      name,
+    )
+      ? "submitter"
+      : "speaker",
     "Body document JSON": json({ blocks: [{ text: body, type: "paragraph" }] }),
     "Body HTML": `<p>${body}</p>`,
     "Body text": body,

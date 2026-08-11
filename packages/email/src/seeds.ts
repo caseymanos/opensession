@@ -120,6 +120,36 @@ const seedDefinitions: readonly SeedDefinition[] = [
   {
     allowedMergeFields: [
       "event.name",
+      "organizer.email",
+      "recipient.first_name",
+      "submission.portal_url",
+      "submission.title",
+    ],
+    audience: "submitter",
+    blocks: [
+      { text: "An update on your proposal", type: "heading" },
+      {
+        text: "Hi {{recipient.first_name}}, “{{submission.title}}” is currently on the waitlist for {{event.name}}.",
+        type: "paragraph",
+      },
+      {
+        label: "View your submission",
+        type: "button",
+        url: "{{submission.portal_url}}",
+      },
+      {
+        text: "We’ll contact you if program space becomes available. Questions can go to {{organizer.email}}.",
+        type: "paragraph",
+      },
+    ],
+    id: "template_submission_waitlisted",
+    internalName: "Submission waitlisted",
+    previewText: "Your proposal for {{event.name}} is currently waitlisted.",
+    subject: "Waitlist update: {{submission.title}} at {{event.name}}",
+  },
+  {
+    allowedMergeFields: [
+      "event.name",
       "recipient.first_name",
       "task.due_at",
       "task.name",

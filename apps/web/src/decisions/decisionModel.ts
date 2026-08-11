@@ -38,6 +38,12 @@ export interface DecisionSubmissionView {
   history: DecisionHistoryView[];
   id: string;
   reviews: RawReviewView[];
+  sideEffects?: {
+    errorCode?: string;
+    status: "complete" | "failed" | "pending";
+    updatedAt: string;
+    workflowId: string;
+  };
   sourceVersion?: number;
   speakerCount: number;
   title: string;

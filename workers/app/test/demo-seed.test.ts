@@ -31,9 +31,9 @@ describe("deterministic demo seed compiler", () => {
 
     expect(second).toEqual(first);
     expect(first.digest).toBe(
-      "663247fed258b45b2e8f8a274917e4060eb8c110ee460089ff4ef0a86a9d10ff",
+      "69e644c746f7a9fe4f157d3f4220da7af7cd920ae065b79527fd129299b948e6",
     );
-    expect(first.operations).toHaveLength(138);
+    expect(first.operations).toHaveLength(139);
     expect(first.snapshotId).toBe(`snapshot_${first.digest.slice(0, 24)}`);
     expect(first.operations.length).toBe(demoSeedSource.entities.length);
     const manifest = JSON.parse(
@@ -213,7 +213,7 @@ describe("deterministic demo seed compiler", () => {
     expect(
       sessions.filter(({ entityId }) => !scheduledIds.has(entityId)),
     ).toHaveLength(2);
-    expect(counts.email_templates).toHaveLength(5);
+    expect(counts.email_templates).toHaveLength(6);
     expect(counts.sync_runs?.[0]?.fields.Status).toBe("failed");
     expect(plan.assets.map(({ kind }) => kind)).toEqual(
       expect.arrayContaining(["headshot", "slides"]),

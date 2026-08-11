@@ -119,6 +119,43 @@ async function invitation() {
 }
 
 describe("D1CalendarIntentOutbox", () => {
+  it("records one normalized acceptance intent and replays it", async () => {
+    const database = new FakeD1();
+    const outbox = new D1CalendarIntentOutbox(
+      database as unknown as D1Database,
+    );
+    const input = {
+      actor: { id: "user_program_lead", type: "user" } as const,
+      commandId: "command_accept_submission",
+      contactIds: [
+        "contact_speaker_b",
+        "contact_speaker_a",
+        "contact_speaker_b",
+      ],
+      eventId: "event_ai_engineering_summit",
+      occurredAt,
+      organizationId: "org_open_session",
+      requestId: "request_accept_submission",
+      sessionId: "session_accepted_submission",
+      workflowId: "workflow_accept_submission",
+    };
+
+    const first = await outbox.enqueueAcceptance(input);
+    const replay = await outbox.enqueueAcceptance(input);
+
+    expect(first.disposition).toBe("enqueued");
+    expect(replay).toEqual({
+      disposition: "replayed",
+      outboxId: first.outboxId,
+    });
+    expect(database.events).toHaveLength(1);
+    expect(
+      JSON.parse(database.events.values().next().value?.payload_json ?? "{}")
+        .contactIds,
+    ).toEqual(["contact_speaker_a", "contact_speaker_b"]);
+    expect(database.batches[0]?.[1]?.values[4]).toBe("user_program_lead");
+  });
+
   it("records and replays a system-authored change", async () => {
     const database = new FakeD1();
     const outbox = new D1CalendarIntentOutbox(
