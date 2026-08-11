@@ -38,9 +38,11 @@ Integrations page shows base identifier suffix, schema version, last successful 
 - Domain verification and inbox placement checks are external setup gates.
 - Every campaign queue intent is bound to its organization/event/campaign/contact/template version, recipient hash, and rendered payload hash before enqueue. Magic-link intents bind the recipient and complete link payload before enqueue without storing the raw token.
 - Queue consumers use durable leases, stable provider idempotency keys, at most five provider attempts, environment allowlists, and a dead-letter queue. A successful magic-link send is durably terminal so at-least-once queue redelivery cannot resend it.
-- `POST /api/webhooks/resend` verifies the Svix signature against the unmodified request body, caps the body at 256 KiB, deduplicates event IDs, retains only the raw payload hash, and normalizes sent, delivered, bounced, complained, failed, and suppressed events.
+- `POST /api/webhooks/resend` verifies the Svix signature against the unmodified request body, caps the body at 256 KiB, deduplicates event IDs, retains only the raw payload hash, and normalizes sent, delivered, bounced, complained, failed, and suppressed events. A signed event that arrives before its local provider message receives a bounded retry window. If it remains foreign after that window, immutable event-ID and payload digests quarantine it with a successful acknowledgement; no address, provider payload, or provider identifier is retained, and the existing 30-day operational-event retention applies.
 - Provider events are monotonic by provider timestamp and severity. Complaint/manual suppressions cannot be weakened by a later or out-of-order bounce.
 - Suppressed/bounced addresses are explained and excluded from automated retries.
+
+Resend documents webhook delivery as at-least-once and unordered, with retries from the immediate attempt through later 5-minute, 30-minute, and multi-hour windows: [Retries and Replays](https://resend.com/docs/webhooks/retries-and-replays). The 15-minute local-persistence grace therefore preserves the immediate, 5-second, and 5-minute race-recovery opportunities before the next scheduled retry is quarantined.
 
 Provider operations never contain portal tokens in logs. Email HTML and plain text are snapshot-tested; tracked links are optional and off by default.
 

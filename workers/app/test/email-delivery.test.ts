@@ -21,9 +21,12 @@ import type {
   EmailProviderSendResult,
 } from "../src/email/provider";
 import {
+  EmailProviderEventIdentityConflictError,
+  EmailProviderEventNotReadyError,
   EmailProviderEventService,
   verifyResendWebhook,
 } from "../src/email/webhook";
+import { durableOperationalEventStatement } from "../src/observability";
 
 const timestamp = "2026-08-09T22:00:00.000Z";
 const hash = "a".repeat(64);
@@ -61,6 +64,11 @@ interface ProviderMessageState {
   provider_message_id: string | null;
   status: string;
 }
+
+type DeliveredProviderEvent = Extract<
+  WebhookEventPayload,
+  { type: "email.delivered" }
+>;
 
 function createQueue(options: { fail?: boolean } = {}) {
   const sent: EmailQueueMessage[] = [];
@@ -197,6 +205,38 @@ async function signature(
     new TextEncoder().encode(`${eventId}.${eventTimestamp}.${payload}`),
   );
   return `v1,${Buffer.from(digest).toString("base64")}`;
+}
+
+function deliveredProviderEvent(
+  providerMessageId: string,
+  createdAt = timestamp,
+): DeliveredProviderEvent {
+  return {
+    created_at: createdAt,
+    data: {
+      created_at: createdAt,
+      email_id: providerMessageId,
+      from: "hello@updates.example.test",
+      subject: "Delivery",
+      to: ["speaker@example.test"],
+    },
+    type: "email.delivered",
+  };
+}
+
+async function postSignedWebhook(eventId: string, event: unknown) {
+  const eventTimestamp = String(Math.floor(Date.now() / 1_000));
+  const payload = JSON.stringify(event);
+  return server.fetch("/api/webhooks/resend", {
+    body: payload,
+    headers: {
+      "Content-Type": "application/json",
+      "svix-id": eventId,
+      "svix-signature": await signature(eventId, eventTimestamp, payload),
+      "svix-timestamp": eventTimestamp,
+    },
+    method: "POST",
+  });
 }
 
 beforeAll(async () => {
@@ -1049,6 +1089,286 @@ describe("Resend provider events", () => {
     ).toThrow();
   });
 
+  it("bounds foreign-event retries with an immutable digest-only quarantine", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const eventId = "provider_event_foreign_01";
+    const eventIdHash = await sha256Hex(eventId);
+    const event = deliveredProviderEvent("resend_foreign_private_identifier");
+    const payload = JSON.stringify(event);
+    const payloadHash = await sha256Hex(payload);
+    let currentTime = new Date(timestamp);
+    const service = new EmailProviderEventService({
+      database: env.DB,
+      now: () => currentTime,
+    });
+    await durableOperationalEventStatement(
+      env.DB,
+      {
+        dedupe_key: "email:provider-event:expired:retention-fixture",
+        event: "email.provider_event.pending",
+        job_id: "retention_fixture",
+        outcome: "failure",
+      },
+      new Date(Date.parse(timestamp) - 31 * 24 * 60 * 60 * 1_000),
+    ).run();
+
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).rejects.toBeInstanceOf(EmailProviderEventNotReadyError);
+    await expect(
+      env.DB.prepare(
+        `SELECT id FROM operational_events
+         WHERE dedupe_key = 'email:provider-event:expired:retention-fixture'`,
+      ).first(),
+    ).resolves.toBeNull();
+    const firstSeen = await env.DB.prepare(
+      `SELECT command_id, dedupe_key, event_type, expires_at, occurred_at,
+              outcome, response_status
+       FROM operational_events WHERE job_id = ?1 ORDER BY id`,
+    )
+      .bind(eventIdHash)
+      .all<Record<string, unknown>>();
+    expect(firstSeen.results).toEqual([
+      expect.objectContaining({
+        command_id: payloadHash,
+        event_type: "email.provider_event.pending",
+        occurred_at: timestamp,
+        outcome: "failure",
+        response_status: 503,
+      }),
+    ]);
+    expect(
+      Date.parse(String(firstSeen.results[0]?.expires_at)) -
+        Date.parse(timestamp),
+    ).toBe(30 * 24 * 60 * 60 * 1_000);
+    const serializedReceipt = JSON.stringify(firstSeen.results);
+    expect(serializedReceipt).not.toContain("resend_foreign");
+    expect(serializedReceipt).not.toContain("speaker@example.test");
+
+    currentTime = new Date(Date.parse(timestamp) + 5 * 60 * 1_000);
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).rejects.toBeInstanceOf(EmailProviderEventNotReadyError);
+    const pendingCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count, MIN(occurred_at) AS first_seen
+       FROM operational_events WHERE job_id = ?1`,
+    )
+      .bind(eventIdHash)
+      .first<{ count: number; first_seen: string }>();
+    expect(pendingCount).toEqual({ count: 1, first_seen: timestamp });
+
+    const alteredPayload = JSON.stringify({ ...event, type: "email.sent" });
+    await expect(
+      service.apply({ event, eventId, rawPayload: alteredPayload }),
+    ).rejects.toBeInstanceOf(EmailProviderEventIdentityConflictError);
+
+    currentTime = new Date(Date.parse(timestamp) + 16 * 60 * 1_000);
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).resolves.toBe("quarantined");
+    currentTime = new Date(Date.parse(timestamp) + 17 * 60 * 1_000);
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).resolves.toBe("quarantined");
+
+    const quarantined = await env.DB.prepare(
+      `SELECT command_id, event_type, expires_at, occurred_at, outcome,
+              response_status
+       FROM operational_events WHERE job_id = ?1 ORDER BY id`,
+    )
+      .bind(eventIdHash)
+      .all<Record<string, unknown>>();
+    expect(quarantined.results).toEqual([
+      expect.objectContaining({
+        command_id: payloadHash,
+        event_type: "email.provider_event.pending",
+        occurred_at: timestamp,
+      }),
+      expect.objectContaining({
+        command_id: payloadHash,
+        event_type: "email.provider_event.quarantined",
+        occurred_at: "2026-08-09T22:16:00.000Z",
+        outcome: "accepted",
+        response_status: 200,
+      }),
+    ]);
+    expect(
+      Date.parse(String(quarantined.results[1]?.expires_at)) -
+        Date.parse(String(quarantined.results[1]?.occurred_at)),
+    ).toBe(30 * 24 * 60 * 60 * 1_000);
+    const providerEventCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM email_provider_events
+       WHERE provider_event_id = ?1`,
+    )
+      .bind(eventId)
+      .first<{ count: number }>();
+    expect(providerEventCount?.count).toBe(0);
+  });
+
+  it("applies a provider event when its message becomes durable during grace", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const eventId = "provider_event_persistence_race_01";
+    const event = deliveredProviderEvent("resend_persistence_race");
+    const payload = JSON.stringify(event);
+    let currentTime = new Date(timestamp);
+    const service = new EmailProviderEventService({
+      database: env.DB,
+      now: () => currentTime,
+    });
+
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).rejects.toBeInstanceOf(EmailProviderEventNotReadyError);
+    const message = await campaignMessage("provider_persistence_race");
+    const queue = createQueue();
+    await new CampaignEmailCoordinator({
+      config: allowlistConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      queue: queue.queue,
+    }).enqueue(message);
+    await new EmailQueueDeliveryService({
+      config: allowlistConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      provider: provider(
+        [
+          {
+            outcome: "sent",
+            providerMessageId: "resend_persistence_race",
+          },
+        ],
+        [],
+      ),
+    }).process(queue.sent[0]);
+
+    currentTime = new Date(Date.parse(timestamp) + 5 * 60 * 1_000);
+    const drifted = {
+      ...event,
+      type: "email.complained",
+    } satisfies WebhookEventPayload;
+    const driftedResponse = await postSignedWebhook(eventId, drifted);
+    expect(driftedResponse.status).toBe(503);
+    await expect(
+      messageState(env.DB, message.message_id),
+    ).resolves.toMatchObject({ status: "sent" });
+    const driftMutationCount = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM email_provider_events
+          WHERE provider_event_id = ?1) AS event_count,
+         (SELECT COUNT(*) FROM email_suppressions
+          WHERE source_provider_event_id = ?1) AS suppression_count`,
+    )
+      .bind(eventId)
+      .first<{ event_count: number; suppression_count: number }>();
+    expect(driftMutationCount).toEqual({
+      event_count: 0,
+      suppression_count: 0,
+    });
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).resolves.toBe("applied");
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).resolves.toBe("duplicate");
+    await expect(
+      service.apply({
+        event,
+        eventId,
+        rawPayload: JSON.stringify({ ...event, type: "email.sent" }),
+      }),
+    ).rejects.toBeInstanceOf(EmailProviderEventIdentityConflictError);
+    const quarantineCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM operational_events
+       WHERE job_id = ?1 AND event_type = 'email.provider_event.quarantined'`,
+    )
+      .bind(await sha256Hex(eventId))
+      .first<{ count: number }>();
+    expect(quarantineCount?.count).toBe(0);
+  });
+
+  it("applies instead of quarantining when the provider message wins the final race", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const message = await campaignMessage("provider_quarantine_race");
+    const queue = createQueue();
+    await new CampaignEmailCoordinator({
+      config: allowlistConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      queue: queue.queue,
+    }).enqueue(message);
+    await new EmailQueueDeliveryService({
+      config: allowlistConfig,
+      database: env.DB,
+      now: () => new Date(timestamp),
+      provider: provider(
+        [
+          {
+            outcome: "sent",
+            providerMessageId: "resend_quarantine_race",
+          },
+        ],
+        [],
+      ),
+    }).process(queue.sent[0]);
+    const eventId = "provider_event_quarantine_race_01";
+    const event = deliveredProviderEvent("resend_quarantine_race");
+    const payload = JSON.stringify(event);
+    const eventIdHash = await sha256Hex(eventId);
+    const payloadHash = await sha256Hex(payload);
+    await durableOperationalEventStatement(
+      env.DB,
+      {
+        command_id: payloadHash,
+        dedupe_key: `email:provider-event:pending:${eventIdHash}`,
+        error_type: "provider_event_not_ready",
+        event: "email.provider_event.pending",
+        job_id: eventIdHash,
+        outcome: "failure",
+      },
+      new Date(timestamp),
+    ).run();
+
+    let hideFirstMessageRead = true;
+    const database = {
+      batch: env.DB.batch.bind(env.DB),
+      prepare(query: string) {
+        if (
+          hideFirstMessageRead &&
+          query.includes("SELECT id, organization_id") &&
+          query.includes("FROM provider_messages")
+        ) {
+          hideFirstMessageRead = false;
+          const statement = {
+            bind: () => statement,
+            first: async () => null,
+          } as unknown as D1PreparedStatement;
+          return statement;
+        }
+        return env.DB.prepare(query);
+      },
+    } as unknown as D1Database;
+    const service = new EmailProviderEventService({
+      database,
+      now: () => new Date(Date.parse(timestamp) + 16 * 60 * 1_000),
+    });
+
+    await expect(
+      service.apply({ event, eventId, rawPayload: payload }),
+    ).resolves.toBe("applied");
+    expect(hideFirstMessageRead).toBe(false);
+    await expect(
+      messageState(env.DB, message.message_id),
+    ).resolves.toMatchObject({ status: "delivered" });
+    const quarantineCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM operational_events
+       WHERE job_id = ?1 AND event_type = 'email.provider_event.quarantined'`,
+    )
+      .bind(eventIdHash)
+      .first<{ count: number }>();
+    expect(quarantineCount?.count).toBe(0);
+  });
+
   it("dedupes events, preserves terminal order, and suppresses complaints", async () => {
     const env = await server.getWorker<Env>().getEnv();
     const message = await campaignMessage("webhook");
@@ -1220,5 +1540,83 @@ describe("Resend provider events", () => {
       method: "POST",
     });
     expect(rejected.status).toBe(400);
+  });
+
+  it("requests a retry for a signed event without a durable message", async () => {
+    const response = await postSignedWebhook(
+      "provider_route_foreign_01",
+      deliveredProviderEvent("resend_route_foreign", new Date().toISOString()),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.text()).resolves.toBe("Try again later.");
+  });
+
+  it("does not receipt malformed signed provider events", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const malformedEvents = [
+      {
+        created_at: "not-a-timestamp",
+        data: { email_id: "resend_malformed_timestamp" },
+        type: "email.delivered",
+      },
+      {
+        created_at: new Date().toISOString(),
+        data: { email_id: 42 },
+        type: "email.delivered",
+      },
+    ];
+
+    for (const [index, event] of malformedEvents.entries()) {
+      const eventId = `provider_route_malformed_0${index + 1}`;
+      const response = await postSignedWebhook(eventId, event);
+      expect(response.status).toBe(503);
+      const receiptCount = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM operational_events WHERE job_id = ?1",
+      )
+        .bind(await sha256Hex(eventId))
+        .first<{ count: number }>();
+      expect(receiptCount?.count).toBe(0);
+    }
+  });
+
+  it("acknowledges a signed foreign event after its durable grace expires", async () => {
+    const env = await server.getWorker<Env>().getEnv();
+    const eventId = "provider_route_quarantine_01";
+    const event = deliveredProviderEvent(
+      "resend_route_quarantine",
+      new Date().toISOString(),
+    );
+    const payload = JSON.stringify(event);
+    const eventIdHash = await sha256Hex(eventId);
+    const payloadHash = await sha256Hex(payload);
+    const firstSeen = new Date(Date.now() - 16 * 60 * 1_000);
+    await durableOperationalEventStatement(
+      env.DB,
+      {
+        command_id: payloadHash,
+        dedupe_key: `email:provider-event:pending:${eventIdHash}`,
+        error_type: "provider_event_not_ready",
+        event: "email.provider_event.pending",
+        job_id: eventIdHash,
+        method: "POST",
+        outcome: "failure",
+        route: "/api/webhooks/resend",
+        status: 503,
+      },
+      firstSeen,
+    ).run();
+    const accepted = await postSignedWebhook(eventId, event);
+    expect(accepted.status).toBe(200);
+    await expect(accepted.text()).resolves.toBe("OK");
+    const replayed = await postSignedWebhook(eventId, event);
+    expect(replayed.status).toBe(200);
+    const quarantineCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM operational_events
+       WHERE job_id = ?1 AND event_type = 'email.provider_event.quarantined'`,
+    )
+      .bind(eventIdHash)
+      .first<{ count: number }>();
+    expect(quarantineCount?.count).toBe(1);
   });
 });
