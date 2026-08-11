@@ -12,6 +12,7 @@ export * from "./reviews";
 export * from "./decisions";
 export * from "./readiness";
 export * from "./lifecycle";
+export * from "./privacy";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),
