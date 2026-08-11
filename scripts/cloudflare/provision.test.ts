@@ -1,12 +1,26 @@
+import { readFile } from "node:fs/promises";
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assessResources,
   applyAirtableBaseOverride,
   applyPreviewEmailRecipientOverride,
+  applyProductionEmailRecipientOverride,
   applyTurnstileSiteKeyOverride,
   assertEnvironmentIsolation,
+  assertPrivateEmailOverrideScope,
   assertProductionConfirmation,
+  createWranglerChildEnvironment,
   getCustomDomainUrls,
   getDeploymentSmokeUrls,
   getResourcePlan,
@@ -29,6 +43,38 @@ import {
 const configuredPreviewBaseId = ["app", "1234567890ABCD"].join("");
 const configuredProductionBaseId = ["app", "ZYXWVUTSRQPONM"].join("");
 const configuredTurnstileSiteKey = "0x4AAAAAAAAAAAAAAAAAAAAAA";
+const privateDeployLauncherMarker = "opensession-private-deploy-v1";
+
+interface PrivateDeploySpawnOptions {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  // The provisioner receives an inherited handshake descriptor only in the final step.
+  stdio: "inherit" | ["inherit", "inherit", "inherit", number];
+  shell: false;
+}
+
+interface PrivateDeployModule {
+  runPrivateDeploy: (
+    argv: string[],
+    options: {
+      environment: Record<string, string | undefined>;
+      spawn: (
+        command: string,
+        arguments_: string[],
+        options: PrivateDeploySpawnOptions,
+      ) => {
+        error?: Error;
+        signal: NodeJS.Signals | null;
+        status: number | null;
+      };
+    },
+  ) => { signal: NodeJS.Signals | null; status: number | null };
+}
+
+async function loadPrivateDeployModule(): Promise<PrivateDeployModule> {
+  const moduleUrl = new URL("./private-deploy.mjs", import.meta.url);
+  return (await import(moduleUrl.href)) as PrivateDeployModule;
+}
 
 const config = {
   $schema: "../../node_modules/wrangler/config-schema.json",
@@ -116,8 +162,17 @@ function isolatedConfig(): Parameters<typeof getResourcePlan>[0] {
   }
   const production = structuredClone(preview);
   production.name = "sessionbox-killer-prod";
+  production.workers_dev = false;
   if (production.vars) {
+    production.vars.APP_ENV = "production";
     production.vars.AIRTABLE_BASE_ID = configuredProductionBaseId;
+    const featureFlags = production.vars.FEATURE_FLAGS;
+    if (featureFlags && typeof featureFlags === "object") {
+      production.vars.FEATURE_FLAGS = {
+        ...featureFlags,
+        writes: false,
+      };
+    }
   }
   if (production.d1_databases?.[0]) {
     production.d1_databases[0].database_name = "sessionbox-killer-production";
@@ -326,6 +381,9 @@ describe("Cloudflare provisioner", () => {
       applyPreviewEmailRecipientOverride(createConfig(), undefined),
     ).toBeDefined();
     expect(() =>
+      applyPreviewEmailRecipientOverride(createConfig(), ""),
+    ).toThrow("exactly one valid email address");
+    expect(() =>
       applyPreviewEmailRecipientOverride(
         createConfig(),
         "one@example.test,two@example.test",
@@ -360,6 +418,342 @@ describe("Cloudflare provisioner", () => {
         "preview-judge@example.test",
       ),
     ).toThrow("feature-off, empty-allowlist baseline");
+
+    const wrongReplyTo = createConfig();
+    const replyDelivery =
+      wrongReplyTo.env?.preview?.vars?.EMAIL_DELIVERY_CONFIG;
+    if (!replyDelivery || typeof replyDelivery !== "object") {
+      throw new Error("Expected preview delivery configuration.");
+    }
+    (replyDelivery as Record<string, unknown>).authReplyTo =
+      "unmonitored@example.test";
+    expect(() =>
+      applyPreviewEmailRecipientOverride(
+        wrongReplyTo,
+        "preview-judge@example.test",
+      ),
+    ).toThrow("verified sender, monitored reply-to");
+  });
+
+  it("injects a bounded private production allowlist without changing preview", () => {
+    const publicConfig = isolatedConfig();
+    const preview = publicConfig.env?.preview;
+    const production = publicConfig.env?.production;
+    if (!preview?.vars || !production?.vars) {
+      throw new Error("Expected both remote environments.");
+    }
+    preview.vars.EMAIL_DELIVERY_CONFIG = {
+      mode: "allowlist",
+      allowlist: [],
+      authFrom: "OpenSession <auth@updates.opensessionboard.com>",
+      authReplyTo: "hello@opensessionboard.com",
+    };
+    production.vars.EMAIL_DELIVERY_CONFIG = structuredClone(
+      preview.vars.EMAIL_DELIVERY_CONFIG,
+    );
+    const previewBefore = structuredClone(preview.vars);
+
+    const configured = applyProductionEmailRecipientOverride(
+      publicConfig,
+      " Owner@Example.Test, reviewer@example.test ",
+    );
+    const rendered = renderDeploymentConfig(configured, "production", {
+      d1: { id: "production-db-id" },
+    });
+
+    expect(rendered.vars).toMatchObject({
+      APP_ENV: "production",
+      EMAIL_DELIVERY_CONFIG: {
+        allowlist: ["owner@example.test", "reviewer@example.test"],
+        mode: "allowlist",
+      },
+      FEATURE_FLAGS: { email: true, writes: false },
+    });
+    expect(configured.env?.preview?.vars).toEqual(previewBefore);
+  });
+
+  it("fails closed for unsafe production recipient sets and baseline drift", () => {
+    const createConfig = () => {
+      const candidate = isolatedConfig();
+      const production = candidate.env?.production;
+      if (!production?.vars) {
+        throw new Error("Expected production variables.");
+      }
+      production.vars.EMAIL_DELIVERY_CONFIG = {
+        mode: "allowlist",
+        allowlist: [],
+        authFrom: "OpenSession <auth@updates.opensessionboard.com>",
+        authReplyTo: "hello@opensessionboard.com",
+      };
+      return candidate;
+    };
+
+    expect(
+      applyProductionEmailRecipientOverride(createConfig(), undefined),
+    ).toBeDefined();
+    for (const unsafe of [
+      "",
+      "owner@example.test,",
+      "owner@example.test,OWNER@example.test",
+      "not-an-address",
+      Array.from(
+        { length: 7 },
+        (_, index) => `recipient-${index}@example.test`,
+      ).join(","),
+    ]) {
+      expect(() =>
+        applyProductionEmailRecipientOverride(createConfig(), unsafe),
+      ).toThrow("between one and 6 unique valid email addresses");
+    }
+
+    const wrongSender = createConfig();
+    const delivery = wrongSender.env?.production?.vars?.EMAIL_DELIVERY_CONFIG;
+    if (!delivery || typeof delivery !== "object") {
+      throw new Error("Expected production delivery configuration.");
+    }
+    (delivery as Record<string, unknown>).authFrom =
+      "OpenSession <auth@example.test>";
+    expect(() =>
+      applyProductionEmailRecipientOverride(wrongSender, "owner@example.test"),
+    ).toThrow("verified sender, monitored reply-to");
+
+    const wrongReplyTo = createConfig();
+    const replyDelivery =
+      wrongReplyTo.env?.production?.vars?.EMAIL_DELIVERY_CONFIG;
+    if (!replyDelivery || typeof replyDelivery !== "object") {
+      throw new Error("Expected production delivery configuration.");
+    }
+    (replyDelivery as Record<string, unknown>).authReplyTo =
+      "unmonitored@example.test";
+    expect(() =>
+      applyProductionEmailRecipientOverride(wrongReplyTo, "owner@example.test"),
+    ).toThrow("verified sender, monitored reply-to");
+
+    const wrongEnvironment = createConfig();
+    const wrongEnvironmentVars = wrongEnvironment.env?.production?.vars;
+    if (!wrongEnvironmentVars) {
+      throw new Error("Expected production variables.");
+    }
+    wrongEnvironmentVars.APP_ENV = "preview";
+    expect(() =>
+      applyProductionEmailRecipientOverride(
+        wrongEnvironment,
+        "owner@example.test",
+      ),
+    ).toThrow("feature-off, empty-allowlist baseline");
+
+    const writableProduction = createConfig();
+    const writableFlags =
+      writableProduction.env?.production?.vars?.FEATURE_FLAGS;
+    if (!writableFlags || typeof writableFlags !== "object") {
+      throw new Error("Expected production feature flags.");
+    }
+    (writableFlags as Record<string, unknown>).writes = true;
+    expect(() =>
+      applyProductionEmailRecipientOverride(
+        writableProduction,
+        "owner@example.test",
+      ),
+    ).toThrow("feature-off, empty-allowlist baseline");
+  });
+
+  it("accepts production recipients only for a doubly confirmed production deploy", () => {
+    const handshakeDirectory = mkdtempSync(join(tmpdir(), "opensession-test-"));
+    const handshakePath = join(handshakeDirectory, "handshake");
+    writeFileSync(handshakePath, privateDeployLauncherMarker);
+    const handshakeFd = openSync(handshakePath, "r");
+    const inputs = {
+      previewRecipient: undefined,
+      productionRecipients: "owner@example.test",
+      privateDeployLauncher: privateDeployLauncherMarker,
+      privateDeployLauncherPid: String(process.ppid),
+      privateDeployHandshakeFd: String(handshakeFd),
+    };
+
+    expect(() =>
+      assertPrivateEmailOverrideScope(
+        {
+          command: "deploy",
+          confirmProduction: true,
+          environment: "production",
+        },
+        inputs,
+        "production",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertPrivateEmailOverrideScope(
+        {
+          command: "plan",
+          confirmProduction: true,
+          environment: "production",
+        },
+        inputs,
+        "production",
+      ),
+    ).toThrow("accepted only by the production deploy command");
+    expect(() =>
+      assertPrivateEmailOverrideScope(
+        {
+          command: "deploy",
+          confirmProduction: false,
+          environment: "production",
+        },
+        inputs,
+        "production",
+      ),
+    ).toThrow("Production requires");
+
+    expect(() =>
+      assertPrivateEmailOverrideScope(
+        {
+          command: "deploy",
+          confirmProduction: true,
+          environment: "production",
+        },
+        { ...inputs, privateDeployLauncher: undefined },
+        "production",
+      ),
+    ).toThrow("requires scripts/cloudflare/private-deploy.mjs");
+
+    expect(() =>
+      assertPrivateEmailOverrideScope(
+        {
+          command: "deploy",
+          confirmProduction: true,
+          environment: "production",
+        },
+        { ...inputs, privateDeployLauncherPid: "1" },
+        "production",
+      ),
+    ).toThrow("requires scripts/cloudflare/private-deploy.mjs");
+
+    closeSync(handshakeFd);
+    rmSync(handshakeDirectory, { recursive: true, force: true });
+  });
+
+  it("keeps private recipients out of both build children", async () => {
+    const { runPrivateDeploy } = await loadPrivateDeployModule();
+    const previewSentinel = "preview-sentinel@example.test";
+    const productionSentinel = "production-sentinel@example.test";
+    const calls: {
+      arguments: string[];
+      command: string;
+      options: PrivateDeploySpawnOptions;
+    }[] = [];
+    const environment = {
+      CLOUDFLARE_PRODUCTION_CONFIRM: "production",
+      EMAIL_PREVIEW_RECIPIENT: previewSentinel,
+      EMAIL_PRODUCTION_RECIPIENTS: productionSentinel,
+      PATH: process.env.PATH,
+    };
+
+    const result = runPrivateDeploy(
+      [
+        "--build-web",
+        "deploy",
+        "--environment",
+        "production",
+        "--confirm-production",
+      ],
+      {
+        environment,
+        spawn: (command, arguments_, options) => {
+          calls.push({ arguments: arguments_, command, options });
+          return { signal: null, status: 0 };
+        },
+      },
+    );
+
+    expect(result).toEqual({ signal: null, status: 0 });
+    expect(calls).toHaveLength(3);
+    expect(
+      calls.slice(0, 2).map(({ arguments: arguments_ }) => arguments_),
+    ).toEqual([["build:web"], ["cloudflare:build"]]);
+    for (const call of calls.slice(0, 2)) {
+      expect(call.command).toBe("pnpm");
+      expect(call.options.shell).toBe(false);
+      expect(call.options.env).not.toHaveProperty("EMAIL_PREVIEW_RECIPIENT");
+      expect(call.options.env).not.toHaveProperty(
+        "EMAIL_PRODUCTION_RECIPIENTS",
+      );
+    }
+
+    const provisioner = calls[2];
+    expect(provisioner?.command).toBe(process.execPath);
+    expect(provisioner?.arguments.slice(-4)).toEqual([
+      "deploy",
+      "--environment",
+      "production",
+      "--confirm-production",
+    ]);
+    expect(provisioner?.arguments.join(" ")).not.toContain(previewSentinel);
+    expect(provisioner?.arguments.join(" ")).not.toContain(productionSentinel);
+    expect(provisioner?.options.env).toMatchObject({
+      EMAIL_PREVIEW_RECIPIENT: previewSentinel,
+      EMAIL_PRODUCTION_RECIPIENTS: productionSentinel,
+      OPENSESSION_PRIVATE_DEPLOY_LAUNCHER: privateDeployLauncherMarker,
+      OPENSESSION_PRIVATE_DEPLOY_LAUNCHER_PID: String(process.pid),
+      OPENSESSION_PRIVATE_DEPLOY_HANDSHAKE_FD: "3",
+    });
+  });
+
+  it("fails closed before provision on invalid input or build failure", async () => {
+    const { runPrivateDeploy } = await loadPrivateDeployModule();
+    const sentinel = "private-sentinel@example.test";
+    let spawnCalls = 0;
+    const spawn = () => {
+      spawnCalls += 1;
+      return { signal: null, status: 0 };
+    };
+
+    let invalidArgumentError: unknown;
+    try {
+      runPrivateDeploy([sentinel], {
+        environment: { EMAIL_PRODUCTION_RECIPIENTS: sentinel },
+        spawn,
+      });
+    } catch (error) {
+      invalidArgumentError = error;
+    }
+    expect(invalidArgumentError).toEqual(expect.any(Error));
+    expect((invalidArgumentError as Error).message).toBe(
+      "Private deploy requires a supported provision command.",
+    );
+    expect((invalidArgumentError as Error).message).not.toContain(sentinel);
+    expect(spawnCalls).toBe(0);
+
+    const failed = runPrivateDeploy(["deploy", "--environment", "production"], {
+      environment: { EMAIL_PRODUCTION_RECIPIENTS: sentinel },
+      spawn: () => {
+        spawnCalls += 1;
+        return { signal: null, status: 2 };
+      },
+    });
+    expect(failed).toEqual({ signal: null, status: 2 });
+    expect(spawnCalls).toBe(1);
+
+    const signaled = runPrivateDeploy(
+      ["deploy", "--environment", "production"],
+      {
+        environment: { EMAIL_PRODUCTION_RECIPIENTS: sentinel },
+        spawn: () => ({ signal: "SIGTERM", status: null }),
+      },
+    );
+    expect(signaled).toEqual({ signal: "SIGTERM", status: null });
+  });
+
+  it("routes legacy provision commands through the private launcher", async () => {
+    const packageJson = JSON.parse(
+      await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { scripts?: Record<string, string> };
+
+    expect(packageJson.scripts?.["cloudflare:run"]).toBe(
+      "node scripts/cloudflare/private-deploy.mjs",
+    );
+    expect(packageJson.scripts?.["cloudflare:deploy:preview"]).toBe(
+      "node scripts/cloudflare/private-deploy.mjs --build-web deploy --environment preview",
+    );
   });
 
   it("redacts private preview email bindings from Wrangler output", () => {
@@ -381,6 +775,37 @@ describe("Cloudflare provisioner", () => {
         "preview-judge@example.test",
       ),
     ).toBe("Deployment rejected for [redacted-preview-recipient]");
+  });
+
+  it("redacts every production recipient and removes private child inputs", () => {
+    const recipients = "Owner@Example.Test,reviewer@example.test";
+    const output = [
+      "Rejected Owner@Example.Test",
+      "Rejected owner@example.test",
+      "Rejected reviewer@example.test",
+      'env.EMAIL_DELIVERY_CONFIG ({"allowlist":["owner@example.test"]})',
+    ].join("\n");
+
+    expect(sanitizeWranglerOutput(output, undefined, recipients)).toBe(
+      [
+        "Rejected [redacted-production-recipient]",
+        "Rejected [redacted-production-recipient]",
+        "Rejected [redacted-production-recipient]",
+      ].join("\n"),
+    );
+    expect(
+      createWranglerChildEnvironment({
+        CLOUDFLARE_API_TOKEN: "preserved",
+        EMAIL_PREVIEW_RECIPIENT: "preview@example.test",
+        EMAIL_PRODUCTION_RECIPIENTS: recipients,
+        OPENSESSION_PRIVATE_DEPLOY_LAUNCHER: privateDeployLauncherMarker,
+        OPENSESSION_PRIVATE_DEPLOY_LAUNCHER_PID: "1234",
+        WRANGLER_WRITE_LOGS: "true",
+      }),
+    ).toEqual({
+      CLOUDFLARE_API_TOKEN: "preserved",
+      WRANGLER_WRITE_LOGS: "false",
+    });
   });
 
   it("rejects matching Airtable overrides before either remote plan", () => {

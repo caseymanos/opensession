@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readSync } from "node:fs";
 import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -150,8 +151,12 @@ const turnstileTestSiteKeys = new Set([
   "2x00000000000000000000BB",
   "3x00000000000000000000FF",
 ]);
-const previewRecipientPattern =
+const emailRecipientPattern =
   /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
+const verifiedEmailSender = "OpenSession <auth@updates.opensessionboard.com>";
+const monitoredEmailReplyTo = "hello@opensessionboard.com";
+const maximumProductionRecipients = 6;
+const privateDeployLauncherMarker = "opensession-private-deploy-v1";
 const ansiEscapePattern = new RegExp(
   `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
   "g",
@@ -164,21 +169,46 @@ export function stripAnsi(value: string): string {
 export function sanitizeWranglerOutput(
   value: string,
   previewRecipient: string | undefined = process.env.EMAIL_PREVIEW_RECIPIENT,
+  productionRecipients: string | undefined = process.env
+    .EMAIL_PRODUCTION_RECIPIENTS,
 ): string {
-  const normalizedRecipient = previewRecipient?.trim();
-  const recipientVariants = normalizedRecipient
-    ? new Set([normalizedRecipient, normalizedRecipient.toLowerCase()])
-    : new Set<string>();
   let redacted = stripAnsi(value);
 
-  for (const recipient of recipientVariants) {
-    redacted = redacted.replaceAll(recipient, "[redacted-preview-recipient]");
+  for (const [input, replacement] of [
+    [previewRecipient, "[redacted-preview-recipient]"],
+    [productionRecipients, "[redacted-production-recipient]"],
+  ] as const) {
+    const recipientVariants = new Set(
+      [input?.trim(), ...(input?.split(",") ?? [])]
+        .flatMap((candidate) => {
+          const trimmed = candidate?.trim();
+          return trimmed ? [trimmed, trimmed.toLowerCase()] : [];
+        })
+        .sort((left, right) => right.length - left.length),
+    );
+
+    for (const recipient of recipientVariants) {
+      redacted = redacted.replaceAll(recipient, replacement);
+    }
   }
 
   return redacted
     .split("\n")
     .filter((line) => !line.includes("EMAIL_DELIVERY_CONFIG"))
     .join("\n");
+}
+
+export function createWranglerChildEnvironment(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const childEnvironment = { ...source };
+  delete childEnvironment.EMAIL_PREVIEW_RECIPIENT;
+  delete childEnvironment.EMAIL_PRODUCTION_RECIPIENTS;
+  delete childEnvironment.OPENSESSION_PRIVATE_DEPLOY_LAUNCHER;
+  delete childEnvironment.OPENSESSION_PRIVATE_DEPLOY_LAUNCHER_PID;
+  delete childEnvironment.OPENSESSION_PRIVATE_DEPLOY_HANDSHAKE_FD;
+  childEnvironment.WRANGLER_WRITE_LOGS = "false";
+  return childEnvironment;
 }
 
 export function parseD1List(value: string): Map<string, ResourceDetails> {
@@ -616,8 +646,7 @@ function runWrangler(
   arguments_: string[],
   { print = false }: { print?: boolean } = {},
 ): WranglerResult {
-  const childEnvironment = { ...process.env };
-  delete childEnvironment.EMAIL_PREVIEW_RECIPIENT;
+  const childEnvironment = createWranglerChildEnvironment();
   const result = spawnSync(wranglerPath, arguments_, {
     cwd: rootDirectory,
     encoding: "utf8",
@@ -696,7 +725,7 @@ export function applyPreviewEmailRecipientOverride(
   config: WranglerConfig,
   recipient: string | undefined,
 ): WranglerConfig {
-  if (!recipient) {
+  if (recipient === undefined) {
     return config;
   }
 
@@ -704,16 +733,58 @@ export function applyPreviewEmailRecipientOverride(
   if (
     normalizedRecipient.length > 254 ||
     normalizedRecipient.includes(",") ||
-    !previewRecipientPattern.test(normalizedRecipient)
+    !emailRecipientPattern.test(normalizedRecipient)
   ) {
     throw new Error(
       "EMAIL_PREVIEW_RECIPIENT must be exactly one valid email address.",
     );
   }
 
-  const target = config.env?.preview;
+  return applyEmailRecipientOverride(config, "preview", [normalizedRecipient]);
+}
+
+export function applyProductionEmailRecipientOverride(
+  config: WranglerConfig,
+  recipients: string | undefined,
+): WranglerConfig {
+  if (recipients === undefined) {
+    return config;
+  }
+
+  const normalizedRecipients = recipients
+    .split(",")
+    .map((recipient) => recipient.trim().toLowerCase());
+  if (
+    normalizedRecipients.length === 0 ||
+    normalizedRecipients.length > maximumProductionRecipients ||
+    normalizedRecipients.some(
+      (recipient) =>
+        recipient.length === 0 ||
+        recipient.length > 254 ||
+        !emailRecipientPattern.test(recipient),
+    ) ||
+    new Set(normalizedRecipients).size !== normalizedRecipients.length
+  ) {
+    throw new Error(
+      `EMAIL_PRODUCTION_RECIPIENTS must contain between one and ${maximumProductionRecipients} unique valid email addresses.`,
+    );
+  }
+
+  return applyEmailRecipientOverride(
+    config,
+    "production",
+    normalizedRecipients,
+  );
+}
+
+function applyEmailRecipientOverride(
+  config: WranglerConfig,
+  environment: EnvironmentName,
+  recipients: string[],
+): WranglerConfig {
+  const target = config.env?.[environment];
   if (!target) {
-    throw new Error("Missing Wrangler environment: preview.");
+    throw new Error(`Missing Wrangler environment: ${environment}.`);
   }
 
   const deliveryConfig = target.vars?.EMAIL_DELIVERY_CONFIG;
@@ -723,13 +794,15 @@ export function applyPreviewEmailRecipientOverride(
     deliveryConfig.mode !== "allowlist" ||
     !Array.isArray(deliveryConfig.allowlist) ||
     deliveryConfig.allowlist.length !== 0 ||
-    deliveryConfig.authFrom !==
-      "OpenSession <auth@updates.opensessionboard.com>" ||
+    deliveryConfig.authFrom !== verifiedEmailSender ||
+    deliveryConfig.authReplyTo !== monitoredEmailReplyTo ||
+    target.vars?.APP_ENV !== environment ||
     !isRecord(featureFlags) ||
-    featureFlags.email !== false
+    featureFlags.email !== false ||
+    (environment === "production" && featureFlags.writes !== false)
   ) {
     throw new Error(
-      "Preview email injection requires the verified sender and committed feature-off, empty-allowlist baseline.",
+      `${environment === "preview" ? "Preview" : "Production"} email injection requires the verified sender, monitored reply-to, and committed feature-off, empty-allowlist baseline.`,
     );
   }
 
@@ -737,7 +810,7 @@ export function applyPreviewEmailRecipientOverride(
     ...target.vars,
     EMAIL_DELIVERY_CONFIG: {
       ...deliveryConfig,
-      allowlist: [normalizedRecipient],
+      allowlist: recipients,
     },
     FEATURE_FLAGS: {
       ...featureFlags,
@@ -745,6 +818,71 @@ export function applyPreviewEmailRecipientOverride(
     },
   };
   return config;
+}
+
+export function assertPrivateEmailOverrideScope(
+  options: Pick<CliOptions, "command" | "confirmProduction" | "environment">,
+  inputs: {
+    previewRecipient: string | undefined;
+    productionRecipients: string | undefined;
+    privateDeployLauncher: string | undefined;
+    privateDeployLauncherPid: string | undefined;
+    privateDeployHandshakeFd: string | undefined;
+  },
+  productionConfirmation: string | null | undefined = process.env
+    .CLOUDFLARE_PRODUCTION_CONFIRM,
+): void {
+  if (
+    (inputs.previewRecipient !== undefined ||
+      inputs.productionRecipients !== undefined) &&
+    (inputs.privateDeployLauncher !== privateDeployLauncherMarker ||
+      inputs.privateDeployLauncherPid !== String(process.ppid) ||
+      !hasPrivateDeployHandshake(inputs.privateDeployHandshakeFd))
+  ) {
+    throw new Error(
+      "Private recipient input requires scripts/cloudflare/private-deploy.mjs.",
+    );
+  }
+
+  if (
+    inputs.previewRecipient !== undefined &&
+    !(options.command === "deploy" && options.environment === "preview")
+  ) {
+    throw new Error(
+      "EMAIL_PREVIEW_RECIPIENT is accepted only by the preview deploy command.",
+    );
+  }
+
+  if (inputs.productionRecipients === undefined) {
+    return;
+  }
+
+  if (!(options.command === "deploy" && options.environment === "production")) {
+    throw new Error(
+      "EMAIL_PRODUCTION_RECIPIENTS is accepted only by the production deploy command.",
+    );
+  }
+
+  assertProductionConfirmation(
+    options.environment,
+    options,
+    productionConfirmation,
+  );
+}
+
+function hasPrivateDeployHandshake(fdValue: string | undefined): boolean {
+  if (!fdValue || !/^\d+$/.test(fdValue)) return false;
+  const fd = Number(fdValue);
+  const buffer = Buffer.alloc(privateDeployLauncherMarker.length);
+  try {
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    return (
+      bytesRead === buffer.length &&
+      buffer.toString("utf8") === privateDeployLauncherMarker
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function readSourceConfig(): Promise<WranglerConfig> {
@@ -1445,17 +1583,22 @@ function parseInventory(
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
   const previewRecipient = process.env.EMAIL_PREVIEW_RECIPIENT;
-  if (
-    previewRecipient &&
-    !(options.command === "deploy" && options.environment === "preview")
-  ) {
-    throw new Error(
-      "EMAIL_PREVIEW_RECIPIENT is accepted only by the preview deploy command.",
-    );
-  }
-  const config = applyPreviewEmailRecipientOverride(
-    await readSourceConfig(),
+  const productionRecipients = process.env.EMAIL_PRODUCTION_RECIPIENTS;
+  assertPrivateEmailOverrideScope(options, {
     previewRecipient,
+    productionRecipients,
+    privateDeployLauncher: process.env.OPENSESSION_PRIVATE_DEPLOY_LAUNCHER,
+    privateDeployLauncherPid:
+      process.env.OPENSESSION_PRIVATE_DEPLOY_LAUNCHER_PID,
+    privateDeployHandshakeFd:
+      process.env.OPENSESSION_PRIVATE_DEPLOY_HANDSHAKE_FD,
+  });
+  const config = applyProductionEmailRecipientOverride(
+    applyPreviewEmailRecipientOverride(
+      await readSourceConfig(),
+      previewRecipient,
+    ),
+    productionRecipients,
   );
   const plan = getResourcePlan(config, options.environment);
 
