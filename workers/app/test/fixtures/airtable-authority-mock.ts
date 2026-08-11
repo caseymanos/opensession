@@ -18,6 +18,7 @@ interface MockState {
   delayNextWrite: boolean;
   hideAfterNextWrite: boolean;
   hideRecords: boolean;
+  hideRecordsAfterAmbiguousWrite: boolean;
   mutationCount: number;
   readbackCount: number;
   records: Record<string, FixtureAirtableRecord>;
@@ -44,6 +45,7 @@ function initialState(): MockState {
     delayNextWrite: false,
     hideAfterNextWrite: false,
     hideRecords: false,
+    hideRecordsAfterAmbiguousWrite: false,
     mutationCount: 0,
     readbackCount: 0,
     records: {},
@@ -170,6 +172,13 @@ export class FixtureAirtableState extends DurableObject<StateEnvironment> {
       const state = this.readState();
       state.ambiguousNextWrite = true;
       state.hideAfterNextWrite = true;
+      this.writeState(state);
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/test/ambiguous-invisible-next") {
+      const state = this.readState();
+      state.ambiguousNextWrite = true;
+      state.hideRecordsAfterAmbiguousWrite = true;
       this.writeState(state);
       return new Response(null, { status: 204 });
     }
@@ -323,6 +332,8 @@ export class FixtureAirtableState extends DurableObject<StateEnvironment> {
     if (ambiguous) {
       state.delayNextReadback = state.delayAmbiguousReadback;
       state.delayAmbiguousReadback = false;
+      if (state.hideRecordsAfterAmbiguousWrite) state.hideRecords = true;
+      state.hideRecordsAfterAmbiguousWrite = false;
     }
     if (state.hideAfterNextWrite) {
       state.hideAfterNextWrite = false;

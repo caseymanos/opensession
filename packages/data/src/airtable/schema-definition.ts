@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 4;
+export const AIRTABLE_SCHEMA_VERSION = 5;
 
 export type AirtableTableKey =
   | "organizations"
@@ -11,6 +11,7 @@ export type AirtableTableKey =
   | "submissions"
   | "submission_answers"
   | "submission_participants"
+  | "submission_notes"
   | "rubrics"
   | "criteria"
   | "reviews"
@@ -343,6 +344,7 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       text("Default reviewer group ID"),
       dateTime("Submitted at"),
       longText("Decision note"),
+      dateTime("Organizer activity at"),
     ]),
     table("submission_answers", "Submission Answers", [
       link("Submission", "submissions"),
@@ -358,6 +360,12 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       text("Role"),
       number("Order"),
       checkbox("Is primary"),
+    ]),
+    table("submission_notes", "Submission Notes", [
+      link("Submission", "submissions"),
+      longText("Body"),
+      text("Actor ID"),
+      text("Actor display name"),
     ]),
     table("rubrics", "Rubrics", [
       link("Event", "events"),

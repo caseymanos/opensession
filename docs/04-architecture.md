@@ -103,6 +103,10 @@ Multi-record CFP draft and final writes first reserve a server-derived submissio
 
 The compiled parent plan then runs inside the same base authority object. The object validates the four allowed table shapes, persists the complete request hash and ordered child ledger before provider I/O, and derives every child command ID from that hash. Links to newly created contacts and submissions are materialized only from earlier durable child results. An interruption can therefore resume the stored plan after object eviction without recompiling against a newer projection or issuing a second Airtable mutation, and the submission receipt is recorded only after every child projection is durable. Reusing a plan ID with different semantic content, supplying an unsupported field, or omitting final routing fails closed before a provider write.
 
+Organizer submission reads are a separate authenticated projection surface. Every list, detail, and command request resolves the canonical event, reauthorizes `event:manage`, and scopes every D1 statement by organization and event. Lists use bounded, filter-bound keyset cursors over `(organization_id, event_id, updated_at, id)` indexes. Detail responses retain the submitted form version and answer label/type/order snapshot, redact file answers, omit provider IDs and object keys, and report projection freshness or pending repair explicitly.
+
+Lifecycle changes and notes use one versioned command envelope. A D1 receipt durably freezes stable BaseAuthority subcommands before provider I/O. Lifecycle changes update the authoritative submission; notes first version-touch that submission and then create a linked authoritative note. Exact retries resume the same subcommands after eviction or an unknown outcome, while changed command reuse, stale versions, illegal transitions, permission failures, and cross-event targets fail closed. BaseAuthority remains the only Airtable writer and supplies the projection, audit, outbox, and repair behavior.
+
 ## Background execution
 
 ### Cloudflare Workflows

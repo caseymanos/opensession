@@ -107,6 +107,7 @@ export async function loadEventAccess(
   user: { email: string; id: string },
   organizationId: string,
   eventId: string,
+  options: { requireAuthorityReady?: boolean } = {},
 ): Promise<EventAccess> {
   const row = await database
     .prepare(
@@ -151,13 +152,19 @@ export async function loadEventAccess(
       JOIN tenant_registry tenant_scope
         ON tenant_scope.organization_id = event_scope.organization_id
        AND tenant_scope.status = 'active'
-       AND tenant_scope.authority_ready_at IS NOT NULL
+       AND (?5 = 0 OR tenant_scope.authority_ready_at IS NOT NULL)
       WHERE event_scope.organization_id = ?1
         AND event_scope.id = ?2
         AND event_scope.source_deleted_at IS NULL
       LIMIT 1`,
     )
-    .bind(organizationId, eventId, user.id, user.email)
+    .bind(
+      organizationId,
+      eventId,
+      user.id,
+      user.email,
+      options.requireAuthorityReady === false ? 0 : 1,
+    )
     .first<EventAccessRow>();
 
   const organizationRoleCandidate = row?.organization_role ?? null;

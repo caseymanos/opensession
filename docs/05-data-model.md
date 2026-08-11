@@ -90,6 +90,12 @@ Criteria: `ID, Rubric, Label, Guidance, Min, Max, Weight, Order`
 Review: `ID, Submission, Reviewer membership, Status, Conflict flag/note, Submitted at`  
 Score: `ID, Review, Criterion, Numeric score, Comment`
 
+### Submission Notes
+
+`ID, Submission, Body, Actor ID, Actor display name, Created at`
+
+Organizer notes remain Airtable-authoritative. D1 projects them for the workspace; command receipts contain only the bounded authority operations while a command is incomplete and the typed response after completion.
+
 ### Sessions
 
 `ID, Event, Source submission, Friendly ID, Title, Abstract, Status, Track, Format, Expected attendance, Duration, Public flag, External mapping JSON, Updated at`
@@ -156,6 +162,7 @@ Token tables store hashes, prefix, expiry/use/revoke timestamps, never plaintext
 
 - `idempotency_keys`
 - `cfp_submission_reservations`
+- `organizer_submission_command_receipts`
 - `outbox_events`
 - `workflow_runs`
 - `provider_messages`
@@ -173,7 +180,7 @@ Normalized tables mirror only query-critical fields:
 - `p_events`
 - `p_forms`, `p_form_fields`, `p_form_rules`
 - `p_contacts`, `p_event_contacts`
-- `p_submissions`, `p_submission_participants`
+- `p_submissions`, `p_submission_answers`, `p_submission_participants`, `p_submission_notes`
 - `p_reviews`, `p_review_scores`
 - `p_sessions`, `p_session_participants`
 - `p_rooms`, `p_tracks`, `p_schedule_slots`
@@ -188,7 +195,7 @@ Every projection row has `source_record_id`, `source_version`, `projected_at`.
 
 - contacts: `(organization_id, email_normalized)` unique.
 - event membership: `(event_id, contact_id)` unique.
-- submissions: `(event_id, status, submitted_at)`, `(event_id, track_id, status)`.
+- submissions: `(organization_id, event_id, updated_at, id)`, plus status and track-prefixed variants for deterministic organizer keyset pagination.
 - reviewer queue: `(reviewer_id, status, updated_at)`.
 - sessions: `(event_id, status)`, `(event_id, track_id)`.
 - schedule: `(event_id, start_at, end_at)`, `(event_id, room_id, start_at)`.
