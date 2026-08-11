@@ -48,6 +48,7 @@ import {
   registerPublicApiRoutes,
 } from "./public-api/routes.js";
 import { registerTaskRoutes } from "./tasks/routes.js";
+import { registerPrivacyRoutes } from "./privacy/routes.js";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
 import { validTurnstileConfiguration } from "./security/turnstile";
@@ -219,6 +220,7 @@ app.get("/api/v1", (context) => {
 });
 
 registerPublicCfpRoutes(app);
+registerPrivacyRoutes(app);
 
 app.get("/api/v1/public/security/turnstile", (context) => {
   if (
