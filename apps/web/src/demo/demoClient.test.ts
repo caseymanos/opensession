@@ -64,6 +64,7 @@ describe("demo reset client", () => {
             code: "not_privileged",
             message: "Demo reset requires an organization owner.",
           },
+          request_id: "req_demo_reset_denied",
         },
         { status: 403 },
       ),
@@ -80,6 +81,7 @@ describe("demo reset client", () => {
         "not_privileged",
         "Demo reset requires an organization owner.",
         403,
+        "req_demo_reset_denied",
       ),
     );
   });
