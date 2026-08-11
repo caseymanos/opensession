@@ -36,7 +36,7 @@ test("agenda route exposes searchable rail and room grid", async ({ page }) => {
   expect(results.violations).toEqual([]);
 });
 
-test("keyboard schedule form places a session with equivalent details", async ({
+test("@judge @judge-a11y keyboard schedule form places a session with equivalent details", async ({
   page,
 }) => {
   await page.goto(agendaPath);

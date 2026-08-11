@@ -184,7 +184,7 @@ test("production agenda URLs ignore fixture query controls", async ({
   ).toHaveCount(0);
 });
 
-test("production publish commits the exact preview and public version", async ({
+test("@judge @judge-e2e-04 production publish commits the exact preview and public version", async ({
   page,
 }) => {
   await mockAgendaApi(page, { ready: true });

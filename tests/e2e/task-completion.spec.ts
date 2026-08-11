@@ -250,7 +250,7 @@ test("failed processing recovery is fixture-only and does not require reupload",
   ).toBeVisible({ timeout: 2_500 });
 });
 
-test("organizer approval updates readiness and audit state without a reload", async ({
+test("@judge @judge-e2e-03 organizer approval updates readiness and audit state without a reload", async ({
   page,
 }) => {
   await page.goto(organizerTaskPath);

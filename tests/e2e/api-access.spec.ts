@@ -108,7 +108,7 @@ async function installApiFixture(page: Page) {
   );
 }
 
-test("organizer creates a scoped key and sees its plaintext exactly once", async ({
+test("@judge @judge-e2e-06 organizer creates a scoped key and sees its plaintext exactly once", async ({
   page,
 }) => {
   await installApiFixture(page);

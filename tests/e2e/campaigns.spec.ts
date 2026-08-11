@@ -44,7 +44,7 @@ test("organizer confirms the exact audience snapshot before queueing", async ({
   await expect(page.locator(".campaign-card")).toHaveCount(2);
 });
 
-test("redacted delivery evidence replays one failure without exposing recipients", async ({
+test("@judge @judge-e2e-05 redacted delivery evidence replays one failure without exposing recipients", async ({
   page,
 }) => {
   await page.goto(fixturePath);

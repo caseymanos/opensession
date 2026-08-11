@@ -391,7 +391,7 @@ test("anonymous welcome explains the event, deadline, tracks, limit, and support
   expect(results.violations).toEqual([]);
 });
 
-test("verified applicant completes participants, review, consent, and one final submission", async ({
+test("@judge @judge-e2e-01 verified applicant completes participants, review, consent, and one final submission", async ({
   page,
 }) => {
   await clearApplication(page);
@@ -507,7 +507,7 @@ test("participant limits and duplicate emails fail inline before secure sync", a
   ).toBeDisabled();
 });
 
-test("Workshop conditions announce, require, and clear hidden answers", async ({
+test("@judge @judge-a11y Workshop conditions announce, require, and clear hidden answers", async ({
   page,
 }) => {
   await clearApplication(page);
