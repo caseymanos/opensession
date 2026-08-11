@@ -361,6 +361,11 @@
   outline-offset: 2px;
 }
 
+.ui-switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ui-error-summary {
   padding: var(--space-4);
   color: var(--danger-700);

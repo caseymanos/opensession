@@ -55,7 +55,20 @@
   background: #fffaf0;
 }
 
+.profile-save-status.is-conflict,
+.profile-save-status.is-recovery {
+  color: #8a5b0c;
+  border-color: #e6ce94;
+  background: #fffaf0;
+}
+
 .profile-save-status.is-saving {
+  color: var(--blue-700);
+  border-color: color-mix(in srgb, var(--blue-700), white 74%);
+  background: #f5f7fc;
+}
+
+.profile-save-status.is-syncing {
   color: var(--blue-700);
   border-color: color-mix(in srgb, var(--blue-700), white 74%);
   background: #f5f7fc;
@@ -94,6 +107,55 @@
   gap: 1rem;
   align-items: start;
   margin-top: 1rem;
+}
+
+.profile-runtime-notice {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: rgb(255 255 255 / 82%);
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-runtime-notice.is-warning {
+  border-color: #e6ce94;
+  background: #fffaf0;
+}
+
+.profile-runtime-notice.is-error {
+  border-color: color-mix(in srgb, var(--danger-700), white 65%);
+  background: var(--danger-100);
+}
+
+.profile-runtime-notice.is-info {
+  border-color: #d3ddef;
+  background: #f4f6fb;
+}
+
+.profile-runtime-notice strong,
+.profile-runtime-notice p {
+  margin: 0;
+}
+
+.profile-runtime-notice strong {
+  font-size: 0.75rem;
+}
+
+.profile-runtime-notice p {
+  max-width: 58rem;
+  margin-top: 0.2rem;
+  color: var(--ink-600);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.profile-runtime-actions {
+  flex: 0 0 auto;
 }
 
 .speaker-profile-form,
@@ -294,6 +356,44 @@
 
 .profile-file-button:hover {
   border-color: var(--ink-600);
+}
+
+.profile-file-button[aria-disabled="true"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.profile-headshot-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.profile-headshot-actions .ui-button {
+  min-height: 2.3rem;
+  margin-top: 0.7rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.68rem;
+}
+
+.profile-upload-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  margin-top: 0.65rem;
+}
+
+.profile-upload-progress progress {
+  width: 100%;
+  accent-color: var(--blue-700);
+}
+
+.profile-upload-progress span {
+  color: var(--ink-600);
+  font-size: 0.62rem;
+  font-weight: 800;
 }
 
 .profile-headshot-copy:focus-within .profile-file-button {
@@ -528,6 +628,12 @@
   list-style: none;
 }
 
+.profile-audit-empty {
+  margin: 0.9rem 0 0;
+  color: var(--ink-500);
+  font-size: 0.65rem;
+}
+
 .profile-audit li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -579,6 +685,15 @@
   .speaker-profile-hero {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .profile-runtime-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-runtime-actions .ui-button {
+    width: 100%;
   }
 
   .profile-save-status {

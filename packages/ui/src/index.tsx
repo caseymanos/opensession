@@ -258,11 +258,13 @@ export function SelectField({
 export function SwitchField({
   checked,
   description,
+  disabled = false,
   label,
   onChange,
 }: {
   checked: boolean;
   description?: string;
+  disabled?: boolean;
   label: string;
   onChange: (checked: boolean) => void;
 }) {
@@ -276,6 +278,7 @@ export function SwitchField({
         aria-checked={checked}
         aria-label={label}
         className="ui-switch"
+        disabled={disabled}
         onClick={() => {
           onChange(!checked);
         }}
