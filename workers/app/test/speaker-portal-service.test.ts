@@ -543,8 +543,9 @@ describe("speaker portal routes", () => {
         method: "POST",
       });
 
-    const responses = [await request("speaker-one@example.test")];
-    const knownResponse = await responses[0].json();
+    const firstResponse = await request("speaker-one@example.test");
+    const knownResponse = await firstResponse.json();
+    const responses = [firstResponse];
     for (let attempt = 1; attempt < 5; attempt += 1) {
       responses.push(await request("speaker-one@example.test"));
     }
