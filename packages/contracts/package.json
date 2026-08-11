@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./public-api": "./src/public-api.ts",
     "./portal": "./src/portal.ts",
+    "./lifecycle": "./src/lifecycle.ts",
     "./readiness": "./src/readiness.ts",
     "./tasks": "./src/tasks.ts"
   },

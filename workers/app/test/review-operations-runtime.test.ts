@@ -927,7 +927,7 @@ describe.sequential("review operations runtime", () => {
       ),
     ]);
     expect(counts.map((result) => result.results[0]?.count)).toEqual([
-      1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 2, 1, 1, 1,
     ]);
   });
 

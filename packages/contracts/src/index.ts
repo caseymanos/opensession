@@ -11,6 +11,7 @@ export * from "./public-api";
 export * from "./reviews";
 export * from "./decisions";
 export * from "./readiness";
+export * from "./lifecycle";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),

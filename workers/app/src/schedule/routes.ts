@@ -33,6 +33,8 @@ import {
   sessionToken,
 } from "../auth/http";
 import { isFeatureEnabled } from "../features";
+import { parseEmailDeliveryConfig } from "../email/config.js";
+import { ScheduleChangeLifecycleService } from "../lifecycle/schedule-changes.js";
 import { getAgendaCoordinator } from "./binding.js";
 import { D1ScheduleProjectionRepository } from "./d1-repository.js";
 import { ScheduleNotFoundError } from "./service.js";
@@ -576,18 +578,29 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
           422,
         );
       }
-      const response = await getAgendaCoordinator(
-        context.env,
-        resolution.eventId,
-      ).execute({
-        actorId: session.user.id,
-        command: input.data,
-        requestId: context.get("requestId"),
-      });
-      return coordinatorResponse(
-        context,
-        scheduleCommandResponseSchema.parse(response),
+      const response = scheduleCommandResponseSchema.parse(
+        await getAgendaCoordinator(context.env, resolution.eventId).execute({
+          actorId: session.user.id,
+          command: input.data,
+          requestId: context.get("requestId"),
+        }),
       );
+      if (response.ok) {
+        await new ScheduleChangeLifecycleService({
+          database: context.env.DB,
+          emailConfig: parseEmailDeliveryConfig(
+            context.env.EMAIL_DELIVERY_CONFIG,
+            context.env.APP_ENV,
+          ),
+          emailQueue: context.env.EMAIL_QUEUE,
+        }).notify(
+          resolution.eventId,
+          input.data.commandId,
+          context.get("requestId"),
+          context.req.url,
+        );
+      }
+      return coordinatorResponse(context, response);
     } catch (error) {
       return commandFailure(context, error);
     }

@@ -19,6 +19,7 @@ import {
   parseEmailQueueMessage,
   type CampaignEmailQueueMessage,
 } from "../email/messages.js";
+import { LifecycleEmailOutbox } from "../lifecycle/email-outbox.js";
 import {
   cfpContactIdForEmail,
   cfpSubmissionTitle,
@@ -211,6 +212,26 @@ export async function enqueueCfpSubmissionReceipt(
     options.deliveryConfig,
     options.environment,
   );
+  const coordinator = new CampaignEmailCoordinator({
+    config,
+    database: options.database,
+    ...(options.now ? { now: options.now } : {}),
+    queue: options.queue,
+  });
+  const deliver = (message: CampaignEmailQueueMessage) =>
+    new LifecycleEmailOutbox({
+      coordinator,
+      database: options.database,
+      ...(options.now ? { now: options.now } : {}),
+    }).enqueueAndDispatch({
+      aggregateId: options.coordinates.submissionId,
+      aggregateType: "submission",
+      eventId: options.event.id,
+      eventType: "lifecycle.receipt.requested",
+      idempotencyKey: `lifecycle:receipt:${options.coordinates.submissionId}`,
+      message,
+      organizationId: options.organizationId,
+    });
   if (existing?.queue_payload_json) {
     const stored = parseEmailQueueMessage(
       JSON.parse(existing.queue_payload_json) as unknown,
@@ -218,12 +239,7 @@ export async function enqueueCfpSubmissionReceipt(
     if (stored.kind !== "campaign.email.requested") {
       throw new Error("CFP receipt queue payload is inconsistent.");
     }
-    const result = await new CampaignEmailCoordinator({
-      config,
-      database: options.database,
-      ...(options.now ? { now: options.now } : {}),
-      queue: options.queue,
-    }).enqueue(stored);
+    const result = await deliver(stored);
     if (result.outcome === "handoff_pending") {
       throw new CfpReceiptUnavailableError(
         "Receipt queue handoff is still in progress.",
@@ -306,15 +322,9 @@ export async function enqueueCfpSubmissionReceipt(
     template_version: rendered.templateVersion,
     version: 1,
   };
-  const coordinator = new CampaignEmailCoordinator({
-    config,
-    database: options.database,
-    ...(options.now ? { now: options.now } : {}),
-    queue: options.queue,
-  });
   let result: CampaignEnqueueResult;
   try {
-    result = await coordinator.enqueue(message);
+    result = await deliver(message);
   } catch (error) {
     const winner = await durableReceipt(
       options.database,
@@ -347,7 +357,7 @@ export async function enqueueCfpSubmissionReceipt(
       JSON.parse(winner.queue_payload_json) as unknown,
     );
     if (durable.kind !== "campaign.email.requested") throw error;
-    result = await coordinator.enqueue(durable);
+    result = await deliver(durable);
   }
   if (result.outcome === "handoff_pending") {
     throw new CfpReceiptUnavailableError(

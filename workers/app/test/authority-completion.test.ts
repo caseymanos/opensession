@@ -37,6 +37,7 @@ const server = createTestHarness({
 const runtimeWorker = server.getWorker<
   {
     BASE_AUTHORITY: DurableObjectNamespace<FixtureBaseAuthority>;
+    DB: D1Database;
   },
   { default: typeof FixtureAuthorityRuntime }
 >("opensession-airtable-authority-completion-runtime");
@@ -44,6 +45,7 @@ const mockWorker = server.getWorker<{
   STATE: DurableObjectNamespace<FixtureAirtableState>;
 }>("opensession-airtable-authority-completion-mock");
 let runtimeFixture: Awaited<ReturnType<typeof runtimeWorker.getExport>>;
+let runtimeEnvironment: Awaited<ReturnType<typeof runtimeWorker.getEnv>>;
 
 async function fixtureFetch(
   path: string,
@@ -205,19 +207,21 @@ async function replaceTenantSource(options: {
 }
 
 async function setRosterCheckpoint(armed: boolean): Promise<void> {
-  const response = await post(
+  await runtimeEnvironment.DB.prepare(
     armed
-      ? "/arm-webhook-roster-checkpoint"
-      : "/release-webhook-roster-checkpoint",
-  );
-  if (response.status !== 204) {
-    throw new Error("Fixture roster checkpoint update failed.");
-  }
+      ? `UPDATE authority_fixture_roster_checkpoint
+         SET armed = 1, reached = 0 WHERE singleton = 1`
+      : `UPDATE authority_fixture_roster_checkpoint
+         SET armed = 0 WHERE singleton = 1`,
+  ).run();
 }
 
 async function rosterCheckpointReached(): Promise<boolean> {
-  const response = await fixtureFetch("/webhook-roster-checkpoint");
-  return ((await response.json()) as { reached?: number }).reached === 1;
+  const checkpoint = await runtimeEnvironment.DB.prepare(
+    `SELECT reached FROM authority_fixture_roster_checkpoint
+     WHERE singleton = 1`,
+  ).first<{ reached: number }>();
+  return checkpoint?.reached === 1;
 }
 
 async function authorityState(): Promise<{
@@ -333,6 +337,7 @@ beforeAll(async () => {
   roomOperation = compiledRoom;
   await server.listen();
   runtimeFixture = await runtimeWorker.getExport();
+  runtimeEnvironment = await runtimeWorker.getEnv();
   const setup = await post("/setup", { statements: readMigrationStatements() });
   expect(setup.status).toBe(204);
   expect((await post("/allow-projection")).status).toBe(204);

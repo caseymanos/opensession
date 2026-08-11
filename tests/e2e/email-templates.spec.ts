@@ -80,10 +80,10 @@ test("save and activation append immutable versions instead of rewriting history
   page,
 }) => {
   await page.goto(fixturePath);
-  await expect(page.getByText("6 immutable versions")).toBeVisible();
+  await expect(page.getByText("7 immutable versions")).toBeVisible();
 
   await page.getByRole("button", { name: "Save new version" }).click();
-  await expect(page.getByText("7 immutable versions")).toBeVisible();
+  await expect(page.getByText("8 immutable versions")).toBeVisible();
   await expect(page.locator(".email-template-title-line")).toContainText(
     "draft · v2",
   );
@@ -98,7 +98,7 @@ test("save and activation append immutable versions instead of rewriting history
     "Atomic activation for Mina",
   );
   await page.getByRole("button", { name: "Activate version" }).click();
-  await expect(page.getByText("8 immutable versions")).toBeVisible();
+  await expect(page.getByText("9 immutable versions")).toBeVisible();
   await expect(page.locator(".email-template-title-line")).toContainText(
     "active · v3",
   );
@@ -113,7 +113,7 @@ test("save and activation append immutable versions instead of rewriting history
   ).toHaveCount(3);
 
   await page.getByRole("button", { name: "Archive version" }).click();
-  await expect(page.getByText("9 immutable versions")).toBeVisible();
+  await expect(page.getByText("10 immutable versions")).toBeVisible();
   await expect(page.locator(".email-template-title-line")).toContainText(
     "archived · v4",
   );

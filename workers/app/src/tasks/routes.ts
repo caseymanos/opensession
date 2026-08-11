@@ -1,4 +1,8 @@
 import {
+  taskReminderControlCommandSchema,
+  taskReminderScheduleCommandSchema,
+} from "@sessionbox-killer/contracts/lifecycle";
+import {
   taskAcceptanceMaterializationCommandSchema,
   taskAssignmentReviewCommandSchema,
   taskAssignmentSubmissionCommandSchema,
@@ -27,6 +31,7 @@ import {
   sessionToken,
 } from "../auth/http";
 import { isFeatureEnabled } from "../features";
+import { parseEmailDeliveryConfig } from "../email/config.js";
 import {
   TaskAuthorityPendingError,
   TaskAuthorityService,
@@ -42,6 +47,8 @@ import {
 import { safeAttachmentDisposition } from "../uploads/policy.js";
 import { UploadError, UploadService } from "../uploads/service.js";
 import { ReadinessDashboardService } from "../readiness/service.js";
+import { TaskReminderCoordinator } from "../lifecycle/task-reminders.js";
+import { TaskAssignmentLifecycleService } from "../lifecycle/task-assignments.js";
 
 const taskBodyLimitBytes = 64 * 1024;
 
@@ -336,6 +343,8 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
     "/api/events/:eventKey/task-definitions/backfill-preview",
     "/api/events/:eventKey/task-definitions/commands",
     "/api/events/:eventKey/task-materializations/commands",
+    "/api/events/:eventKey/task-reminders/commands",
+    "/api/events/:eventKey/task-reminders/:workflowId/commands",
     "/api/events/:eventKey/task-assignments/:assignmentId/reviews",
     "/api/events/:eventKey/task-assignments/:assignmentId/submissions",
     "/api/events/:eventKey/task-assignments/:assignmentId/transitions",
@@ -437,6 +446,167 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
       }
     }
   });
+
+  app.post("/api/events/:eventKey/task-reminders/commands", async (context) => {
+    if (!requireSameOrigin(context)) {
+      return invalidRequest(
+        context,
+        "Task reminder commands require same-origin JSON requests.",
+      );
+    }
+    if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+      return writeUnavailable(context);
+    }
+    try {
+      const resolution = await resolveTaskScope(
+        context,
+        context.req.param("eventKey"),
+      );
+      if (resolution.kind !== "resolved") {
+        return scopeFailure(context, resolution);
+      }
+      if (!hasEventPermission(resolution.access, "event:manage")) {
+        return standardError(
+          context,
+          403,
+          "forbidden",
+          "Organizer access is required to schedule task reminders.",
+        );
+      }
+      const command = taskReminderScheduleCommandSchema.safeParse(
+        await parsedJson(context),
+      );
+      if (!command.success) {
+        return invalidRequest(context, "The task reminder command is invalid.");
+      }
+      const definition = await context.env.DB.prepare(
+        `SELECT 1 AS found FROM p_task_definitions
+           WHERE organization_id = ?1 AND event_id = ?2 AND id = ?3
+             AND source_deleted_at IS NULL LIMIT 1`,
+      )
+        .bind(
+          resolution.event.organizationId,
+          resolution.event.eventId,
+          command.data.definition_id,
+        )
+        .first();
+      if (!definition) {
+        return standardError(
+          context,
+          404,
+          "task_not_found",
+          "The task definition does not exist.",
+        );
+      }
+      return context.json(
+        await new TaskReminderCoordinator(context.env).schedule(
+          {
+            id: resolution.event.eventId,
+            organization_id: resolution.event.organizationId,
+            timezone: resolution.event.timezone,
+          },
+          command.data,
+          context.get("requestId"),
+        ),
+      );
+    } catch (error) {
+      return taskError(context, error);
+    }
+  });
+
+  app.get(
+    "/api/events/:eventKey/task-reminders/:workflowId",
+    async (context) => {
+      const workflowId = taskStableIdSchema.safeParse(
+        context.req.param("workflowId"),
+      );
+      if (!workflowId.success) {
+        return standardError(
+          context,
+          404,
+          "task_not_found",
+          "The task reminder does not exist.",
+        );
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to inspect task reminders.",
+          );
+        }
+        return context.json(
+          await new TaskReminderCoordinator(context.env).read(
+            resolution.event.organizationId,
+            resolution.event.eventId,
+            workflowId.data,
+          ),
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-reminders/:workflowId/commands",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task reminder commands require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      const workflowId = taskStableIdSchema.safeParse(
+        context.req.param("workflowId"),
+      );
+      const command = taskReminderControlCommandSchema.safeParse(
+        await parsedJson(context),
+      );
+      if (!workflowId.success || !command.success) {
+        return invalidRequest(context, "The task reminder command is invalid.");
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to control task reminders.",
+          );
+        }
+        return context.json(
+          await new TaskReminderCoordinator(context.env).control(
+            resolution.event.organizationId,
+            resolution.event.eventId,
+            workflowId.data,
+            command.data,
+          ),
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
 
   app.get(
     "/api/events/:eventKey/task-assignments/:assignmentId",
@@ -635,6 +805,25 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
           organizerActor(resolution),
           context.get("requestId"),
         );
+        if (
+          response.ok &&
+          "assignment_ids" in response.result &&
+          response.result.created_count > 0
+        ) {
+          await new TaskAssignmentLifecycleService({
+            database: context.env.DB,
+            emailConfig: parseEmailDeliveryConfig(
+              context.env.EMAIL_DELIVERY_CONFIG,
+              context.env.APP_ENV,
+            ),
+            emailQueue: context.env.EMAIL_QUEUE,
+          }).notify(
+            resolution.event,
+            response.result.assignment_ids,
+            context.get("requestId"),
+            context.req.url,
+          );
+        }
         return context.json(
           response,
           response.ok && response.repair_pending ? 202 : 200,
