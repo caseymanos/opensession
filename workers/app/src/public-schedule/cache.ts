@@ -81,6 +81,28 @@ export async function markPublicScheduleInvalidationProcessed(
     | PublicScheduleCacheInvalidationMessageV3,
 ): Promise<boolean> {
   const now = new Date().toISOString();
+  if (message.version === 3) {
+    const completed = await database
+      .prepare(
+        `UPDATE authority_cache_invalidations
+         SET status = 'processed', processed_at = ?, updated_at = ?,
+             last_error_code = NULL
+         WHERE organization_id = ? AND event_id = ?
+           AND invalidation_version = ? AND publication_version = ?
+           AND surfaces_json = '["schedule","gallery","feed"]'
+           AND status IN ('pending', 'published', 'enqueued')`,
+      )
+      .bind(
+        now,
+        now,
+        message.organization_id,
+        message.event_id,
+        message.invalidation_version,
+        message.publication_version,
+      )
+      .run();
+    return completed.meta.changes === 1;
+  }
   const completed = await database
     .prepare(
       `UPDATE authority_cache_invalidations
@@ -101,11 +123,47 @@ export async function markPublicScheduleInvalidationProcessed(
   return completed.meta.changes === 1;
 }
 
+async function isCommittedPublicationInvalidation(
+  database: D1Database,
+  message: PublicScheduleCacheInvalidationMessageV3,
+): Promise<boolean> {
+  const committed = await database
+    .prepare(
+      `SELECT 1 AS valid
+       FROM authority_cache_invalidations AS invalidation
+       JOIN schedule_publications AS publication
+         ON publication.organization_id = invalidation.organization_id
+        AND publication.event_id = invalidation.event_id
+        AND publication.publication_version = invalidation.publication_version
+       WHERE invalidation.organization_id = ?
+         AND invalidation.event_id = ?
+         AND invalidation.invalidation_version = ?
+         AND invalidation.publication_version = ?
+         AND invalidation.surfaces_json = '["schedule","gallery","feed"]'
+         AND invalidation.status IN ('pending', 'published', 'enqueued')
+       LIMIT 1`,
+    )
+    .bind(
+      message.organization_id,
+      message.event_id,
+      message.invalidation_version,
+      message.publication_version,
+    )
+    .first<{ valid: number }>();
+  return committed?.valid === 1;
+}
+
 export async function processPublicScheduleCacheInvalidation(
   executionContext: ExecutionContext,
   environment: Pick<Env, "APP_ENV" | "DB">,
   message: PublicScheduleCacheInvalidationMessage,
 ): Promise<void> {
+  if (
+    message.version === 3 &&
+    !(await isCommittedPublicationInvalidation(environment.DB, message))
+  ) {
+    return;
+  }
   const purged = await purgePublicScheduleCache(
     executionContext,
     message.event_id,

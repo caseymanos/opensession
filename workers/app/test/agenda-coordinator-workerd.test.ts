@@ -715,20 +715,64 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     });
 
     const invalidation = await environment.DB.prepare(
-      `SELECT publication_version, surfaces_json
+      `SELECT invalidation_version, publication_version, surfaces_json, status
        FROM authority_cache_invalidations
        WHERE organization_id = ? AND event_id = ?`,
     )
       .bind(demoOrganizationId, demoEventId)
-      .first<{ publication_version: number; surfaces_json: string }>();
-    expect(invalidation?.publication_version).toBe(
+      .first<{
+        invalidation_version: number;
+        publication_version: number;
+        status: string;
+        surfaces_json: string;
+      }>();
+    if (!invalidation)
+      throw new Error("Publication invalidation was not saved.");
+    expect(invalidation.publication_version).toBe(
       preview.nextPublicationVersion,
     );
-    expect(JSON.parse(invalidation?.surfaces_json ?? "[]")).toEqual([
+    expect(JSON.parse(invalidation.surfaces_json)).toEqual([
       "schedule",
       "gallery",
       "feed",
     ]);
+    expect(invalidation.status).toBe("enqueued");
+    const invalidationMessage = {
+      event_id: demoEventId,
+      invalidation_version: invalidation.invalidation_version,
+      kind: "public_schedule.cache.invalidate",
+      organization_id: demoOrganizationId,
+      publication_version: preview.nextPublicationVersion,
+      surfaces: ["schedule", "gallery", "feed"],
+      version: 3,
+    };
+    expect(
+      (
+        await post("/process-cache-invalidation", {
+          ...invalidationMessage,
+          publication_version: preview.nextPublicationVersion + 1,
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      await environment.DB.prepare(
+        `SELECT status FROM authority_cache_invalidations
+         WHERE organization_id = ? AND event_id = ?`,
+      )
+        .bind(demoOrganizationId, demoEventId)
+        .first<{ status: string }>(),
+    ).toEqual({ status: "enqueued" });
+    expect(
+      (await post("/process-cache-invalidation", invalidationMessage)).status,
+    ).toBe(204);
+    expect(
+      await environment.DB.prepare(
+        `SELECT status FROM authority_cache_invalidations
+         WHERE organization_id = ? AND event_id = ?`,
+      )
+        .bind(demoOrganizationId, demoEventId)
+        .first<{ status: string }>(),
+    ).toEqual({ status: "processed" });
 
     const publicRead = await new D1PublicScheduleProjectionReader(
       environment.DB,

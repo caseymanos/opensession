@@ -304,6 +304,10 @@ export class D1AuthorityProjector {
           organization_id: options.organizationId,
           version: 2,
         };
+    if (message.version === 3) {
+      await this.#env.PROJECTION_REPAIR_QUEUE.send(message);
+      return;
+    }
     await this.#env.PROJECTION_REPAIR_QUEUE.send(legacyMessage);
     await this.#env.PROJECTION_REPAIR_QUEUE.send(message);
   }
