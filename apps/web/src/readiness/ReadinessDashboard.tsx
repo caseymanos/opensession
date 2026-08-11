@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -19,18 +19,24 @@ import {
   Button,
   DataTable,
   SelectField,
+  StatePanel,
   StatusPill,
   TextField,
   ToastRegion,
   type DataTableColumn,
   type ToastMessage,
 } from "@sessionbox-killer/ui";
+import type {
+  ReadinessDashboardQuery,
+  ReadinessDashboardResponse,
+} from "@sessionbox-killer/contracts/readiness";
 
 import {
   agendaSpeakerScheduleFacts,
   speakerReadinessFixture,
   type SpeakerReadinessView,
 } from "./readinessModel";
+import { createReadinessClient, type ReadinessClient } from "./readinessClient";
 
 import "./readiness-dashboard.css";
 
@@ -52,6 +58,15 @@ const portalOptions = [
   { label: "Active", value: "active" },
   { label: "Invited", value: "invited" },
   { label: "Not invited", value: "not_invited" },
+  { label: "Revoked", value: "revoked" },
+];
+
+const dueOptions = [
+  { label: "Any due date", value: "all" },
+  { label: "Overdue", value: "overdue" },
+  { label: "Next 7 days", value: "next_7_days" },
+  { label: "No due date", value: "no_due" },
+  { label: "Complete", value: "complete" },
 ];
 
 function readFilter(name: string) {
@@ -59,7 +74,7 @@ function readFilter(name: string) {
 }
 
 function getInitialFilter(): SpeakerFilter {
-  const filter = readFilter("filter");
+  const filter = readFilter("readiness") || readFilter("filter");
   return filter === "not_configured" ||
     filter === "outstanding" ||
     filter === "overdue" ||
@@ -85,16 +100,22 @@ function getReadinessState(
 }
 
 function writeFilters(values: {
+  due: string;
   filter: SpeakerFilter;
+  page: number;
   portalState: string;
   query: string;
+  task: string;
   track: string;
 }) {
   const params = new URLSearchParams();
   if (values.query) params.set("q", values.query);
-  if (values.filter !== "all") params.set("filter", values.filter);
+  if (values.filter !== "all") params.set("readiness", values.filter);
   if (values.track !== "all") params.set("track", values.track);
   if (values.portalState !== "all") params.set("portal", values.portalState);
+  if (values.task !== "all") params.set("task", values.task);
+  if (values.due !== "all") params.set("due", values.due);
+  if (values.page > 1) params.set("page", String(values.page));
   const search = params.toString();
   window.history.replaceState(
     null,
@@ -103,23 +124,141 @@ function writeFilters(values: {
   );
 }
 
+function initialPage(): number {
+  const page = Number(readFilter("page"));
+  return Number.isSafeInteger(page) && page > 0 ? page : 1;
+}
+
+function nextDueLabel(
+  readiness: ReadinessDashboardResponse["speakers"][number]["readiness"],
+): string {
+  if (readiness.status === "ready") return "Complete";
+  if (!readiness.next_due) return "No due date";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(readiness.next_due.at));
+}
+
+function productionSpeakerRows(
+  response: ReadinessDashboardResponse,
+): SpeakerReadinessView[] {
+  return response.speakers.map((speaker) => ({
+    company: speaker.company || "Independent",
+    completedRequired: speaker.readiness.ratio.complete,
+    email: speaker.email,
+    id: speaker.contact_id,
+    name: speaker.display_name,
+    nextDue: nextDueLabel(speaker.readiness),
+    overdueCount: speaker.readiness.overdue_count,
+    portalState: speaker.portal_state,
+    sessions: speaker.sessions.map(({ title }) => title),
+    totalRequired: speaker.readiness.ratio.total,
+    track: speaker.sessions[0]?.track?.name ?? "Unassigned",
+  }));
+}
+
 export function ReadinessDashboard({
+  eventKey,
   fixtureState,
+  suppliedClient,
 }: {
+  eventKey?: string | undefined;
   fixtureState?: ReadinessFixtureState | undefined;
+  suppliedClient?: ReadinessClient | undefined;
 }) {
+  const client = useMemo(
+    () => suppliedClient ?? createReadinessClient(),
+    [suppliedClient],
+  );
   const [filter, setFilter] = useState<SpeakerFilter>(getInitialFilter);
   const [track, setTrack] = useState(() =>
-    getInitialOption("track", trackOptions),
+    eventKey
+      ? readFilter("track") || "all"
+      : getInitialOption("track", trackOptions),
   );
   const [portalState, setPortalState] = useState(() =>
     getInitialOption("portal", portalOptions),
   );
+  const [task, setTask] = useState(() => readFilter("task") || "all");
+  const [due, setDue] = useState(() => getInitialOption("due", dueOptions));
+  const [page, setPage] = useState(initialPage);
   const [query, setQuery] = useState(() => readFilter("q"));
+  const [response, setResponse] = useState<ReadinessDashboardResponse | null>(
+    null,
+  );
+  const responseRef = useRef<ReadinessDashboardResponse | null>(null);
+  const [loadState, setLoadState] = useState<"error" | "loading" | "ready">(
+    eventKey ? "loading" : "ready",
+  );
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [headshotState, setHeadshotState] =
     useState<DemoApprovalState>("incomplete");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const projectionState = fixtureState ?? "current";
+  useEffect(() => {
+    if (!eventKey) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => {
+        setLoadState((current) => (current === "ready" ? "ready" : "loading"));
+        const serverQuery: ReadinessDashboardQuery = {
+          due: due as ReadinessDashboardQuery["due"],
+          page,
+          page_size: 25,
+          portal: portalState as ReadinessDashboardQuery["portal"],
+          q: query,
+          readiness: filter,
+          task,
+          track,
+        };
+        void client.read(eventKey, serverQuery, controller.signal).then(
+          (result) => {
+            responseRef.current = result;
+            setResponse(result);
+            setRefreshFailed(false);
+            setLoadState("ready");
+          },
+          (error: unknown) => {
+            if (!(
+              error instanceof DOMException && error.name === "AbortError"
+            )) {
+              if (responseRef.current) {
+                setRefreshFailed(true);
+                setLoadState("ready");
+              } else {
+                setLoadState("error");
+              }
+            }
+          },
+        );
+      },
+      query ? 150 : 0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    client,
+    due,
+    eventKey,
+    filter,
+    page,
+    portalState,
+    query,
+    reloadVersion,
+    task,
+    track,
+  ]);
+
+  const projectionState = eventKey
+    ? refreshFailed
+      ? "partial"
+      : response?.projection.state === "stale"
+        ? "lag"
+        : (response?.projection.state ?? "current")
+    : (fixtureState ?? "current");
   const completed = useMemo(
     () =>
       headshotState === "approved"
@@ -128,59 +267,72 @@ export function ReadinessDashboard({
     [headshotState],
   );
 
-  const readyCount = speakerReadinessFixture.filter(
+  const fixtureReadyCount = speakerReadinessFixture.filter(
     (speaker) => getReadinessState(speaker, completed) === "ready",
   ).length;
-  const overdueCount = speakerReadinessFixture.reduce(
+  const fixtureOverdueCount = speakerReadinessFixture.reduce(
     (sum, speaker) =>
       sum + (completed.has(speaker.id) ? 0 : speaker.overdueCount),
     0,
   );
 
+  const eventPathKey = eventKey ?? "ai-engineer-summit";
+  const metricValues = response?.metrics;
+  const readyCount = metricValues?.speakers_ready ?? fixtureReadyCount;
+  const speakerCount =
+    metricValues?.speakers_total ?? speakerReadinessFixture.length;
+  const overdueCount = metricValues?.overdue_assignments ?? fixtureOverdueCount;
   const metrics = [
     {
       detail: "Since yesterday",
-      href: "/app/ai-engineer-summit/submissions?status=new",
+      href: `/app/${eventPathKey}/submissions?status=new`,
       icon: Sparkles,
       label: "New submissions",
       tone: "blue",
-      value: "4",
+      value: String(metricValues?.new_submissions ?? 4),
     },
     {
-      detail: "Across 5 reviewers",
-      href: "/app/ai-engineer-summit/reviews?status=pending",
+      detail: response ? "Assigned review queue" : "Across 5 reviewers",
+      href: `/app/${eventPathKey}/reviews?status=pending`,
       icon: MessageSquareText,
       label: "Reviews remaining",
       tone: "gold",
-      value: "8",
+      value: String(metricValues?.reviews_remaining ?? 8),
     },
     {
       detail: "Accepted, no room/time",
-      href: "/app/ai-engineer-summit/agenda?filter=unscheduled",
+      href: `/app/${eventPathKey}/agenda?filter=unscheduled`,
       icon: CalendarClock,
       label: "Accepted unscheduled",
       tone: "clay",
-      value: String(agendaSpeakerScheduleFacts.acceptedUnscheduledCount),
+      value: String(
+        metricValues?.accepted_unscheduled ??
+          agendaSpeakerScheduleFacts.acceptedUnscheduledCount,
+      ),
     },
     {
       detail: "Blocks publication",
-      href: "/app/ai-engineer-summit/agenda?filter=conflicts",
+      href: `/app/${eventPathKey}/agenda?filter=conflicts`,
       icon: AlertTriangle,
       label: "Hard conflicts",
       tone: "danger",
-      value: "1",
+      value: response
+        ? metricValues?.hard_conflicts === null
+          ? "—"
+          : String(metricValues?.hard_conflicts ?? "—")
+        : "1",
     },
     {
-      detail: `${speakerReadinessFixture.length - readyCount} still outstanding`,
-      href: "/app/ai-engineer-summit/people?filter=ready",
+      detail: `${speakerCount - readyCount} still outstanding`,
+      href: `/app/${eventPathKey}/people?readiness=ready`,
       icon: UserCheck,
       label: "Speakers ready",
       tone: "success",
-      value: `${readyCount} / ${speakerReadinessFixture.length}`,
+      value: `${readyCount} / ${speakerCount}`,
     },
     {
       detail: "Across required tasks",
-      href: "/app/ai-engineer-summit/people?filter=overdue",
+      href: `/app/${eventPathKey}/people?readiness=overdue`,
       icon: Clock3,
       label: "Overdue assignments",
       tone: "danger",
@@ -188,49 +340,89 @@ export function ReadinessDashboard({
     },
   ] as const;
 
-  const rows = useMemo(
-    () =>
-      speakerReadinessFixture.filter((speaker) => {
-        const readinessState = getReadinessState(speaker, completed);
-        const matchesFilter =
-          filter === "all" ||
-          (filter === "ready" && readinessState === "ready") ||
-          (filter === "not_configured" &&
-            readinessState === "not_configured") ||
-          (filter === "outstanding" && readinessState !== "ready") ||
-          (filter === "overdue" &&
-            !completed.has(speaker.id) &&
-            speaker.overdueCount > 0);
-        const matchesTrack = track === "all" || speaker.track === track;
-        const matchesPortal =
-          portalState === "all" || speaker.portalState === portalState;
-        const matchesQuery =
-          `${speaker.name} ${speaker.company} ${speaker.sessions.join(" ")}`
-            .toLowerCase()
-            .includes(query.toLowerCase());
-        return matchesFilter && matchesTrack && matchesPortal && matchesQuery;
-      }),
-    [completed, filter, portalState, query, track],
-  );
+  const rows = useMemo(() => {
+    if (eventKey && response) return productionSpeakerRows(response);
+    return speakerReadinessFixture.filter((speaker) => {
+      const readinessState = getReadinessState(speaker, completed);
+      const matchesFilter =
+        filter === "all" ||
+        (filter === "ready" && readinessState === "ready") ||
+        (filter === "not_configured" && readinessState === "not_configured") ||
+        (filter === "outstanding" && readinessState !== "ready") ||
+        (filter === "overdue" &&
+          !completed.has(speaker.id) &&
+          speaker.overdueCount > 0);
+      const matchesTrack = track === "all" || speaker.track === track;
+      const matchesPortal =
+        portalState === "all" || speaker.portalState === portalState;
+      const matchesQuery =
+        `${speaker.name} ${speaker.company} ${speaker.sessions.join(" ")}`
+          .toLowerCase()
+          .includes(query.toLowerCase());
+      const matchesDue =
+        due === "all" ||
+        (due === "overdue" && speaker.overdueCount > 0) ||
+        (due === "complete" && readinessState === "ready") ||
+        (due === "no_due" &&
+          speaker.totalRequired === 0 &&
+          readinessState !== "ready") ||
+        due === "next_7_days";
+      return (
+        matchesFilter &&
+        matchesTrack &&
+        matchesPortal &&
+        matchesQuery &&
+        matchesDue
+      );
+    });
+  }, [completed, due, eventKey, filter, portalState, query, response, track]);
+
+  const visibleTrackOptions = response
+    ? [
+        { label: "All tracks", value: "all" },
+        ...response.filters.tracks.map(({ id, name }) => ({
+          label: name,
+          value: id,
+        })),
+      ]
+    : trackOptions;
+  const taskOptions = response
+    ? [
+        { label: "All tasks", value: "all" },
+        ...response.filters.tasks.map(({ id, name }) => ({
+          label: name,
+          value: id,
+        })),
+      ]
+    : [{ label: "All tasks", value: "all" }];
 
   function updateFilters(
     next: Partial<{
       filter: SpeakerFilter;
+      due: string;
+      page: number;
       portalState: string;
       query: string;
+      task: string;
       track: string;
     }>,
   ) {
     const values = {
       filter: next.filter ?? filter,
+      due: next.due ?? due,
+      page: next.page ?? (eventKey ? 1 : page),
       portalState: next.portalState ?? portalState,
       query: next.query ?? query,
+      task: next.task ?? task,
       track: next.track ?? track,
     };
     if (next.filter !== undefined) setFilter(next.filter);
+    if (next.due !== undefined) setDue(next.due);
     if (next.portalState !== undefined) setPortalState(next.portalState);
     if (next.query !== undefined) setQuery(next.query);
+    if (next.task !== undefined) setTask(next.task);
     if (next.track !== undefined) setTrack(next.track);
+    setPage(values.page);
     writeFilters(values);
   }
 
@@ -258,6 +450,83 @@ export function ReadinessDashboard({
         tone: "success",
       },
     ]);
+  }
+
+  function exportCurrentView() {
+    const headings = [
+      "Speaker",
+      "Company",
+      "Email",
+      "Sessions",
+      "Required complete",
+      "Required total",
+      "Overdue",
+      "Portal",
+    ];
+    const escape = (value: string | number) =>
+      `"${String(value).replaceAll('"', '""')}"`;
+    const csv = [
+      headings.map(escape).join(","),
+      ...rows.map((speaker) =>
+        [
+          speaker.name,
+          speaker.company,
+          speaker.email,
+          speaker.sessions.join("; "),
+          speaker.completedRequired,
+          speaker.totalRequired,
+          speaker.overdueCount,
+          speaker.portalState,
+        ]
+          .map(escape)
+          .join(","),
+      ),
+    ].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${eventPathKey}-speaker-readiness.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function composeReminder() {
+    const recipients = rows
+      .filter((speaker) => speaker.completedRequired < speaker.totalRequired)
+      .map(({ email }) => email)
+      .join(",");
+    window.location.href = `mailto:${recipients}?subject=${encodeURIComponent(
+      `${response?.event.name ?? "Event"} speaker readiness`,
+    )}`;
+  }
+
+  if (eventKey && loadState === "loading" && !response) {
+    return (
+      <StatePanel
+        description="Loading metrics, speaker tasks, and schedule conflicts."
+        state="loading"
+        title="Loading event readiness"
+      />
+    );
+  }
+  if (eventKey && loadState === "error") {
+    return (
+      <StatePanel
+        action={
+          <Button
+            onClick={() => {
+              setLoadState("loading");
+              setReloadVersion((current) => current + 1);
+            }}
+          >
+            Retry
+          </Button>
+        }
+        description="The latest readiness projection could not be loaded. No organizer changes were made."
+        state="error"
+        title="Readiness is unavailable"
+      />
+    );
   }
 
   const columns: DataTableColumn<SpeakerReadinessView>[] = [
@@ -379,10 +648,10 @@ export function ReadinessDashboard({
           </p>
         </div>
         <div className="readiness-header-actions">
-          <Button variant="secondary">
+          <Button onClick={exportCurrentView} variant="secondary">
             <Download aria-hidden="true" size={16} /> Export view
           </Button>
-          <Button>
+          <Button onClick={composeReminder}>
             <Mail aria-hidden="true" size={16} /> Compose reminder
           </Button>
         </div>
@@ -412,13 +681,18 @@ export function ReadinessDashboard({
                 : "Metrics are current"}
           </strong>
           {projectionState === "lag"
-            ? "Showing data projected 4 minutes ago. Recent task changes may not appear yet."
+            ? "Showing the latest durable projection. Recent changes may still be synchronizing."
             : projectionState === "partial"
-              ? "Showing the last complete projection. Counts are not live until every source recovers."
-              : "Updated 18 seconds ago from the event projection."}
+              ? "Counts are not live until every source recovers. Showing the latest available projection."
+              : response
+                ? `Projected ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(response.projection.as_of))}.`
+                : "Updated 18 seconds ago from the event projection."}
         </span>
         {projectionState !== "current" ? (
-          <button onClick={() => window.location.reload()} type="button">
+          <button
+            onClick={() => setReloadVersion((current) => current + 1)}
+            type="button"
+          >
             <RefreshCw aria-hidden="true" size={14} /> Retry
           </button>
         ) : null}
@@ -459,7 +733,9 @@ export function ReadinessDashboard({
               <h2 id="speaker-readiness-title">Speaker readiness</h2>
             </div>
             <span>
-              {rows.length} of {speakerReadinessFixture.length}
+              {response
+                ? `${rows.length} of ${response.page.total}`
+                : `${rows.length} of ${speakerReadinessFixture.length}`}
             </span>
           </div>
           <div className="readiness-filters">
@@ -491,7 +767,7 @@ export function ReadinessDashboard({
               id="readiness-track"
               label="Track"
               onChange={(event) => updateFilters({ track: event.target.value })}
-              options={trackOptions}
+              options={visibleTrackOptions}
               value={track}
             />
             <SelectField
@@ -503,6 +779,20 @@ export function ReadinessDashboard({
               options={portalOptions}
               value={portalState}
             />
+            <SelectField
+              id="readiness-task"
+              label="Task"
+              onChange={(event) => updateFilters({ task: event.target.value })}
+              options={taskOptions}
+              value={task}
+            />
+            <SelectField
+              id="readiness-due"
+              label="Due"
+              onChange={(event) => updateFilters({ due: event.target.value })}
+              options={dueOptions}
+              value={due}
+            />
           </div>
           <DataTable
             caption="Speaker readiness and next actions"
@@ -511,12 +801,26 @@ export function ReadinessDashboard({
             rows={rows}
           />
           <div className="readiness-pagination">
-            <span>Page 1 of 1 · 25 per page</span>
+            <span>
+              Page {response?.page.number ?? 1} of{" "}
+              {response?.page.total_pages ?? 1}
+              {" · 25 per page"}
+            </span>
             <div>
-              <Button variant="secondary" disabled>
+              <Button
+                variant="secondary"
+                disabled={!response || response.page.number <= 1}
+                onClick={() => updateFilters({ page: page - 1 })}
+              >
                 Previous
               </Button>
-              <Button variant="secondary" disabled>
+              <Button
+                variant="secondary"
+                disabled={
+                  !response || response.page.number >= response.page.total_pages
+                }
+                onClick={() => updateFilters({ page: page + 1 })}
+              >
                 Next
               </Button>
             </div>
@@ -532,48 +836,90 @@ export function ReadinessDashboard({
               <p className="overline">Priority queue</p>
               <h2 id="readiness-queue-title">Needs attention</h2>
             </div>
-            <span>3</span>
+            <span>{response?.attention.length ?? 3}</span>
           </div>
-          <article
-            className={headshotState === "approved" ? "is-resolved" : ""}
-          >
-            <span>MO</span>
-            <div>
-              <strong>Mina’s headshot</strong>
-              <p>
-                {headshotState === "approved"
-                  ? "Approved just now"
-                  : headshotState === "submitted"
-                    ? "Submitted · awaiting required approval"
-                    : "Overdue · approval required for readiness"}
-              </p>
-            </div>
-            {headshotState === "approved" ? (
-              <Check aria-hidden="true" size={17} />
+          {response ? (
+            response.attention.length > 0 ? (
+              response.attention.map((speaker) => (
+                <article key={speaker.contact_id}>
+                  <span>
+                    {speaker.display_name
+                      .split(" ")
+                      .map((part) => part[0])
+                      .join("")
+                      .slice(0, 2)}
+                  </span>
+                  <div>
+                    <strong>{speaker.display_name}</strong>
+                    <p>
+                      {speaker.readiness.status.replace("_", " ")} ·{" "}
+                      {speaker.readiness.outstanding_count} required left
+                    </p>
+                  </div>
+                  <a
+                    href={`mailto:${speaker.email}?subject=${encodeURIComponent(
+                      `${response.event.name} readiness reminder`,
+                    )}`}
+                  >
+                    {speaker.portal_state === "not_invited"
+                      ? "Send invite"
+                      : "Send reminder"}
+                  </a>
+                </article>
+              ))
             ) : (
-              <button onClick={advanceHeadshot} type="button">
-                {headshotState === "submitted"
-                  ? "Approve as organizer"
-                  : "Submit as speaker"}
-              </button>
-            )}
-          </article>
-          <article>
-            <span>PN</span>
-            <div>
-              <strong>Priya’s agreement</strong>
-              <p>Overdue · 2 tasks outstanding</p>
-            </div>
-            <button type="button">Send reminder</button>
-          </article>
-          <article>
-            <span>NM</span>
-            <div>
-              <strong>Noor has no portal</strong>
-              <p>Accepted 3 days ago</p>
-            </div>
-            <button type="button">Send invite</button>
-          </article>
+              <p className="readiness-queue-empty">
+                No speakers need attention in the current projection.
+              </p>
+            )
+          ) : (
+            <>
+              <article
+                className={headshotState === "approved" ? "is-resolved" : ""}
+              >
+                <span>MO</span>
+                <div>
+                  <strong>Mina’s headshot</strong>
+                  <p>
+                    {headshotState === "approved"
+                      ? "Approved just now"
+                      : headshotState === "submitted"
+                        ? "Submitted · awaiting required approval"
+                        : "Overdue · approval required for readiness"}
+                  </p>
+                </div>
+                {headshotState === "approved" ? (
+                  <Check aria-hidden="true" size={17} />
+                ) : (
+                  <button onClick={advanceHeadshot} type="button">
+                    {headshotState === "submitted"
+                      ? "Approve as organizer"
+                      : "Submit as speaker"}
+                  </button>
+                )}
+              </article>
+              <article>
+                <span>PN</span>
+                <div>
+                  <strong>Priya’s agreement</strong>
+                  <p>Overdue · 2 tasks outstanding</p>
+                </div>
+                <a href="mailto:priya@example.com?subject=Speaker%20readiness">
+                  Send reminder
+                </a>
+              </article>
+              <article>
+                <span>NM</span>
+                <div>
+                  <strong>Noor has no portal</strong>
+                  <p>Accepted 3 days ago</p>
+                </div>
+                <a href="mailto:noor@example.com?subject=Speaker%20portal%20invite">
+                  Send invite
+                </a>
+              </article>
+            </>
+          )}
           <div className="readiness-policy">
             <Users aria-hidden="true" size={18} />
             <div>

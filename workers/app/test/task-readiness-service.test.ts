@@ -5,6 +5,7 @@ import type {
   UploadFinalizeResponse,
   UploadIntentResponse,
 } from "@sessionbox-killer/contracts";
+import { readinessDashboardQuerySchema } from "@sessionbox-killer/contracts/readiness";
 import type { TaskDefinitionDraft } from "@sessionbox-killer/contracts/tasks";
 import { sha256Hex } from "../src/auth/crypto";
 import type { AuthenticatedSession } from "../src/auth/service";
@@ -25,6 +26,8 @@ import {
 } from "../src/tasks/service";
 import { UploadService } from "../src/uploads/service";
 import type { UploadError } from "../src/uploads/service";
+import { D1ScheduleProjectionRepository } from "../src/schedule/d1-repository";
+import { ReadinessDashboardService } from "../src/readiness/service";
 
 const now = "2026-08-10T18:00:00.000Z";
 const contentHash = "a".repeat(64);
@@ -1602,11 +1605,122 @@ describe("task/readiness Workerd behavior", () => {
   });
 
   it("registers organizer read routes and fails event isolation closed", async () => {
+    await database.batch([
+      database
+        .prepare(
+          `INSERT INTO p_events (
+             id, organization_id, name, slug, timezone, status, brand_json,
+             schedule_days_json, source_record_id, source_version,
+             source_content_hash, projected_at
+           ) VALUES ('evt_readiness_valid', ?1, 'Readiness Valid',
+                     'readiness-valid', 'UTC', 'open', '{}',
+                     '[{"date":"2026-08-11","businessStart":"09:00","businessEnd":"17:00"}]',
+                     'rec_event_readiness_valid', 1, ?2, ?3)`,
+        )
+        .bind(event.organizationId, contentHash, now),
+      database
+        .prepare(
+          `INSERT INTO p_contacts (
+             id, organization_id, email_normalized, display_name,
+             source_record_id, source_version, source_content_hash, projected_at
+           ) VALUES ('contact_unconfigured', ?1, 'new@example.test',
+                     'Nia New', 'rec_contact_unconfigured', 1, ?2, ?3)`,
+        )
+        .bind(event.organizationId, contentHash, now),
+      database
+        .prepare(
+          `INSERT INTO p_rooms (
+             id, organization_id, event_id, name, capacity, sort_order,
+             source_record_id, source_version, source_content_hash, projected_at
+           ) VALUES ('room_readiness_valid', ?1, 'evt_readiness_valid',
+                     'Main room', 100, 1, 'rec_room_readiness_valid', 1, ?2, ?3)`,
+        )
+        .bind(event.organizationId, contentHash, now),
+      database
+        .prepare(
+          `INSERT INTO p_tracks (
+             id, organization_id, event_id, name, sort_order,
+             source_record_id, source_version, source_content_hash, projected_at
+           ) VALUES ('track_readiness_valid', ?1, 'evt_readiness_valid',
+                     'General', 1, 'rec_track_readiness_valid', 1, ?2, ?3)`,
+        )
+        .bind(event.organizationId, contentHash, now),
+      database
+        .prepare(
+          `INSERT INTO p_formats (
+             id, organization_id, event_id, name, default_duration_minutes,
+             sort_order, source_record_id, source_version,
+             source_content_hash, projected_at
+           ) VALUES ('format_readiness_valid', ?1, 'evt_readiness_valid',
+                     'Talk', 30, 1, 'rec_format_readiness_valid', 1, ?2, ?3)`,
+        )
+        .bind(event.organizationId, contentHash, now),
+      database
+        .prepare(
+          `INSERT INTO p_event_contacts (
+             id, organization_id, event_id, contact_id, roles_json,
+             portal_state, source_record_id, source_version,
+             source_content_hash, projected_at
+           ) VALUES ('event_contact_unconfigured', ?1, ?2,
+                     'contact_unconfigured', '["speaker"]', 'invited',
+                     'rec_event_contact_unconfigured', 1, ?3, ?4)`,
+        )
+        .bind(event.organizationId, event.eventId, contentHash, now),
+    ]);
     const headers = {
       Accept: "application/json",
       Cookie: `__Host-opensession-session=${sessionToken}`,
       "User-Agent": "OpenSession task route test",
     };
+    const dashboard = new ReadinessDashboardService(
+      database,
+      () => new Date(now),
+    );
+    const directReadiness = await dashboard.read(
+      event,
+      readinessDashboardQuerySchema.parse({ page_size: 10 }),
+    );
+    expect(directReadiness).toMatchObject({
+      metrics: { hard_conflicts: null, speakers_total: 2 },
+      projection: {
+        reasons: expect.arrayContaining(["schedule_unavailable"]),
+      },
+    });
+    await expect(
+      dashboard.read(
+        event,
+        readinessDashboardQuerySchema.parse({
+          page_size: 10,
+          portal: "invited",
+          q: "Sam",
+          task: "def_profile",
+        }),
+      ),
+    ).resolves.toMatchObject({ page: { total: 0 }, speakers: [] });
+    await expect(
+      dashboard.read(
+        event,
+        readinessDashboardQuerySchema.parse({
+          due: "next_7_days",
+          page_size: 10,
+        }),
+      ),
+    ).resolves.toMatchObject({ page: { total: 0 }, speakers: [] });
+    await expect(
+      dashboard.read(
+        {
+          ...event,
+          eventId: "evt_readiness_valid",
+          eventRecordId: "rec_event_readiness_valid",
+          slug: "readiness-valid",
+          timezone: "UTC",
+        },
+        readinessDashboardQuerySchema.parse({ page_size: 10 }),
+      ),
+    ).resolves.toMatchObject({
+      metrics: { hard_conflicts: 0 },
+      page: { total: 0 },
+    });
     const readiness = await server.fetch("/api/events/evt_tasks/readiness", {
       headers,
     });
@@ -1617,26 +1731,118 @@ describe("task/readiness Workerd behavior", () => {
     const foreign = await server.fetch("/api/events/evt_foreign/readiness", {
       headers,
     });
+    const foreignBody = await foreign.text();
 
     expect(readiness.status).toBe(200);
     await expect(readiness.json()).resolves.toMatchObject({
-      event_id: "evt_tasks",
-      speakers: [{ contact_id: "contact_speaker" }],
-      timezone: "America/Los_Angeles",
+      event: {
+        id: "evt_tasks",
+        timezone: "America/Los_Angeles",
+      },
+      metrics: {
+        accepted_unscheduled: 1,
+        hard_conflicts: null,
+        speakers_total: 2,
+      },
+      projection: {
+        reasons: expect.arrayContaining(["schedule_unavailable"]),
+        state: "partial",
+      },
+      speakers: expect.arrayContaining([
+        expect.objectContaining({ contact_id: "contact_speaker" }),
+      ]),
     });
     expect(definitions.status).toBe(200);
     await expect(definitions.json()).resolves.toEqual([
       expect.objectContaining({ id: "def_profile" }),
       expect.objectContaining({ id: "def_slides" }),
     ]);
+
+    await expect(
+      new D1ScheduleProjectionRepository(database).read("evt_readiness_valid"),
+    ).resolves.toMatchObject({ event: { eventId: "evt_readiness_valid" } });
+    const completeSchedule = await server.fetch(
+      "/api/events/evt_readiness_valid/readiness?page_size=10",
+      { headers },
+    );
+    expect(completeSchedule.status).toBe(200);
+    await expect(completeSchedule.json()).resolves.toMatchObject({
+      metrics: { hard_conflicts: 0 },
+      page: { total: 0 },
+      speakers: [],
+    });
+
+    const filtered = await server.fetch(
+      "/api/events/evt_tasks/readiness?page_size=10&portal=invited&task=def_profile&q=Sam",
+      { headers },
+    );
+    expect(filtered.status).toBe(200);
+    await expect(filtered.json()).resolves.toMatchObject({
+      page: { number: 1, size: 10, total: 0, total_pages: 0 },
+      speakers: [],
+    });
+    const invalidQuery = await server.fetch(
+      "/api/events/evt_tasks/readiness?page_size=9",
+      { headers },
+    );
+    expect(invalidQuery.status).toBe(400);
+    await expect(invalidQuery.json()).resolves.toMatchObject({
+      error: { code: "invalid_readiness_query" },
+    });
+    await database
+      .prepare(
+        `UPDATE tenant_registry SET authority_ready_at = NULL
+         WHERE organization_id = ?`,
+      )
+      .bind(event.organizationId)
+      .run();
+    const rebuilding = await server.fetch(
+      "/api/events/evt_tasks/readiness?page_size=10",
+      { headers },
+    );
+    expect(rebuilding.status).toBe(200);
+    await expect(rebuilding.json()).resolves.toMatchObject({
+      projection: {
+        reasons: expect.arrayContaining(["upstream_rebuilding"]),
+        state: "partial",
+      },
+    });
+    await database
+      .prepare(
+        `UPDATE tenant_registry SET authority_ready_at = ?1
+         WHERE organization_id = ?2`,
+      )
+      .bind(now, event.organizationId)
+      .run();
     expect(foreign.status).toBe(403);
-    expect(JSON.stringify(await foreign.json())).not.toContain("Fern Foreign");
+    expect(foreignBody).not.toContain("Fern Foreign");
 
     const unauthenticated = await server.fetch(
       "/api/events/evt_tasks/task-definitions",
       { headers: { Accept: "application/json" } },
     );
     expect(unauthenticated.status).toBe(401);
+
+    await database.batch([
+      database
+        .prepare("DELETE FROM p_event_contacts WHERE id = ?")
+        .bind("event_contact_unconfigured"),
+      database
+        .prepare("DELETE FROM p_contacts WHERE id = ?")
+        .bind("contact_unconfigured"),
+      database
+        .prepare("DELETE FROM p_formats WHERE id = ?")
+        .bind("format_readiness_valid"),
+      database
+        .prepare("DELETE FROM p_tracks WHERE id = ?")
+        .bind("track_readiness_valid"),
+      database
+        .prepare("DELETE FROM p_rooms WHERE id = ?")
+        .bind("room_readiness_valid"),
+      database
+        .prepare("DELETE FROM p_events WHERE id = ?")
+        .bind("evt_readiness_valid"),
+    ]);
   });
 
   it("scopes assignment detail and forces speakers through typed submissions", async () => {

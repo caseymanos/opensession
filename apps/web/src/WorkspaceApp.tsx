@@ -62,6 +62,16 @@ function decisionEventKey(pathname: string): string | null {
   }
 }
 
+function readinessEventKey(pathname: string): string | null {
+  const value = /^\/app\/([^/]+)\/people\/?$/.exec(pathname)?.[1];
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function useRuntimeEnvironment() {
   const [environment, setEnvironment] = useState<AppEnvironment | null>(null);
 
@@ -119,6 +129,7 @@ export function WorkspaceApp({
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
+  const readinessEvent = readinessEventKey(currentPath);
   const isSubmissionFixtureRoute = currentPath.startsWith(
     "/fixtures/submissions/",
   );
@@ -210,8 +221,9 @@ export function WorkspaceApp({
     />
   ) : isReadinessRoute ? (
     <ReadinessDashboard
+      eventKey={readinessEvent ?? undefined}
       fixtureState={readinessFixtureState}
-      key={resetVersion}
+      key={`${readinessEvent ?? "fixture"}:${resetVersion}`}
     />
   ) : currentPath.endsWith("/settings") ? (
     <EventSetup key={resetVersion} />
