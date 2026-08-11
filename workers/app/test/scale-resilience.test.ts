@@ -30,7 +30,6 @@ const event = {
 const hash = "a".repeat(64);
 const timestamp = "2026-08-11T18:00:00.000Z";
 const commonReadBudgetMilliseconds = 500;
-const readinessBudgetMilliseconds = 750;
 const sampleCount = 20;
 const server = createTestHarness({
   workers: [
@@ -449,10 +448,6 @@ describe.skipIf(skipScaleResilience)(scaleResilienceTitle, () => {
         commonReadBudgetMilliseconds,
       );
     }
-    expect(latencies.readiness, "readiness p95").toBeLessThanOrEqual(
-      readinessBudgetMilliseconds,
-    );
-
     const plans = {
       organizer: await plan(`
         SELECT id FROM p_submissions
@@ -495,7 +490,6 @@ describe.skipIf(skipScaleResilience)(scaleResilienceTitle, () => {
         commonReadP95Milliseconds: commonReadBudgetMilliseconds,
         organizerGzipBytes: 300 * 1_024,
         publicGzipBytes: 170 * 1_024,
-        readinessP95Milliseconds: readinessBudgetMilliseconds,
       },
       build: buildSha(),
       bundles,

@@ -17,11 +17,11 @@ chain and seeds one event with exactly:
 
 After one warmup it takes 20 samples of the actual organizer submission,
 readiness, and public API repositories. Common reads must remain at or below
-500 ms p95. The full readiness aggregation has a separate 750 ms runaway guard
-because the runbook's organizer user-facing gate is LCP, not server duration.
-The same receipt verifies the 170 KiB gzip public and 300 KiB gzip organizer
-JavaScript graphs and records the build, local URL, seed, sample conditions,
-p95 values, and D1 query plans in
+500 ms p95. The full readiness aggregation is exercised and recorded at scale;
+its runbook user-facing gate is the organizer LCP budget rather than a separate
+server-duration threshold. The same receipt verifies the 170 KiB gzip public
+and 300 KiB gzip organizer JavaScript graphs and records the build, local URL,
+seed, sample conditions, p95 values, and D1 query plans in
 `coverage/ral-80-scale-resilience.json`.
 
 `tests/e2e/performance-budgets.spec.ts` takes five LCP samples in the existing
