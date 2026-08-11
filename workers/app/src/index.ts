@@ -37,6 +37,7 @@ import { registerUploadRoutes } from "./uploads/routes";
 import { registerScheduleRoutes } from "./schedule/routes.js";
 import { registerDemoRoutes } from "./demo/routes.js";
 import { registerSpeakerPortalRoutes } from "./portal/routes";
+import { registerOrganizerSubmissionRoutes } from "./organizer-submissions/routes.js";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
 import { validTurnstileConfiguration } from "./security/turnstile";
@@ -302,6 +303,7 @@ registerUploadRoutes(app);
 registerScheduleRoutes(app);
 registerDemoRoutes(app);
 registerEmailTemplateRoutes(app);
+registerOrganizerSubmissionRoutes(app);
 registerEmailWebhookRoutes(app);
 
 app.notFound((context) => {

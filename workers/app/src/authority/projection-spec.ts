@@ -212,6 +212,7 @@ export const projectionSpecs: Readonly<
       text("Default reviewer group ID", "default_reviewer_group_id"),
       text("Submitted at", "submitted_at"),
       text("Decision note", "decision_note"),
+      text("Organizer activity at", "organizer_activity_at"),
     ],
     scope: "event",
     table: "p_submissions",
@@ -238,6 +239,17 @@ export const projectionSpecs: Readonly<
     ],
     scope: "event",
     table: "p_submission_participants",
+  },
+  submission_notes: {
+    fields: [
+      link("Submission", "submission_id", "submissions"),
+      text("Body", "body", true),
+      text("Actor ID", "actor_id", true),
+      text("Actor display name", "actor_display_name", true),
+      text("Created at", "created_at", true),
+    ],
+    scope: "event",
+    table: "p_submission_notes",
   },
   rubrics: {
     fields: [
@@ -516,6 +528,7 @@ export const projectionTableOrder: readonly AirtableTableKey[] = [
   "submissions",
   "submission_answers",
   "submission_participants",
+  "submission_notes",
   "rubrics",
   "criteria",
   "reviews",

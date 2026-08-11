@@ -59,14 +59,14 @@ function completeSchema(): AirtableBaseSchema {
 
 describe("Airtable schema", () => {
   it("defines every authoritative table with lifecycle fields", () => {
-    expect(expectedAirtableSchema.version).toBe(4);
-    expect(expectedAirtableSchema.tables).toHaveLength(29);
+    expect(expectedAirtableSchema.version).toBe(5);
+    expect(expectedAirtableSchema.tables).toHaveLength(30);
     expect(
       expectedAirtableSchema.tables.reduce(
         (count, table) => count + table.fields.length,
         0,
       ),
-    ).toBe(431);
+    ).toBe(443);
     expect(
       expectedAirtableSchema.tables.every(
         (table) =>
@@ -111,7 +111,7 @@ describe("Airtable schema", () => {
     const report = compareAirtableSchema(schema);
     const index = createAirtableSchemaIndex(schema);
 
-    expect(report).toMatchObject({ ready: true, schemaVersion: 4 });
+    expect(report).toMatchObject({ ready: true, schemaVersion: 5 });
     expect(report.issues).toEqual([]);
     expect(index.tables.get("events")?.id).toBe("tbl_1");
   });
@@ -151,7 +151,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v4", "schema v1");
+      table.description = table.description?.replace("schema v5", "schema v1");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -159,7 +159,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v4",
+                  "schema v5",
                   "schema v1",
                 ),
               }
@@ -247,7 +247,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v4", "schema v2");
+      table.description = table.description?.replace("schema v5", "schema v2");
       table.fields = table.fields
         .filter((field) => !newFieldsByTable.get(table.name)?.has(field.name))
         .map((field) => ({
@@ -255,7 +255,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v4",
+                  "schema v5",
                   "schema v2",
                 ),
               }
@@ -321,7 +321,7 @@ describe("Airtable schema", () => {
     ]);
     const schema = completeSchema();
     for (const table of schema.tables) {
-      table.description = table.description?.replace("schema v4", "schema v3");
+      table.description = table.description?.replace("schema v5", "schema v3");
       table.fields = table.fields
         .filter(
           (field) => table.name !== "Events" || !newFields.has(field.name),
@@ -331,7 +331,7 @@ describe("Airtable schema", () => {
           ...(field.description
             ? {
                 description: field.description.replace(
-                  "schema v4",
+                  "schema v5",
                   "schema v3",
                 ),
               }
@@ -367,6 +367,89 @@ describe("Airtable schema", () => {
     expect(before.issues).toHaveLength(3);
     await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
     expect(created).toEqual([...newFields]);
+  });
+
+  it("upgrades the credentialed v4 shape with the organizer activity field and notes table", async () => {
+    const schema = completeSchema();
+    const submissions = schema.tables.find(
+      (table) => table.name === "Submissions",
+    );
+    if (!submissions) throw new Error("Fixture is incomplete");
+    submissions.fields = submissions.fields.filter(
+      (field) => field.name !== "Organizer activity at",
+    );
+    schema.tables = schema.tables.filter(
+      (table) => table.name !== "Submission Notes",
+    );
+
+    const operations: string[] = [];
+    let sequence = 0;
+    const manager = new AirtableSchemaManager({
+      createField: async (tableId, write) => {
+        const table = schema.tables.find(
+          (candidate) => candidate.id === tableId,
+        );
+        if (!table) throw new Error("Missing fixture table");
+        const field: AirtableFieldSchema = {
+          ...(write.description ? { description: write.description } : {}),
+          id: `fld_v5_${sequence++}`,
+          name: write.name,
+          ...(write.options ? { options: write.options } : {}),
+          type: write.type,
+        };
+        table.fields.push(field);
+        operations.push(`field:${write.name}`);
+        return field;
+      },
+      createTable: async (write) => {
+        const primary: AirtableFieldSchema = {
+          ...(write.fields[0]?.description
+            ? { description: write.fields[0].description }
+            : {}),
+          id: `fld_v5_primary_${sequence++}`,
+          name: write.fields[0]?.name ?? "ID",
+          type: write.fields[0]?.type ?? "singleLineText",
+        };
+        const created: AirtableTableSchema = {
+          ...(write.description ? { description: write.description } : {}),
+          fields: [primary],
+          id: `tbl_v5_${sequence++}`,
+          name: write.name,
+          primaryFieldId: primary.id,
+        };
+        schema.tables.push(created);
+        operations.push(`table:${write.name}`);
+        return created;
+      },
+      getBaseSchema: async () => schema,
+    });
+
+    expect(compareAirtableSchema(schema).issues).toEqual([
+      expect.objectContaining({
+        code: "missing_field",
+        field: "Organizer activity at",
+        table: "Submissions",
+      }),
+      expect.objectContaining({
+        code: "missing_table",
+        table: "Submission Notes",
+      }),
+    ]);
+    await expect(manager.bootstrap()).resolves.toMatchObject({ ready: true });
+    expect(operations).toEqual([
+      "table:Submission Notes",
+      "field:Organizer activity at",
+      "field:Body",
+      "field:Actor ID",
+      "field:Actor display name",
+      "field:Source version",
+      "field:Last command ID",
+      "field:Last command hash",
+      "field:Applied content hash",
+      "field:Created at",
+      "field:Updated at",
+      "field:Submission",
+    ]);
   });
 
   it("reports missing, incompatible, and link-target drift", () => {
@@ -518,7 +601,7 @@ describe("Airtable schema", () => {
     );
 
     expect(report.ready).toBe(true);
-    expect(schema.tables).toHaveLength(29);
+    expect(schema.tables).toHaveLength(30);
     expect(firstLink).toBeGreaterThan(lastNonLink);
   });
 
@@ -554,8 +637,8 @@ describe("Airtable schema", () => {
     if (!events || !venue) throw new Error("Fixture is incomplete");
     events.name = "Conference Events";
     venue.name = "Location";
-    events.description = events.description?.replace("schema v4", "schema v5");
-    venue.description = venue.description?.replace("schema v4", "schema v5");
+    events.description = events.description?.replace("schema v5", "schema v6");
+    venue.description = venue.description?.replace("schema v5", "schema v6");
 
     let writes = 0;
     const manager = new AirtableSchemaManager({

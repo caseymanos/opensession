@@ -500,6 +500,18 @@ describe("D1 operational foundation", () => {
         "--config",
         config,
       ]);
+      executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--file",
+        resolve(root, "migrations", "0016_organizer_submissions.sql"),
+        "--config",
+        config,
+      ]);
       const handoffOutput = executeMigration([
         "d1",
         "execute",
@@ -542,6 +554,56 @@ describe("D1 operational foundation", () => {
       expect(handoffResults.at(-1)?.results).toEqual([
         { name: "idx_provider_messages_cfp_receipt_identity" },
         { name: "idx_provider_messages_queue_handoff" },
+      ]);
+      const organizerOutput = executeMigration([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--persist-to",
+        migrationPersistence,
+        "--command",
+        `SELECT id, title, organizer_activity_at
+         FROM p_submissions WHERE id = 'submission_cache_upgrade';
+         SELECT name FROM pragma_index_list('p_submissions')
+         WHERE name IN (
+           'idx_p_submissions_activity',
+           'idx_p_submissions_status_activity',
+           'idx_p_submissions_track_activity'
+         ) ORDER BY name;
+         SELECT name FROM pragma_table_info('p_submission_notes')
+         WHERE name IN ('actor_display_name', 'body', 'source_version')
+         ORDER BY name;
+         SELECT name FROM pragma_table_info('organizer_submission_command_receipts')
+         WHERE name IN ('command_hash', 'operations_json', 'result_json', 'state')
+         ORDER BY name;`,
+        "--config",
+        config,
+        "--json",
+      ]);
+      const organizerResults = JSON.parse(organizerOutput) as D1Execution[];
+      expect(organizerResults.at(-4)?.results).toEqual([
+        {
+          id: "submission_cache_upgrade",
+          organizer_activity_at: null,
+          title: "Upgrade submission",
+        },
+      ]);
+      expect(organizerResults.at(-3)?.results).toEqual([
+        { name: "idx_p_submissions_activity" },
+        { name: "idx_p_submissions_status_activity" },
+        { name: "idx_p_submissions_track_activity" },
+      ]);
+      expect(organizerResults.at(-2)?.results).toEqual([
+        { name: "actor_display_name" },
+        { name: "body" },
+        { name: "source_version" },
+      ]);
+      expect(organizerResults.at(-1)?.results).toEqual([
+        { name: "command_hash" },
+        { name: "operations_json" },
+        { name: "result_json" },
+        { name: "state" },
       ]);
       const output = executeMigration([
         "d1",
@@ -663,6 +725,7 @@ describe("D1 operational foundation", () => {
       "p_session_participants",
       "p_sessions",
       "p_submission_answers",
+      "p_submission_notes",
       "p_submission_participants",
       "p_submissions",
       "p_sync_runs",
@@ -675,6 +738,7 @@ describe("D1 operational foundation", () => {
       "projection_watermarks",
       "provider_messages",
       "schedule_command_receipts",
+      "organizer_submission_command_receipts",
       "tenant_registry",
       "users",
       "webhook_deliveries",
@@ -815,6 +879,42 @@ describe("D1 operational foundation", () => {
          'Evaluation', 'AI-ENGINEERING', 'rec_track_duplicate_route', 1,
          '${hash}', '${timestamp}');
     `);
+  });
+
+  it("uses deterministic organizer submission activity indexes", () => {
+    const plans = [
+      query<{ detail: string }>(`
+        EXPLAIN QUERY PLAN
+        SELECT id FROM p_submissions
+        WHERE organization_id = 'org_one' AND event_id = 'evt_one'
+          AND source_deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC LIMIT 51;
+      `).results,
+      query<{ detail: string }>(`
+        EXPLAIN QUERY PLAN
+        SELECT id FROM p_submissions
+        WHERE organization_id = 'org_one' AND event_id = 'evt_one'
+          AND status = 'submitted' AND source_deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC LIMIT 51;
+      `).results,
+      query<{ detail: string }>(`
+        EXPLAIN QUERY PLAN
+        SELECT id FROM p_submissions
+        WHERE organization_id = 'org_one' AND event_id = 'evt_one'
+          AND track_id = 'track_one' AND source_deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC LIMIT 51;
+      `).results,
+    ];
+
+    expect(plans[0]?.map(({ detail }) => detail).join("\n")).toContain(
+      "idx_p_submissions_activity",
+    );
+    expect(plans[1]?.map(({ detail }) => detail).join("\n")).toContain(
+      "idx_p_submissions_status_activity",
+    );
+    expect(plans[2]?.map(({ detail }) => detail).join("\n")).toContain(
+      "idx_p_submissions_track_activity",
+    );
   });
 
   it("enforces tenant-scoped foreign keys, JSON shapes, hashes, and cursor state", () => {

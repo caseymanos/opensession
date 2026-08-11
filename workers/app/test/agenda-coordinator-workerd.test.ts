@@ -94,6 +94,7 @@ function readMigrationStatements(): string[] {
     "0013_email_queue_handoff.sql",
     "0014_schedule_domain.sql",
     "0015_demo_bootstrap_authorization.sql",
+    "0016_organizer_submissions.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
