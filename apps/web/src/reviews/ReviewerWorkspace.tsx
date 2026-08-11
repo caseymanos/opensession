@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   ArrowLeft,
   Check,
@@ -29,7 +35,18 @@ import {
   reviewerWorkspaceFixture,
   type ReviewCriterionView,
   type ReviewQueueItemView,
+  type ReviewerWorkspaceView,
 } from "./reviewModel";
+import {
+  createReviewOperationsPort,
+  ReviewOperationsApiError,
+  type ReviewOperationsPort,
+} from "./reviewOperationsClient";
+import type {
+  ReviewOperationsCommandResult,
+  ReviewScoringCommand,
+  ReviewerAssignmentListResponse,
+} from "@sessionbox-killer/contracts";
 
 import "./reviewer-workspace.css";
 
@@ -45,9 +62,12 @@ type ReviewDrafts = Record<string, ReviewDraft>;
 
 const reviewStorageKey = "opensession.reviewer.visual-draft";
 
-function readDrafts(): ReviewDrafts {
+function readDrafts(
+  workspace = reviewerWorkspaceFixture,
+  storageKey = reviewStorageKey,
+): ReviewDrafts {
   try {
-    const raw = window.localStorage.getItem(reviewStorageKey);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) {
       return {};
     }
@@ -57,7 +77,7 @@ function readDrafts(): ReviewDrafts {
       return parsed.drafts ?? {};
     }
 
-    const firstProposal = reviewerWorkspaceFixture.queue[0];
+    const firstProposal = workspace.queue[0];
     return firstProposal ? { [firstProposal.id]: parsed as ReviewDraft } : {};
   } catch {
     return {};
@@ -199,23 +219,41 @@ function ReviewerBlockedState({ state }: { state: "expired" | "permission" }) {
   );
 }
 
-export function ReviewerWorkspace({
-  fixtureState = "default",
-}: {
+interface ReviewerWorkspaceSurfaceProps {
+  eventKey?: string;
   fixtureState?: ReviewerFixtureState;
-} = {}) {
+  initialDrafts?: ReviewDrafts;
+  port?: ReviewOperationsPort;
+  workspace?: ReviewerWorkspaceView;
+}
+
+function ReviewerWorkspaceSurface({
+  eventKey,
+  fixtureState = "default",
+  initialDrafts,
+  port,
+  workspace = reviewerWorkspaceFixture,
+}: ReviewerWorkspaceSurfaceProps) {
   const initialState: ReviewerState =
     fixtureState === "default" ? "active" : fixtureState;
-  const firstProposal = reviewerWorkspaceFixture.queue[0];
+  const firstProposal = workspace.queue[0];
   const [activeProposalId, setActiveProposalId] = useState(
     firstProposal?.id ?? "",
   );
-  const [drafts, setDrafts] = useState<ReviewDrafts>(readDrafts);
-  const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
+  const storageKey = eventKey
+    ? `${reviewStorageKey}.${eventKey}`
+    : reviewStorageKey;
+  const [drafts, setDrafts] = useState<ReviewDrafts>(() => ({
+    ...(initialDrafts ?? {}),
+    ...readDrafts(workspace, storageKey),
+  }));
+  const [saveState, setSaveState] = useState<"failed" | "saved" | "saving">(
+    "saved",
+  );
   const [submittedIds, setSubmittedIds] = useState<Set<string>>(
     () =>
       new Set([
-        ...reviewerWorkspaceFixture.queue
+        ...workspace.queue
           .filter((item) => item.status === "submitted")
           .map((item) => item.id),
         ...(initialState === "submitted" && firstProposal
@@ -227,14 +265,24 @@ export function ReviewerWorkspace({
   const [showErrors, setShowErrors] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [announcement, setAnnouncement] = useState("");
+  const [failedCommand, setFailedCommand] =
+    useState<ReviewScoringCommand | null>(null);
+  const versions = useRef<Record<string, number>>(
+    Object.fromEntries(
+      workspace.queue.map((item) => [item.id, item.sourceVersion ?? 0]),
+    ),
+  );
+  const saveQueue = useRef(Promise.resolve());
+  const saveTimer = useRef<number | null>(null);
+  const submitting = useRef(false);
+  const draftsRef = useRef(drafts);
   const [connectionState, setConnectionState] = useState<"online" | "offline">(
     initialState === "offline" ? "offline" : "online",
   );
   const isOffline = connectionState === "offline";
   const activeProposal =
-    reviewerWorkspaceFixture.queue.find(
-      (item) => item.id === activeProposalId,
-    ) ?? firstProposal;
+    workspace.queue.find((item) => item.id === activeProposalId) ??
+    firstProposal;
   const activeDraft = drafts[activeProposalId] ?? {
     comment: "",
     scores: {},
@@ -242,33 +290,82 @@ export function ReviewerWorkspace({
   const { comment, scores } = activeDraft;
   const submitted = submittedIds.has(activeProposalId);
   const submittedCount = submittedIds.size;
-  const missingCriteria = reviewerWorkspaceFixture.criteria.filter(
+  const activeCriteria = activeProposal?.criteria ?? workspace.criteria;
+  const missingCriteria = activeCriteria.filter(
     (criterion) => !scores[criterion.id],
   );
-  const completedCount =
-    reviewerWorkspaceFixture.criteria.length - missingCriteria.length;
+  const completedCount = activeCriteria.length - missingCriteria.length;
   const weightedScore = useMemo(() => {
-    const total = reviewerWorkspaceFixture.criteria.reduce(
+    const total = activeCriteria.reduce(
       (sum, criterion) => sum + (scores[criterion.id] ?? 0) * criterion.weight,
       0,
     );
-    return completedCount === reviewerWorkspaceFixture.criteria.length
+    return completedCount === activeCriteria.length
       ? (total / 100).toFixed(1)
       : "—";
-  }, [completedCount, scores]);
+  }, [activeCriteria, completedCount, scores]);
 
   useEffect(() => {
-    if (saveState !== "saving") {
+    draftsRef.current = drafts;
+  }, [drafts]);
+
+  useEffect(() => {
+    if (saveState !== "saving" || submitting.current) {
       return;
     }
 
     const timer = window.setTimeout(() => {
-      window.localStorage.setItem(reviewStorageKey, JSON.stringify({ drafts }));
-      setSaveState("saved");
+      saveTimer.current = null;
+      window.localStorage.setItem(storageKey, JSON.stringify({ drafts }));
+      if (!port || !eventKey || failedCommand) {
+        setSaveState(port && failedCommand ? "failed" : "saved");
+        return;
+      }
+      const assignmentId = activeProposalId;
+      const draft = drafts[assignmentId] ?? { comment: "", scores: {} };
+      const orderedScores = activeCriteria.flatMap((criterion) => {
+        const score = draft.scores[criterion.id];
+        return score === undefined
+          ? []
+          : [{ criterionId: criterion.id, score }];
+      });
+      saveQueue.current = saveQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const command: ReviewScoringCommand = {
+            assignmentId,
+            commandId: `review_save_${crypto.randomUUID()}`,
+            draft: { note: draft.comment, scores: orderedScores },
+            expectedVersion: versions.current[assignmentId] ?? 0,
+            type: "save_review_draft",
+          };
+          try {
+            const result = await port.executeReview(eventKey, command);
+            versions.current[assignmentId] = result.version;
+            setSaveState("saved");
+            setFailedCommand(null);
+          } catch {
+            setFailedCommand(command);
+            setSaveState("failed");
+          }
+        });
     }, 650);
+    saveTimer.current = timer;
 
-    return () => window.clearTimeout(timer);
-  }, [drafts, saveState]);
+    return () => {
+      window.clearTimeout(timer);
+      if (saveTimer.current === timer) saveTimer.current = null;
+    };
+  }, [
+    activeCriteria,
+    activeProposalId,
+    drafts,
+    eventKey,
+    failedCommand,
+    port,
+    saveState,
+    storageKey,
+  ]);
 
   if (initialState === "expired" || initialState === "permission") {
     return <ReviewerBlockedState state={initialState} />;
@@ -296,17 +393,20 @@ export function ReviewerWorkspace({
     setSubmitOpen(true);
   }
 
-  function submitReview() {
+  function cancelPendingAutosave() {
+    if (saveTimer.current === null) return;
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+  }
+
+  function markSubmitted() {
     setSubmittedIds((current) => new Set([...current, activeProposalId]));
     setSubmitOpen(false);
     setDrafts((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([id]) => id !== activeProposalId),
       ) as ReviewDrafts;
-      window.localStorage.setItem(
-        reviewStorageKey,
-        JSON.stringify({ drafts: next }),
-      );
+      window.localStorage.setItem(storageKey, JSON.stringify({ drafts: next }));
       return next;
     });
     setToasts([
@@ -320,21 +420,170 @@ export function ReviewerWorkspace({
     ]);
   }
 
+  async function replayFailedCommand(): Promise<ReviewOperationsCommandResult | null> {
+    if (!failedCommand || !port || !eventKey) return null;
+    setSaveState("saving");
+    try {
+      const result = await port.executeReview(eventKey, failedCommand);
+      versions.current[failedCommand.assignmentId] = result.version;
+      setFailedCommand(null);
+      const current = draftsRef.current[failedCommand.assignmentId] ?? {
+        comment: "",
+        scores: {},
+      };
+      const commandDraft =
+        failedCommand.type === "save_review_draft" ||
+        failedCommand.type === "submit_review"
+          ? failedCommand.draft
+          : null;
+      const currentCriteria =
+        workspace.queue.find(({ id }) => id === failedCommand.assignmentId)
+          ?.criteria ?? workspace.criteria;
+      const currentSnapshot = {
+        note: current.comment,
+        scores: currentCriteria.flatMap((criterion) => {
+          const score = current.scores[criterion.id];
+          return score === undefined
+            ? []
+            : [{ criterionId: criterion.id, score }];
+        }),
+      };
+      setSaveState(
+        commandDraft &&
+          JSON.stringify(commandDraft) !== JSON.stringify(currentSnapshot)
+          ? "saving"
+          : "saved",
+      );
+      if (failedCommand.type === "submit_review") markSubmitted();
+      return result;
+    } catch {
+      setSaveState("failed");
+      return null;
+    }
+  }
+
+  async function submitReview() {
+    submitting.current = true;
+    cancelPendingAutosave();
+    if (!port || !eventKey) {
+      markSubmitted();
+      submitting.current = false;
+      return;
+    }
+    if (failedCommand && !(await replayFailedCommand())) {
+      submitting.current = false;
+      return;
+    }
+    await saveQueue.current.catch(() => undefined);
+    const draft = draftsRef.current[activeProposalId] ?? {
+      comment: "",
+      scores: {},
+    };
+    const command: ReviewScoringCommand = {
+      assignmentId: activeProposalId,
+      commandId: `review_submit_${crypto.randomUUID()}`,
+      draft: {
+        note: draft.comment,
+        scores: activeCriteria.map((criterion) => ({
+          criterionId: criterion.id,
+          score: draft.scores[criterion.id] ?? 0,
+        })),
+      },
+      expectedVersion: versions.current[activeProposalId] ?? 0,
+      type: "submit_review",
+    };
+    setSaveState("saving");
+    try {
+      const result = await port.executeReview(eventKey, command);
+      versions.current[activeProposalId] = result.version;
+      setFailedCommand(null);
+      setSaveState("saved");
+      markSubmitted();
+      submitting.current = false;
+    } catch {
+      submitting.current = false;
+      setFailedCommand(command);
+      setSaveState("failed");
+      setSubmitOpen(false);
+      setToasts([
+        {
+          id: "review-submit-failed",
+          message:
+            "Your completed review remains in this browser. Retry to confirm the same submission safely.",
+          title: "Submission not confirmed",
+          tone: "error",
+        },
+      ]);
+    }
+  }
+
+  function declareConflict() {
+    if (!port || !eventKey || !activeProposal) {
+      setToasts([
+        {
+          id: "conflict",
+          title: "Conflict noted",
+          message: "The program team will reassign this proposal.",
+        },
+      ]);
+      return;
+    }
+    const command = {
+      assignmentId: activeProposal.id,
+      commandId: `review_conflict_${crypto.randomUUID()}`,
+      expectedVersion: versions.current[activeProposal.id] ?? 0,
+      note: "Reviewer declared a conflict.",
+      type: "disclose_conflict" as const,
+    };
+    void port
+      .execute(eventKey, command)
+      .then(() => {
+        setToasts([
+          {
+            id: "conflict",
+            title: "Conflict noted",
+            message: "The proposal is no longer part of your scoring queue.",
+          },
+        ]);
+      })
+      .catch(() => {
+        setToasts([
+          {
+            id: "conflict-failed",
+            title: "Conflict not confirmed",
+            message: "Retry when your connection is available.",
+            tone: "error",
+          },
+        ]);
+      });
+  }
+
   return (
-    <div className="reviewer-workspace">
+    <div
+      className="reviewer-workspace"
+      style={
+        workspace.brand
+          ? ({
+              "--review-accent": workspace.brand.accent,
+              "--review-background": workspace.brand.background,
+              "--review-ink": workspace.brand.ink,
+            } as CSSProperties)
+          : undefined
+      }
+    >
       <header className="reviewer-topbar">
         <ReviewerBrand />
         <div className="reviewer-event-chip">
           <span>AS</span>
           <div>
-            <strong>{reviewerWorkspaceFixture.eventName}</strong>
+            <strong>{workspace.eventName}</strong>
             <small>Program review · 2026</small>
           </div>
         </div>
         <div className="reviewer-profile">
           <span>ML</span>
           <div>
-            <strong>{reviewerWorkspaceFixture.reviewerName}</strong>
+            <strong>{workspace.reviewerName}</strong>
             <small>Reviewer</small>
           </div>
           <button aria-label="Sign out" type="button">
@@ -379,29 +628,28 @@ export function ReviewerWorkspace({
               <h1 id="review-queue-title">Review queue</h1>
             </div>
             <span>
-              {submittedCount} / {reviewerWorkspaceFixture.queue.length}
+              {submittedCount} / {workspace.queue.length}
             </span>
           </div>
           <div
             className="review-progress"
-            aria-label={`${submittedCount} of ${reviewerWorkspaceFixture.queue.length} reviews submitted`}
+            aria-label={`${submittedCount} of ${workspace.queue.length} reviews submitted`}
             role="progressbar"
             aria-valuemin={0}
-            aria-valuemax={reviewerWorkspaceFixture.queue.length}
+            aria-valuemax={workspace.queue.length}
             aria-valuenow={submittedCount}
           >
             <span
               style={{
-                width: `${(submittedCount / reviewerWorkspaceFixture.queue.length) * 100}%`,
+                width: `${(submittedCount / workspace.queue.length) * 100}%`,
               }}
             />
           </div>
           <p className="review-due">
-            <Clock3 aria-hidden="true" size={14} />{" "}
-            {reviewerWorkspaceFixture.dueLabel}
+            <Clock3 aria-hidden="true" size={14} /> {workspace.dueLabel}
           </p>
           <div className="review-queue-list">
-            {reviewerWorkspaceFixture.queue.map((item) => {
+            {workspace.queue.map((item) => {
               const draft = drafts[item.id];
               const status = submittedIds.has(item.id)
                 ? "submitted"
@@ -433,18 +681,7 @@ export function ReviewerWorkspace({
                 reason.
               </p>
             </div>
-            <button
-              onClick={() =>
-                setToasts([
-                  {
-                    id: "conflict",
-                    title: "Conflict noted",
-                    message: "The program team will reassign this proposal.",
-                  },
-                ])
-              }
-              type="button"
-            >
+            <button onClick={declareConflict} type="button">
               Declare conflict
             </button>
           </div>
@@ -462,6 +699,13 @@ export function ReviewerWorkspace({
             </div>
             <h1>{activeProposal?.title}</h1>
             <p>Speaker identity is hidden until decisions are complete.</p>
+            <button
+              className="review-mobile-conflict"
+              onClick={declareConflict}
+              type="button"
+            >
+              <ShieldAlert aria-hidden="true" size={15} /> Declare conflict
+            </button>
           </header>
 
           {submitted ? (
@@ -473,8 +717,10 @@ export function ReviewerWorkspace({
               <div>
                 <strong>Submitted · read only</strong>
                 <span>
-                  Your review was submitted August 9 at 8:34 PM. Contact the
-                  program team to request a reopen.
+                  {activeProposal?.submittedAt
+                    ? `Your review was submitted ${new Date(activeProposal.submittedAt).toLocaleString()}. `
+                    : "Your review was submitted. "}
+                  Contact the program team to request a reopen.
                 </span>
               </div>
             </section>
@@ -533,7 +779,7 @@ export function ReviewerWorkspace({
           ) : null}
 
           <div className="review-criteria-list">
-            {reviewerWorkspaceFixture.criteria.map((criterion) => (
+            {activeCriteria.map((criterion) => (
               <ScoreCriterion
                 criterion={criterion}
                 disabled={submitted}
@@ -568,10 +814,20 @@ export function ReviewerWorkspace({
                 ? "Submitted"
                 : isOffline
                   ? "Saved in this browser"
-                  : saveState === "saving"
-                    ? "Saving draft…"
-                    : "Draft saved"}
+                  : saveState === "failed"
+                    ? "Draft saved in this browser"
+                    : saveState === "saving"
+                      ? "Saving draft…"
+                      : "Draft saved"}
             </span>
+            {saveState === "failed" ? (
+              <Button
+                variant="secondary"
+                onClick={() => void replayFailedCommand()}
+              >
+                Retry save
+              </Button>
+            ) : null}
             <Button disabled={submitted || isOffline} onClick={requestSubmit}>
               {submitted ? "Review submitted" : "Submit review"}
             </Button>
@@ -601,7 +857,9 @@ export function ReviewerWorkspace({
             <Button variant="secondary" onClick={() => setSubmitOpen(false)}>
               Keep editing
             </Button>
-            <Button onClick={submitReview}>Submit final review</Button>
+            <Button onClick={() => void submitReview()}>
+              Submit final review
+            </Button>
           </div>
         </div>
       </Dialog>
@@ -614,5 +872,198 @@ export function ReviewerWorkspace({
         }
       />
     </div>
+  );
+}
+
+function dueLabel(response: ReviewerAssignmentListResponse): string {
+  if (!response.event.reviewDueAt) return "No review deadline set";
+  try {
+    return `Due ${new Intl.DateTimeFormat(undefined, {
+      day: "numeric",
+      month: "long",
+      timeZone: response.event.timezone,
+    }).format(new Date(response.event.reviewDueAt))}`;
+  } catch {
+    return "Review deadline available from the program team";
+  }
+}
+
+function productionWorkspace(response: ReviewerAssignmentListResponse): {
+  drafts: ReviewDrafts;
+  workspace: ReviewerWorkspaceView;
+} {
+  const drafts: ReviewDrafts = {};
+  const queue: ReviewQueueItemView[] = response.assignments.map((entry) => {
+    const { assignment, context, draft, submittedAt } = entry;
+    drafts[assignment.id] = {
+      comment: draft.note,
+      scores: Object.fromEntries(
+        draft.scores.map(({ criterionId, score }) => [criterionId, score]),
+      ),
+    };
+    return {
+      abstract: context.abstract ?? "No abstract was provided.",
+      audience: context.audience ?? "No audience guidance was provided.",
+      criteria: assignment.rubric.criteria,
+      format: context.format ?? "Format not provided",
+      id: assignment.id,
+      outcomes:
+        context.outcomes.length > 0
+          ? context.outcomes
+          : ["No attendee outcomes were provided."],
+      reference: assignment.submission.reference,
+      sourceVersion: assignment.sourceVersion,
+      status:
+        assignment.status === "submitted"
+          ? "submitted"
+          : assignment.status === "in_progress"
+            ? "draft"
+            : "not_started",
+      submittedAt,
+      title: assignment.submission.title,
+      track: assignment.submission.track ?? "Unassigned",
+    };
+  });
+  return {
+    drafts,
+    workspace: {
+      brand: response.event.brand,
+      criteria: queue[0]?.criteria ?? [],
+      dueLabel: dueLabel(response),
+      eventName: response.event.name,
+      queue,
+      reviewerName: response.reviewer.displayName,
+      track: queue[0]?.track ?? "Review",
+    },
+  };
+}
+
+function ProductionReviewerWorkspace({
+  eventKey,
+  port,
+}: {
+  eventKey: string;
+  port?: ReviewOperationsPort;
+}) {
+  const client = useMemo(() => port ?? createReviewOperationsPort(), [port]);
+  const [response, setResponse] =
+    useState<ReviewerAssignmentListResponse | null>(null);
+  const [error, setError] = useState<ReviewOperationsApiError | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void client
+      .reviewerAssignments(eventKey, controller.signal)
+      .then(setResponse)
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(
+          cause instanceof ReviewOperationsApiError
+            ? cause
+            : new ReviewOperationsApiError(
+                "review_assignments_unavailable",
+                "Your review assignments could not be loaded.",
+                0,
+              ),
+        );
+      });
+    return () => controller.abort();
+  }, [client, eventKey, reload]);
+
+  if (error) {
+    const permission = error.status === 403 || error.status === 404;
+    return (
+      <div className="reviewer-state-page">
+        <ReviewerBrand />
+        <div className="reviewer-state-card">
+          <StatePanel
+            action={
+              permission ? undefined : (
+                <Button
+                  onClick={() => {
+                    setError(null);
+                    setResponse(null);
+                    setReload((value) => value + 1);
+                  }}
+                >
+                  Retry
+                </Button>
+              )
+            }
+            description={
+              permission
+                ? "This account does not have an active review assignment for this event."
+                : "Your browser drafts are still safe. Retry when your connection returns."
+            }
+            state={permission ? "permission" : "error"}
+            title={
+              permission
+                ? "Review access is unavailable"
+                : "Your review queue could not be loaded"
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+  if (!response) {
+    return (
+      <div className="reviewer-state-page">
+        <ReviewerBrand />
+        <div className="reviewer-state-card">
+          <StatePanel
+            description="Loading your assigned proposals and immutable rubric snapshots."
+            state="loading"
+            title="Loading your review queue"
+          />
+        </div>
+      </div>
+    );
+  }
+  if (response.assignments.length === 0) {
+    return (
+      <div className="reviewer-state-page">
+        <ReviewerBrand />
+        <div className="reviewer-state-card">
+          <StatePanel
+            description="The program team has not assigned any proposals to this reviewer account."
+            state="empty"
+            title="No reviews assigned"
+          />
+        </div>
+      </div>
+    );
+  }
+  const production = productionWorkspace(response);
+  return (
+    <ReviewerWorkspaceSurface
+      eventKey={eventKey}
+      initialDrafts={production.drafts}
+      port={client}
+      workspace={production.workspace}
+    />
+  );
+}
+
+export function ReviewerWorkspace({
+  eventKey,
+  fixtureState,
+  port,
+}: {
+  eventKey?: string;
+  fixtureState?: ReviewerFixtureState;
+  port?: ReviewOperationsPort;
+} = {}) {
+  if (fixtureState) {
+    return <ReviewerWorkspaceSurface fixtureState={fixtureState} />;
+  }
+  const routeEventKey =
+    eventKey ?? window.location.pathname.split("/").filter(Boolean)[1] ?? "";
+  return (
+    <ProductionReviewerWorkspace
+      eventKey={routeEventKey}
+      {...(port ? { port } : {})}
+    />
   );
 }

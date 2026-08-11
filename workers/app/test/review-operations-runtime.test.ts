@@ -100,6 +100,7 @@ async function seedAuthorityRecords(): Promise<void> {
     Name: "OpenSession Summit",
     Organization: [recordId("organizations", "org_alpha")],
     "Published version": 0,
+    "Review closes": "2026-08-28T00:00:00.000Z",
     "Schedule days JSON": "[]",
     "Schedule snap minutes": 15,
     "Schedule version": 0,
@@ -309,8 +310,16 @@ describe.sequential("review operations runtime", () => {
     );
     expect(own.status).toBe(200);
     expect(
-      ((await own.json()) as { assignments: { id: string }[] }).assignments,
-    ).toEqual([expect.objectContaining({ id: "assignment_existing" })]);
+      (
+        (await own.json()) as {
+          assignments: { assignment: { id: string } }[];
+        }
+      ).assignments,
+    ).toEqual([
+      expect.objectContaining({
+        assignment: expect.objectContaining({ id: "assignment_existing" }),
+      }),
+    ]);
 
     const other = await request(
       "/api/events/event_alpha/reviewer-assignments",
@@ -392,9 +401,16 @@ describe.sequential("review operations runtime", () => {
       reviewerTwoAuth,
     );
     expect(
-      ((await reviewer.json()) as { assignments: { id: string }[] })
-        .assignments,
-    ).toEqual([expect.objectContaining({ id: "assignment_new" })]);
+      (
+        (await reviewer.json()) as {
+          assignments: { assignment: { id: string } }[];
+        }
+      ).assignments,
+    ).toEqual([
+      expect.objectContaining({
+        assignment: expect.objectContaining({ id: "assignment_new" }),
+      }),
+    ]);
   });
 
   it("publishes a new rubric without reinterpreting existing assignment snapshots", async () => {
@@ -436,6 +452,188 @@ describe.sequential("review operations runtime", () => {
           id: "assignment_new",
           rubric: expect.objectContaining({ criteria, version: 2 }),
         }),
+      ]),
+    );
+  });
+
+  it("autosaves, submits exactly once, and reopens the preserved review draft", async () => {
+    const initial = (await (
+      await request(
+        "/api/events/event_alpha/reviewer-assignments",
+        reviewerOneAuth,
+      )
+    ).json()) as {
+      assignments: {
+        assignment: { id: string; sourceVersion: number; status: string };
+      }[];
+      event: { reviewDueAt: string | null };
+    };
+    const assignment = initial.assignments.find(
+      ({ assignment: candidate }) => candidate.id === "assignment_existing",
+    )?.assignment;
+    expect(initial.event.reviewDueAt).toBe("2026-08-28T00:00:00.000Z");
+
+    const saveCommand = {
+      assignmentId: "assignment_existing",
+      commandId: "command_review_draft",
+      draft: {
+        note: "Strong audience fit.",
+        scores: [{ criterionId: "criterion_value", score: 4 }],
+      },
+      expectedVersion: assignment?.sourceVersion,
+      type: "save_review_draft",
+    };
+    const saved = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      saveCommand,
+    );
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "applied", version: 2 },
+    });
+    const replay = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      saveCommand,
+    );
+    expect(await replay.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "replayed", version: 2 },
+    });
+
+    const forbidden = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerTwoAuth,
+      {
+        ...saveCommand,
+        commandId: "command_review_forbidden",
+        expectedVersion: 2,
+      },
+    );
+    expect(forbidden.status).toBe(404);
+
+    const incomplete = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      {
+        ...saveCommand,
+        commandId: "command_review_incomplete",
+        expectedVersion: 2,
+        type: "submit_review",
+      },
+    );
+    expect(incomplete.status).toBe(422);
+
+    const submitCommand = {
+      assignmentId: "assignment_existing",
+      commandId: "command_review_submit",
+      draft: {
+        note: "Strong audience fit with concrete evidence.",
+        scores: [
+          { criterionId: "criterion_value", score: 4 },
+          { criterionId: "criterion_evidence", score: 5 },
+        ],
+      },
+      expectedVersion: 2,
+      type: "submit_review",
+    };
+    const submitted = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      submitCommand,
+    );
+    expect(submitted.status).toBe(200);
+    expect(await submitted.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "applied", version: 3 },
+    });
+    const submittedReplay = await request(
+      "/api/events/event_alpha/reviewer-assignments/assignment_existing/commands",
+      reviewerOneAuth,
+      submitCommand,
+    );
+    expect(await submittedReplay.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "replayed", version: 3 },
+    });
+    const env = await runtime.getEnv();
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE entity_id = 'assignment_existing'
+           AND action = 'reviews.review.submit'`,
+      ).first<{ count: number }>(),
+    ).toEqual({ count: 1 });
+
+    const reopenCommand = {
+      assignmentId: "assignment_existing",
+      commandId: "command_review_reopen",
+      expectedVersion: 3,
+      reason: "Clarify the evidence score before decisions.",
+      type: "reopen_review",
+    };
+    const reopened = await request(
+      "/api/events/event_alpha/review-operations/reviews/assignment_existing/commands",
+      organizerAuth,
+      reopenCommand,
+    );
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "applied", version: 4 },
+    });
+    const reopenReplay = await request(
+      "/api/events/event_alpha/review-operations/reviews/assignment_existing/commands",
+      organizerAuth,
+      reopenCommand,
+    );
+    expect(await reopenReplay.json()).toMatchObject({
+      ok: true,
+      result: { outcome: "replayed", version: 4 },
+    });
+
+    const reopenedQueue = (await (
+      await request(
+        "/api/events/event_alpha/reviewer-assignments",
+        reviewerOneAuth,
+      )
+    ).json()) as {
+      assignments: {
+        assignment: { id: string; status: string };
+        draft: unknown;
+        submittedAt: string | null;
+      }[];
+    };
+    expect(reopenedQueue.assignments).toEqual([
+      expect.objectContaining({
+        assignment: expect.objectContaining({
+          id: "assignment_existing",
+          status: "in_progress",
+        }),
+        draft: submitCommand.draft,
+        submittedAt: null,
+      }),
+    ]);
+    const organizer = (await (
+      await request("/api/events/event_alpha/review-operations", organizerAuth)
+    ).json()) as {
+      assignments: {
+        audit: { action: string; reason?: string }[];
+        id: string;
+      }[];
+    };
+    expect(
+      organizer.assignments.find(({ id }) => id === "assignment_existing")
+        ?.audit,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "reviews.review.reopen",
+          reason: reopenCommand.reason,
+        }),
+        expect.objectContaining({ action: "reviews.review.submit" }),
       ]),
     );
   });

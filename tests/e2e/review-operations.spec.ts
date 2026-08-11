@@ -181,6 +181,25 @@ test("assignments are idempotent, auditable, and remove scoring after a conflict
     assignmentTable.getByText("Submitted", { exact: true }),
   ).toBeVisible();
 
+  await page
+    .getByRole("button", {
+      name: "Reopen review for Casey Brooks on AES-1120",
+    })
+    .click();
+  const reopenDialog = page.getByRole("dialog", {
+    name: "Reopen this review?",
+  });
+  await reopenDialog
+    .getByLabel("Reason for reopening")
+    .fill("Clarify the evidence score before decisions.");
+  await reopenDialog.getByRole("button", { name: "Reopen review" }).click();
+  await expect(
+    page.locator("tbody tr").filter({ hasText: "Casey Brooks" }),
+  ).toContainText("In progress");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Review reopened" }),
+  ).toContainText("preserved scores");
+
   const createAssignment = async () => {
     await page.getByRole("button", { name: "Assign reviewer" }).click();
     const dialog = page.getByRole("dialog", { name: "Assign a reviewer" });

@@ -1,6 +1,7 @@
 import {
   reviewAssignmentSchema,
   reviewCriteriaSchema,
+  reviewDraftSchema,
   reviewOperationsResponseSchema,
   reviewerAssignmentListResponseSchema,
   reviewerGroupSchema,
@@ -10,6 +11,8 @@ import {
   type ReviewRubric,
   type ReviewerAssignmentListResponse,
 } from "@sessionbox-killer/contracts";
+
+import { safeSpeakerPortalBrand } from "../portal/brand.js";
 
 interface ReviewScope {
   eventId: string;
@@ -57,13 +60,31 @@ interface AssignmentRow {
   reviewer_id: string;
   rubric_snapshot_json: string | null;
   rubric_version: number | null;
+  score_snapshot_json: string;
   scoring_required: number;
   source_version: number;
   status: "assigned" | "draft" | "submitted" | "withdrawn";
   submission_id: string;
+  submitted_at: string | null;
   title: string;
   track_name: string | null;
   updated_at: string;
+  reviewer_note: string | null;
+}
+
+interface EventRow {
+  brand_json: string;
+  id: string;
+  name: string;
+  review_closes_at: string | null;
+  slug: string;
+  timezone: string;
+}
+
+interface SubmissionAnswerRow {
+  field_stable_key: string;
+  submission_id: string;
+  value_json: string;
 }
 
 interface AssignmentAuditRow {
@@ -72,6 +93,7 @@ interface AssignmentAuditRow {
   created_at: string;
   entity_id: string;
   id: string;
+  safe_diff_json: string;
 }
 
 interface ProposalRow {
@@ -139,6 +161,35 @@ function parseAssignmentRubric(
     throw new ReviewOperationsProjectionUnavailableError();
   }
   return parsed.data;
+}
+
+function parsedAnswer(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new ReviewOperationsProjectionUnavailableError(
+      "A reviewer proposal answer is invalid.",
+    );
+  }
+}
+
+function textAnswer(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function listAnswer(value: unknown): string[] {
+  const candidates = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/\r?\n/u)
+      : [];
+  return candidates
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 20);
 }
 
 export class D1ReviewOperationsRepository {
@@ -216,20 +267,81 @@ export class D1ReviewOperationsRepository {
         "The reviewer identity is not available for this event.",
       );
     }
-    const [assignmentRows, assignmentAudit] = await Promise.all([
-      this.#assignments(scope, reviewerId),
-      this.#assignmentAudit(scope, reviewerId),
-    ]);
+    const [event, assignmentRows, assignmentAudit, answerRows] =
+      await Promise.all([
+        this.#event(scope),
+        this.#assignments(scope, reviewerId),
+        this.#assignmentAudit(scope, reviewerId),
+        this.#reviewerAnswers(scope, reviewerId),
+      ]);
+    const answersBySubmission = new Map<string, Map<string, unknown>>();
+    for (const answer of answerRows) {
+      const answers =
+        answersBySubmission.get(answer.submission_id) ?? new Map();
+      answers.set(answer.field_stable_key, parsedAnswer(answer.value_json));
+      answersBySubmission.set(answer.submission_id, answers);
+    }
     const assignments = assignmentRows
       .filter((row) => row.status !== "withdrawn" && row.conflict !== 1)
-      .map((row) =>
-        this.#assignmentView(row, assignmentAudit.get(row.id) ?? []),
-      );
+      .map((row) => {
+        const assignment = this.#assignmentView(
+          row,
+          assignmentAudit.get(row.id) ?? [],
+        );
+        const answers = answersBySubmission.get(row.submission_id) ?? new Map();
+        let draft;
+        try {
+          draft = reviewDraftSchema.parse({
+            note: row.reviewer_note ?? "",
+            scores: JSON.parse(row.score_snapshot_json) as unknown,
+          });
+        } catch {
+          throw new ReviewOperationsProjectionUnavailableError(
+            `Review assignment ${row.id} has an invalid score snapshot.`,
+          );
+        }
+        return {
+          assignment,
+          context: {
+            abstract: textAnswer(answers.get("abstract")),
+            audience: textAnswer(answers.get("audience")),
+            format: textAnswer(answers.get("format")),
+            outcomes: listAnswer(answers.get("outcomes")),
+          },
+          draft,
+          submittedAt: row.submitted_at,
+        };
+      });
     return reviewerAssignmentListResponseSchema.parse({
       assignments,
-      eventId: scope.eventId,
+      event: {
+        brand: safeSpeakerPortalBrand(event.brand_json),
+        id: event.id,
+        name: event.name,
+        reviewDueAt: event.review_closes_at,
+        slug: event.slug,
+        timezone: event.timezone,
+      },
       reviewer,
     });
+  }
+
+  async #event(scope: ReviewScope): Promise<EventRow> {
+    const event = await this.#database
+      .prepare(
+        `SELECT id, name, slug, timezone, brand_json, review_closes_at
+         FROM p_events
+         WHERE organization_id = ?1 AND id = ?2 AND source_deleted_at IS NULL
+         LIMIT 1`,
+      )
+      .bind(scope.organizationId, scope.eventId)
+      .first<EventRow>();
+    if (!event) {
+      throw new ReviewOperationsProjectionUnavailableError(
+        "The review event is unavailable.",
+      );
+    }
+    return event;
   }
 
   async reviewerIdForEmail(
@@ -364,7 +476,9 @@ export class D1ReviewOperationsRepository {
       .prepare(
         `SELECT review.id, review.reviewer_id, review.reviewer_group_id,
                 review.rubric_version, review.rubric_snapshot_json,
-                review.scoring_required, review.assigned_at, review.status,
+                review.score_snapshot_json, review.reviewer_note,
+                review.scoring_required, review.assigned_at, review.submitted_at,
+                review.status,
                 review.conflict, review.conflict_note, review.updated_at,
                 review.source_version, submission.id AS submission_id,
                 submission.friendly_id, submission.title,
@@ -403,10 +517,40 @@ export class D1ReviewOperationsRepository {
     return result.results;
   }
 
+  async #reviewerAnswers(scope: ReviewScope, reviewerId: string) {
+    const result = await this.#database
+      .prepare(
+        `SELECT answer.submission_id, answer.field_stable_key, answer.value_json
+         FROM p_submission_answers AS answer
+         WHERE answer.organization_id = ?1 AND answer.event_id = ?2
+           AND answer.source_deleted_at IS NULL
+           AND answer.field_stable_key IN ('abstract', 'audience', 'format', 'outcomes')
+           AND EXISTS (
+             SELECT 1 FROM p_reviews AS review
+             WHERE review.organization_id = answer.organization_id
+               AND review.event_id = answer.event_id
+               AND review.submission_id = answer.submission_id
+               AND review.reviewer_id = ?3
+               AND review.status <> 'withdrawn'
+               AND review.conflict = 0
+               AND review.source_deleted_at IS NULL
+           )
+         ORDER BY answer.submission_id, answer.sort_order, answer.id
+         LIMIT 40001`,
+      )
+      .bind(scope.organizationId, scope.eventId, reviewerId)
+      .all<SubmissionAnswerRow>();
+    if (result.results.length > 40_000) {
+      throw new ReviewOperationsProjectionUnavailableError();
+    }
+    return result.results;
+  }
+
   async #assignmentAudit(scope: ReviewScope, reviewerId?: string) {
     const result = await this.#database
       .prepare(
         `SELECT audit.id, audit.entity_id, audit.action, audit.created_at,
+                audit.safe_diff_json,
                 COALESCE(user.display_name, 'OpenSession automation') AS actor_display_name
          FROM audit_events AS audit
          LEFT JOIN users AS user ON user.id = audit.actor_id
@@ -426,7 +570,9 @@ export class D1ReviewOperationsRepository {
              'reviews.assignment.conflict',
              'reviews.assignment.create',
              'reviews.assignment.remove',
-             'reviews.assignment.restore'
+             'reviews.assignment.restore',
+             'reviews.review.reopen',
+             'reviews.review.submit'
            )
          ORDER BY audit.created_at DESC, audit.id DESC LIMIT 4000`,
       )
@@ -489,6 +635,9 @@ export class D1ReviewOperationsRepository {
         actorDisplayName: entry.actor_display_name,
         at: entry.created_at,
         id: entry.id,
+        ...(entry.action === "reviews.review.reopen"
+          ? { reason: this.#reopenReason(entry.safe_diff_json) }
+          : {}),
       })),
       conflictNote: row.conflict_note?.trim() || null,
       id: row.id,
@@ -506,5 +655,23 @@ export class D1ReviewOperationsRepository {
       },
       updatedAt: row.updated_at,
     });
+  }
+
+  #reopenReason(value: string): string {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "reason" in parsed &&
+        typeof parsed.reason === "string" &&
+        parsed.reason.trim()
+      ) {
+        return parsed.reason.trim();
+      }
+    } catch {
+      // Invalid audit details fall back to a safe, non-sensitive summary.
+    }
+    return "Review reopened by an organizer.";
   }
 }

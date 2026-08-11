@@ -158,7 +158,7 @@ export function App() {
       fixtureState === "submitted" ? (
         <ReviewerWorkspace fixtureState={fixtureState} />
       ) : (
-        <ReviewerWorkspace />
+        <ReviewerWorkspace fixtureState="default" />
       );
   } else if (window.location.pathname.startsWith("/review/")) {
     route = <ReviewerWorkspace />;

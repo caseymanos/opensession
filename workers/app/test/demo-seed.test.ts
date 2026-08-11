@@ -31,7 +31,7 @@ describe("deterministic demo seed compiler", () => {
 
     expect(second).toEqual(first);
     expect(first.digest).toBe(
-      "d4268a5f2f6c30cce9f741f8d5ee6a9b881e9fda561e627f4303ae4276430fd1",
+      "663247fed258b45b2e8f8a274917e4060eb8c110ee460089ff4ef0a86a9d10ff",
     );
     expect(first.operations).toHaveLength(138);
     expect(first.snapshotId).toBe(`snapshot_${first.digest.slice(0, 24)}`);

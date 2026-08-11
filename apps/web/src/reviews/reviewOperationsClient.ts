@@ -3,10 +3,12 @@ import {
   reviewOperationsCommandSchema,
   reviewOperationsResponseSchema,
   reviewerAssignmentListResponseSchema,
+  reviewScoringCommandSchema,
   type ReviewOperationsCommand,
   type ReviewOperationsCommandResult,
   type ReviewOperationsResponse,
   type ReviewerAssignmentListResponse,
+  type ReviewScoringCommand,
 } from "@sessionbox-killer/contracts";
 
 import { readCsrfToken } from "../auth/authClient";
@@ -29,6 +31,10 @@ export interface ReviewOperationsPort {
     eventKey: string,
     signal?: AbortSignal,
   ): Promise<ReviewerAssignmentListResponse>;
+  executeReview(
+    eventKey: string,
+    command: ReviewScoringCommand,
+  ): Promise<ReviewOperationsCommandResult>;
 }
 
 export class ReviewOperationsApiError extends Error {
@@ -132,7 +138,61 @@ export function createReviewOperationsPort(
     throw error;
   }
 
+  async function executeReview(
+    eventKey: string,
+    command: ReviewScoringCommand,
+    csrfRetried: boolean,
+  ): Promise<ReviewOperationsCommandResult> {
+    const csrf = csrfReader();
+    if (!csrf) {
+      throw new ReviewOperationsApiError(
+        "missing_csrf",
+        "Refresh the page before saving this review.",
+        0,
+      );
+    }
+    const reviewerPath = `/api/events/${encodeURIComponent(eventKey)}/reviewer-assignments/${encodeURIComponent(command.assignmentId)}/commands`;
+    const organizerPath = `/api/events/${encodeURIComponent(eventKey)}/review-operations/reviews/${encodeURIComponent(command.assignmentId)}/commands`;
+    const response = await fetcher(
+      command.type === "reopen_review" ? organizerPath : reviewerPath,
+      {
+        body: JSON.stringify(command),
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+        },
+        method: "POST",
+      },
+    );
+    const value = await responseJson(response);
+    const parsed = reviewOperationsCommandResponseSchema.safeParse(value);
+    if (parsed.success) {
+      if (parsed.data.ok && response.ok) return parsed.data.result;
+      if (!parsed.data.ok) {
+        if (!csrfRetried && parsed.data.error.code === "invalid_csrf") {
+          return executeReview(eventKey, command, true);
+        }
+        throw new ReviewOperationsApiError(
+          parsed.data.error.code,
+          parsed.data.error.message,
+          response.status,
+        );
+      }
+    }
+    const error = genericError(response, value);
+    if (!csrfRetried && error.code === "invalid_csrf") {
+      return executeReview(eventKey, command, true);
+    }
+    throw error;
+  }
+
   return {
+    async executeReview(eventKey, input) {
+      const command = reviewScoringCommandSchema.parse(input);
+      return executeReview(eventKey, command, false);
+    },
     async execute(eventKey, input) {
       const command = reviewOperationsCommandSchema.parse(input);
       return execute(eventKey, command, false);

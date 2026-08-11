@@ -570,6 +570,25 @@ const reviewEntities: DemoSeedEntity[] = [
       "Rubric snapshot JSON": json(rubricSnapshot),
       "Rubric version": 2,
       "Scoring required": index !== 3,
+      "Score snapshot JSON": json(
+        status === "submitted"
+          ? rubricCriteriaSnapshot.map((criterion, criterionIndex) => ({
+              criterionId: criterion.id,
+              score: Math.max(1, 5 - ((index + criterionIndex) % 2)),
+            }))
+          : status === "draft"
+            ? [
+                {
+                  criterionId: rubricCriteriaSnapshot[0]?.id,
+                  score: 4,
+                },
+              ]
+            : [],
+      ),
+      "Reviewer note":
+        status === "submitted"
+          ? "Strong practical framing and clear evidence."
+          : "",
       Status: status,
       Submission: links(`submission_${number}`),
       "Submitted at":

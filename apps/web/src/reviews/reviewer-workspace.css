@@ -10,6 +10,11 @@
     var(--paper-100);
 }
 
+.reviewer-workspace {
+  color: var(--review-ink, var(--ink-950));
+  background-color: var(--review-background, var(--paper-100));
+}
+
 .reviewer-topbar {
   min-height: 4.8rem;
   display: grid;
@@ -17,9 +22,9 @@
   align-items: center;
   gap: 1rem;
   padding: 0.75rem clamp(1rem, 3vw, 2.2rem);
-  color: var(--paper-50);
+  color: var(--review-background, var(--paper-50));
   border-bottom: 1px solid rgb(255 255 255 / 8%);
-  background: var(--ink-950);
+  background: var(--review-ink, var(--ink-950));
 }
 
 .reviewer-brand,
@@ -66,9 +71,9 @@
   height: 2rem;
   display: grid;
   place-items: center;
-  color: var(--ink-950);
+  color: var(--review-ink, var(--ink-950));
   border-radius: 0.55rem;
-  background: var(--lime-400);
+  background: var(--review-accent, var(--lime-400));
   font-size: 0.66rem;
   font-weight: 850;
 }
@@ -323,6 +328,10 @@
 }
 
 .review-mobile-back {
+  display: none;
+}
+
+.review-mobile-conflict {
   display: none;
 }
 
@@ -736,6 +745,21 @@
     color: var(--ink-600);
     font-size: 0.72rem;
     font-weight: 750;
+  }
+
+  .review-mobile-conflict {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.85rem;
+    padding: 0;
+    color: var(--danger-700);
+    border: 0;
+    background: transparent;
+    font-size: 0.72rem;
+    font-weight: 750;
+    text-decoration: underline;
+    text-underline-offset: 0.2rem;
   }
 
   .review-scorecard {

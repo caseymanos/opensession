@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 8;
+export const AIRTABLE_SCHEMA_VERSION = 9;
 
 export type AirtableTableKey =
   | "organizations"
@@ -250,6 +250,7 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       text("Venue"),
       dateTime("CFP opens"),
       dateTime("CFP closes"),
+      dateTime("Review closes"),
       select("Status", statuses.event),
       longText("Brand JSON"),
       longText("Schedule days JSON"),
@@ -409,6 +410,8 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       select("Status", statuses.review),
       checkbox("Conflict"),
       longText("Conflict note"),
+      longText("Score snapshot JSON"),
+      longText("Reviewer note"),
       dateTime("Submitted at"),
     ]),
     table("review_scores", "Review Scores", [
