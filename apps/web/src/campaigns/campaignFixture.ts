@@ -51,8 +51,10 @@ function workspaceFixture(): CampaignWorkspace {
       subject: template.subject,
       version: template.version,
     }));
-  const first = templates[0];
-  if (!first) throw new Error("Campaign fixture has no active template.");
+  const receipt = templates.find(
+    ({ id }) => id === "template_submission_receipt",
+  );
+  if (!receipt) throw new Error("Campaign fixture has no receipt template.");
   return {
     campaigns: [
       {
@@ -62,9 +64,9 @@ function workspaceFixture(): CampaignWorkspace {
         messageCount: 18,
         scheduledAt: "2026-08-09T18:00:00.000Z",
         status: "sending",
-        templateId: first.id,
-        templateName: first.internalName,
-        templateVersion: first.version,
+        templateId: receipt.id,
+        templateName: receipt.internalName,
+        templateVersion: receipt.version,
       },
     ],
     deliveryMode: "allowlist",
