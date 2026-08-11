@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  PrivateUploadApiError,
   preparePrivateUpload,
   type PrivateUploadFinalizeError,
 } from "./privateUploadClient";
@@ -166,5 +167,146 @@ describe("private upload client", () => {
       fileId: "file_slides_pending",
     } satisfies Partial<PrivateUploadFinalizeError>);
     expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("rereads a rotated CSRF token once for intent and finalize", async () => {
+    const checksum = "b".repeat(64);
+    const invalidCsrf = json(
+      {
+        error: {
+          code: "invalid_csrf",
+          message: "The request could not be verified.",
+        },
+      },
+      403,
+    );
+    const intent = json(
+      {
+        file: {
+          id: "file_rotated_csrf",
+          lineage_id: "file_rotated_csrf",
+          status: "pending",
+          version: 1,
+        },
+        upload: {
+          expires_at: "2026-08-10T18:05:00.000Z",
+          headers: {
+            "Content-Type": "application/pdf",
+            "X-Content-SHA256": checksum,
+            "X-Upload-Token": "upload-token",
+          },
+          method: "PUT",
+          url: "/api/uploads/file_rotated_csrf/content",
+        },
+      },
+      201,
+    );
+    const finalized = json({
+      byte_size: 12,
+      checksum_sha256: checksum,
+      content_type: "application/pdf",
+      detected_content_type: "application/pdf",
+      id: "file_rotated_csrf",
+      status: "ready",
+      version: 1,
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(invalidCsrf)
+      .mockResolvedValueOnce(intent)
+      .mockResolvedValueOnce(invalidCsrf.clone())
+      .mockResolvedValueOnce(finalized);
+    const csrfReader = vi
+      .fn()
+      .mockReturnValueOnce("intent-old")
+      .mockReturnValueOnce("intent-new")
+      .mockReturnValueOnce("finalize-old")
+      .mockReturnValueOnce("finalize-new");
+
+    await expect(
+      preparePrivateUpload(
+        {
+          eventId: "event_summit",
+          file: new File(["%PDF-1.7"], "slides.pdf", {
+            type: "application/pdf",
+          }),
+          organizationId: "organization_one",
+          ownerContactId: "contact_speaker",
+          purpose: "slides",
+        },
+        () => undefined,
+        fetcher,
+        csrfReader,
+        vi.fn().mockResolvedValue(undefined),
+      ),
+    ).resolves.toEqual({ fileId: "file_rotated_csrf", version: 1 });
+    expect(csrfReader).toHaveBeenCalledTimes(4);
+    expect(
+      fetcher.mock.calls.map(
+        ([, options]) =>
+          (options?.headers as Record<string, string>)["X-CSRF-Token"],
+      ),
+    ).toEqual(["intent-old", "intent-new", "finalize-old", "finalize-new"]);
+  });
+
+  it("rejects an aborted browser PUT instead of leaving the upload pending", async () => {
+    class AbortedRequest {
+      readonly upload = { addEventListener: vi.fn() };
+      readonly listeners = new Map<string, () => void>();
+      open = vi.fn();
+      setRequestHeader = vi.fn();
+      withCredentials = false;
+
+      addEventListener(name: string, listener: () => void) {
+        this.listeners.set(name, listener);
+      }
+
+      send() {
+        this.listeners.get("abort")?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", AbortedRequest);
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      json(
+        {
+          file: {
+            id: "file_aborted",
+            lineage_id: "file_aborted",
+            status: "pending",
+            version: 1,
+          },
+          upload: {
+            expires_at: "2026-08-10T18:05:00.000Z",
+            headers: {
+              "Content-Type": "application/pdf",
+              "X-Content-SHA256": "c".repeat(64),
+              "X-Upload-Token": "upload-token",
+            },
+            method: "PUT",
+            url: "/api/uploads/file_aborted/content",
+          },
+        },
+        201,
+      ),
+    );
+
+    const error = await preparePrivateUpload(
+      {
+        eventId: "event_summit",
+        file: new File(["%PDF-1.7"], "slides.pdf", {
+          type: "application/pdf",
+        }),
+        organizationId: "organization_one",
+        ownerContactId: "contact_speaker",
+        purpose: "slides",
+      },
+      () => undefined,
+      fetcher,
+      () => "csrf-token",
+    ).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PrivateUploadApiError);
+    expect(error).toMatchObject({ code: "upload_failed", status: 0 });
+    expect(fetcher).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
   });
 });

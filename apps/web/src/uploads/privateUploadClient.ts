@@ -138,6 +138,15 @@ function browserUpload(
         ),
       ),
     );
+    request.addEventListener("abort", () =>
+      reject(
+        new PrivateUploadApiError(
+          "upload_failed",
+          "The file upload was canceled before it finished.",
+          0,
+        ),
+      ),
+    );
     request.send(file);
   });
 }
@@ -151,6 +160,15 @@ export async function finalizePrivateUpload(
   fileId: string,
   fetcher: Fetch = window.fetch.bind(window),
   csrfReader: () => string | null = () => readCsrfToken(document.cookie),
+): Promise<PreparedPrivateUpload> {
+  return finalizePrivateUploadRequest(fileId, fetcher, csrfReader, false);
+}
+
+async function finalizePrivateUploadRequest(
+  fileId: string,
+  fetcher: Fetch,
+  csrfReader: () => string | null,
+  retryCsrf: boolean,
 ): Promise<PreparedPrivateUpload> {
   const response = await fetcher(
     `/api/uploads/${encodeURIComponent(fileId)}/finalize`,
@@ -166,7 +184,13 @@ export async function finalizePrivateUpload(
     },
   );
   const body = await json(response);
-  if (!response.ok) throw responseError(response, body);
+  if (!response.ok) {
+    const error = responseError(response, body);
+    if (!retryCsrf && error.code === "invalid_csrf") {
+      return finalizePrivateUploadRequest(fileId, fetcher, csrfReader, true);
+    }
+    throw error;
+  }
   const finalized = uploadFinalizeResponseSchema.safeParse(body);
   if (!finalized.success) throw responseError(response, body);
   return { fileId: finalized.data.id, version: finalized.data.version };
@@ -191,6 +215,26 @@ export async function preparePrivateUpload(
     purpose: input.purpose,
     ...(input.replacesFileId ? { replaces_file_id: input.replacesFileId } : {}),
   });
+  return preparePrivateUploadRequest(
+    input,
+    request,
+    onProgress,
+    fetcher,
+    csrfReader,
+    upload,
+    false,
+  );
+}
+
+async function preparePrivateUploadRequest(
+  input: PrivateUploadInput,
+  request: ReturnType<typeof uploadIntentRequestSchema.parse>,
+  onProgress: (progress: number) => void,
+  fetcher: Fetch,
+  csrfReader: () => string | null,
+  upload: UploadTransport,
+  retryCsrf: boolean,
+): Promise<PreparedPrivateUpload> {
   const intentResponse = await fetcher("/api/uploads/intents", {
     body: JSON.stringify(request),
     credentials: "same-origin",
@@ -202,7 +246,21 @@ export async function preparePrivateUpload(
     method: "POST",
   });
   const intentBody = await json(intentResponse);
-  if (!intentResponse.ok) throw responseError(intentResponse, intentBody);
+  if (!intentResponse.ok) {
+    const error = responseError(intentResponse, intentBody);
+    if (!retryCsrf && error.code === "invalid_csrf") {
+      return preparePrivateUploadRequest(
+        input,
+        request,
+        onProgress,
+        fetcher,
+        csrfReader,
+        upload,
+        true,
+      );
+    }
+    throw error;
+  }
   const intent = uploadIntentResponseSchema.safeParse(intentBody);
   if (!intent.success) throw responseError(intentResponse, intentBody);
   await upload(
