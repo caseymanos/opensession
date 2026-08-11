@@ -543,8 +543,9 @@ describe("speaker portal routes", () => {
         method: "POST",
       });
 
-    const responses = [];
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    const responses = [await request("speaker-one@example.test")];
+    const knownResponse = await responses[0].json();
+    for (let attempt = 1; attempt < 5; attempt += 1) {
       responses.push(await request("speaker-one@example.test"));
     }
     const unknown = await request("unknown-speaker@example.test");
@@ -553,7 +554,7 @@ describe("speaker portal routes", () => {
       202, 202, 202, 202, 202,
     ]);
     expect(unknown.status).toBe(202);
-    expect(await unknown.json()).toEqual(await responses[0]?.json());
+    expect(await unknown.json()).toEqual(knownResponse);
     const links = await database
       .prepare(
         `SELECT redirect_path, browser_binding_hash
