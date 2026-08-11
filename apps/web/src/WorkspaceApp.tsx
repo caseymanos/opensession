@@ -10,6 +10,8 @@ import { AgendaBuilder, type AgendaFixtureState } from "./agenda/AgendaBuilder";
 import { workspaceEventSlug } from "./agenda/agendaRoute";
 import { AgendaWorkspace } from "./agenda/AgendaWorkspace";
 import { CfpBuilder } from "./cfp/CfpBuilder";
+import { CampaignWorkspace } from "./campaigns/CampaignWorkspace";
+import { campaignEventKey } from "./campaigns/campaignRoute";
 import { Dashboard } from "./Dashboard";
 import { DecisionWorkspace } from "./decisions/DecisionWorkspace";
 import { EmailTemplateWorkspace } from "./email-templates/EmailTemplateWorkspace";
@@ -80,6 +82,7 @@ export function WorkspaceApp({
   const isAgendaFixtureRoute = currentPath.startsWith("/fixtures/agenda/");
   const agendaEventSlug = workspaceEventSlug(currentPath);
   const emailTemplateEvent = emailTemplateEventKey(currentPath);
+  const campaignEvent = campaignEventKey(currentPath);
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
@@ -134,6 +137,12 @@ export function WorkspaceApp({
     )
   ) : currentPath.endsWith("/people/mina-okafor/tasks/final-slides") ? (
     <OrganizerTaskReviewWorkspace key={resetVersion} />
+  ) : campaignEvent ? (
+    <CampaignWorkspace
+      eventKey={campaignEvent}
+      fixture={currentPath.startsWith("/fixtures/campaigns/")}
+      key={`${campaignEvent}:${resetVersion}`}
+    />
   ) : emailTemplateEvent ? (
     <EmailTemplateWorkspace
       eventKey={emailTemplateEvent}

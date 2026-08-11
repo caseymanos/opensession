@@ -26,6 +26,7 @@ export type CampaignEnqueueResult =
         | "already_queued"
         | "already_terminal"
         | "handoff_pending"
+        | "scheduled"
         | "suppressed";
       readonly status: string;
     };
@@ -45,6 +46,7 @@ interface ProviderMessageRow {
   lease_expires_at: string | null;
   payload_hash: string | null;
   recipient_hash: string;
+  scheduled_at: string | null;
   status:
     | "bounced"
     | "complained"
@@ -99,6 +101,10 @@ const terminalStatuses = new Set([
 
 function retryDelay(attempt: number): number {
   return retryDelays[Math.min(attempt - 1, retryDelays.length - 1)] ?? 1_800;
+}
+
+function campaignScheduledAt(message: CampaignEmailQueueMessage): string {
+  return message.scheduled_at ?? message.queued_at;
 }
 
 async function campaignPayloadHash(message: EmailMessage): Promise<string> {
@@ -200,10 +206,10 @@ export class CampaignEmailCoordinator {
            id, organization_id, event_id, campaign_id, contact_id, kind,
            provider, idempotency_key, recipient_hash, template_id,
            template_version, payload_hash, delivery_mode, status, created_at,
-           updated_at, error_code, queue_payload_json
+           updated_at, error_code, queue_payload_json, scheduled_at
          ) VALUES (
            ?1, ?2, ?3, ?4, ?5, 'campaign', 'resend', ?1, ?6, ?7, ?8, ?9,
-           ?10, ?11, ?12, ?12, ?13, ?14
+           ?10, ?11, ?12, ?12, ?13, ?14, ?15
          ) ON CONFLICT (organization_id, idempotency_key) DO NOTHING`,
       )
       .bind(
@@ -221,6 +227,7 @@ export class CampaignEmailCoordinator {
         now,
         errorCode,
         suppression ? null : queuePayloadJson,
+        campaignScheduledAt(message),
       )
       .run();
     let result: CampaignEnqueueResult = { outcome: "queued" };
@@ -338,6 +345,46 @@ export class CampaignEmailCoordinator {
     return { outcome: "not_replayable", status: handoff.status };
   }
 
+  async replayById(options: {
+    readonly campaignId: string;
+    readonly eventId: string;
+    readonly messageId: string;
+    readonly organizationId: string;
+  }): Promise<CampaignReplayResult> {
+    const row = await this.#database
+      .prepare(
+        `SELECT queue_payload_json, status
+         FROM provider_messages
+         WHERE organization_id = ?1 AND event_id = ?2 AND campaign_id = ?3
+           AND id = ?4 AND kind = 'campaign'
+         LIMIT 1`,
+      )
+      .bind(
+        options.organizationId,
+        options.eventId,
+        options.campaignId,
+        options.messageId,
+      )
+      .first<{ queue_payload_json: string | null; status: string }>();
+    if (!row?.queue_payload_json) {
+      return {
+        outcome: "not_replayable",
+        status: row?.status ?? "missing",
+      };
+    }
+    const parsed = parseEmailQueueMessage(JSON.parse(row.queue_payload_json));
+    if (
+      parsed.kind !== "campaign.email.requested" ||
+      parsed.organization_id !== options.organizationId ||
+      parsed.event_id !== options.eventId ||
+      parsed.campaign_id !== options.campaignId ||
+      parsed.message_id !== options.messageId
+    ) {
+      throw new Error("Campaign replay payload scope is inconsistent.");
+    }
+    return this.replay(parsed);
+  }
+
   async drainPendingHandoffs(limit = 25): Promise<number> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new TypeError(
@@ -350,6 +397,7 @@ export class CampaignEmailCoordinator {
          FROM provider_messages
          WHERE status = 'queued' AND queue_handed_off_at IS NULL
            AND queue_payload_json IS NOT NULL
+           AND COALESCE(scheduled_at, created_at) <= ?1
            AND (queue_handoff_lease_expires_at IS NULL
              OR queue_handoff_lease_expires_at <= ?1)
          ORDER BY created_at, id
@@ -407,6 +455,9 @@ export class CampaignEmailCoordinator {
   ): Promise<CampaignEnqueueResult> {
     const now = this.#now();
     const nowIso = now.toISOString();
+    if (Date.parse(campaignScheduledAt(message)) > now.getTime()) {
+      return { outcome: "scheduled", status: "queued" };
+    }
     const leaseExpiresAt = new Date(
       now.getTime() + queueHandoffLeaseMilliseconds,
     ).toISOString();
@@ -415,17 +466,20 @@ export class CampaignEmailCoordinator {
         `UPDATE provider_messages
          SET queue_handoff_lease_expires_at = ?1,
              queue_payload_json = COALESCE(queue_payload_json, ?2),
-             delivery_mode = ?3, updated_at = ?4, error_code = NULL
-         WHERE organization_id = ?5 AND id = ?6 AND status = 'queued'
+             scheduled_at = COALESCE(scheduled_at, ?3),
+             delivery_mode = ?4, updated_at = ?5, error_code = NULL
+         WHERE organization_id = ?6 AND id = ?7 AND status = 'queued'
            AND queue_handed_off_at IS NULL
-           AND (queue_payload_json IS NOT NULL OR payload_hash = ?7)
+           AND (queue_payload_json IS NOT NULL OR payload_hash = ?8)
+           AND COALESCE(scheduled_at, created_at) <= ?5
            AND (queue_handoff_lease_expires_at IS NULL
-             OR queue_handoff_lease_expires_at <= ?4)
+             OR queue_handoff_lease_expires_at <= ?5)
          RETURNING id`,
       )
       .bind(
         leaseExpiresAt,
         JSON.stringify(message),
+        campaignScheduledAt(message),
         this.#config.mode,
         nowIso,
         message.organization_id,
@@ -460,7 +514,7 @@ export class CampaignEmailCoordinator {
       .prepare(
         `UPDATE provider_messages
          SET queue_handed_off_at = ?1, queue_handoff_lease_expires_at = NULL,
-             queue_payload_json = NULL, updated_at = ?1
+             updated_at = ?1
          WHERE organization_id = ?2 AND id = ?3
            AND queue_handoff_lease_expires_at = ?4
            AND queue_handed_off_at IS NULL`,
@@ -497,7 +551,8 @@ export class CampaignEmailCoordinator {
         `SELECT attempt_count, campaign_id, contact_id, delivery_mode, event_id,
                 idempotency_key, lease_expires_at, payload_hash, recipient_hash,
                 queue_handed_off_at, queue_handoff_lease_expires_at,
-                queue_payload_json, status, template_id, template_version
+                queue_payload_json, scheduled_at, status, template_id,
+                template_version
          FROM provider_messages
          WHERE organization_id = ?1 AND id = ?2`,
       )
@@ -555,7 +610,9 @@ export class CampaignEmailCoordinator {
       row.event_id === message.event_id &&
       row.template_id === message.template_id &&
       row.template_version === message.template_version &&
-      row.recipient_hash === recipientHash
+      row.recipient_hash === recipientHash &&
+      (row.scheduled_at === null ||
+        row.scheduled_at === campaignScheduledAt(message))
     );
   }
 
@@ -595,7 +652,8 @@ export async function pruneExpiredEmailQueuePayloads(
            queue_handoff_lease_expires_at = NULL,
            queue_payload_json = NULL,
            updated_at = ?1
-       WHERE queue_payload_json IS NOT NULL AND created_at <= ?2
+       WHERE queue_payload_json IS NOT NULL
+         AND COALESCE(scheduled_at, created_at) <= ?2
          AND status IN ('queued', 'failed')`,
     )
     .bind(now.toISOString(), cutoff)
@@ -641,7 +699,7 @@ export class EmailQueueDeliveryService {
       .prepare(
         `SELECT attempt_count, campaign_id, contact_id, delivery_mode, event_id,
                 idempotency_key, lease_expires_at, payload_hash, recipient_hash,
-                status, template_id, template_version
+                scheduled_at, status, template_id, template_version
          FROM provider_messages
          WHERE organization_id = ?1 AND id = ?2`,
       )
@@ -668,7 +726,9 @@ export class EmailQueueDeliveryService {
       existing.template_id !== message.template_id ||
       existing.template_version !== message.template_version ||
       existing.recipient_hash !== recipientHash ||
-      existing.payload_hash !== payloadHash
+      existing.payload_hash !== payloadHash ||
+      (existing.scheduled_at !== null &&
+        existing.scheduled_at !== campaignScheduledAt(message))
     ) {
       throw new TypeError(
         "Campaign queue message does not match durable state.",
@@ -677,16 +737,34 @@ export class EmailQueueDeliveryService {
     if (terminalStatuses.has(existing.status)) return { action: "ack" };
     const now = this.#now();
     const nowIso = now.toISOString();
+    if (Date.parse(campaignScheduledAt(message)) > now.getTime()) {
+      await this.#database
+        .prepare(
+          `UPDATE provider_messages
+           SET queue_handed_off_at = NULL,
+               queue_handoff_lease_expires_at = NULL,
+               updated_at = ?1
+           WHERE organization_id = ?2 AND id = ?3 AND status = 'queued'`,
+        )
+        .bind(nowIso, message.organization_id, message.message_id)
+        .run();
+      return { action: "ack" };
+    }
     await this.#database
       .prepare(
         `UPDATE provider_messages
          SET queue_handed_off_at = COALESCE(queue_handed_off_at, ?1),
              queue_handoff_lease_expires_at = NULL,
-             queue_payload_json = NULL, updated_at = ?1
+             scheduled_at = COALESCE(scheduled_at, ?4), updated_at = ?1
          WHERE organization_id = ?2 AND id = ?3
            AND queue_handed_off_at IS NULL`,
       )
-      .bind(nowIso, message.organization_id, message.message_id)
+      .bind(
+        nowIso,
+        message.organization_id,
+        message.message_id,
+        campaignScheduledAt(message),
+      )
       .run();
     if (existing.delivery_mode !== this.#config.mode) {
       await this.#failCampaignBeforeAttempt(
@@ -705,8 +783,7 @@ export class EmailQueueDeliveryService {
          SET status = 'sending', attempt_count = attempt_count + 1,
              lease_expires_at = ?1, updated_at = ?2, error_code = NULL,
              queue_handed_off_at = COALESCE(queue_handed_off_at, ?2),
-             queue_handoff_lease_expires_at = NULL,
-             queue_payload_json = NULL
+             queue_handoff_lease_expires_at = NULL
          WHERE organization_id = ?3 AND id = ?4
            AND (status = 'queued' OR (status = 'sending' AND lease_expires_at <= ?2))
          RETURNING attempt_count, recipient_hash`,

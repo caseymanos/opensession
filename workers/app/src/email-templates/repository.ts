@@ -10,6 +10,7 @@ import {
   type EmailMergeValues,
   type EmailPreviewRecipient,
   type EmailTemplate,
+  type EmailTemplateAudience,
   type EmailTemplateDraft,
   type EmailTemplateRecord,
   type EmailTemplateWorkspace,
@@ -63,6 +64,7 @@ interface RecipientRow {
   email_normalized: string;
   first_name: string | null;
   id: string;
+  portal_state: string;
   roles_json: string;
 }
 
@@ -361,11 +363,27 @@ export class D1EmailTemplateProjectionRepository {
     readonly recipientId: string;
     readonly requestUrl: string;
   }): Promise<EmailMergeValues | null> {
+    return this.readContactMergeValues({
+      ...options,
+      portalStates: ["active", "invited"],
+      requiredRole: "speaker",
+    });
+  }
+
+  async readContactMergeValues(options: {
+    readonly event: EmailTemplateEventProjection;
+    readonly organizer: { readonly email: string; readonly name: string };
+    readonly portalStates?: readonly string[];
+    readonly recipientId: string;
+    readonly requestUrl: string;
+    readonly requiredRole?: EmailTemplateAudience;
+  }): Promise<EmailMergeValues | null> {
     const { event } = options;
     const recipient = await this.#database
       .prepare(
         `SELECT contact.id, contact.display_name, contact.first_name,
-                contact.email_normalized, event_contact.roles_json
+                contact.email_normalized, event_contact.portal_state,
+                event_contact.roles_json
          FROM p_event_contacts AS event_contact
          JOIN p_contacts AS contact
            ON contact.organization_id = event_contact.organization_id
@@ -374,17 +392,21 @@ export class D1EmailTemplateProjectionRepository {
          WHERE event_contact.organization_id = ?1
            AND event_contact.event_id = ?2
            AND event_contact.contact_id = ?3
-           AND event_contact.portal_state IN ('active', 'invited')
            AND event_contact.source_deleted_at IS NULL
-           AND EXISTS (
-             SELECT 1 FROM json_each(event_contact.roles_json)
-             WHERE json_each.value = 'speaker'
-           )
          LIMIT 1`,
       )
       .bind(event.organizationId, event.id, options.recipientId)
       .first<RecipientRow>();
     if (!recipient) return null;
+    const recipientRoles = parseRoles(recipient.roles_json);
+    if (
+      (options.requiredRole &&
+        !recipientRoles.includes(options.requiredRole)) ||
+      (options.portalStates &&
+        !options.portalStates.includes(recipient.portal_state))
+    ) {
+      return null;
+    }
 
     const [submission, session, task] = await Promise.all([
       this.#database

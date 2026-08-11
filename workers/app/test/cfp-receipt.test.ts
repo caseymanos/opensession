@@ -427,9 +427,11 @@ describe("CFP submission receipts", () => {
     }>();
     expect(state).toMatchObject({
       attempt_count: 1,
-      queue_payload_json: null,
       status: "failed",
     });
+    expect(JSON.parse(state?.queue_payload_json ?? "null")).toEqual(
+      accepted[0],
+    );
     expect(state?.queue_handed_off_at).toBeTruthy();
 
     const modeAccepted: CampaignEmailQueueMessage[] = [];
@@ -480,9 +482,11 @@ describe("CFP submission receipts", () => {
     }>();
     expect(modeState).toMatchObject({
       error_code: "delivery_mode_changed",
-      queue_payload_json: null,
       status: "failed",
     });
+    expect(JSON.parse(modeState?.queue_payload_json ?? "null")).toEqual(
+      modeAccepted[0],
+    );
     expect(modeState?.queue_handed_off_at).toBeTruthy();
   });
 
