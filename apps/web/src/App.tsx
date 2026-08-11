@@ -94,10 +94,11 @@ export function App() {
         <WorkspaceApp />
       );
   } else if (window.location.pathname.startsWith("/fixtures/submissions/")) {
-    const fixtureState = window.location.pathname.split("/").at(-1);
+    const fixtureState = window.location.pathname.split("/")[3];
     route =
       fixtureState === "empty" ||
       fixtureState === "empty-filter" ||
+      fixtureState === "interactive" ||
       fixtureState === "partial" ||
       fixtureState === "permission" ||
       fixtureState === "stale" ? (

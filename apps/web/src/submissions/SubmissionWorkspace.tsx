@@ -30,6 +30,10 @@ import {
   type DataTableColumn,
   type ToastMessage,
 } from "@sessionbox-killer/ui";
+import type {
+  OrganizerSubmissionCommandType,
+  OrganizerSubmissionProjection,
+} from "@sessionbox-killer/contracts";
 
 import {
   submissionFixture,
@@ -43,7 +47,7 @@ import {
 import "./submission-workspace.css";
 
 export type SubmissionFixtureState =
-  "empty" | "empty-filter" | "partial" | "permission" | "stale";
+  "empty" | "empty-filter" | "interactive" | "partial" | "permission" | "stale";
 
 type LifecycleAction = "reopen" | "start_review" | "withdraw";
 
@@ -55,7 +59,7 @@ const statusOptions = [
   })),
 ];
 
-const trackOptions = [
+const fixtureTrackOptions = [
   { label: "All tracks", value: "all" },
   ...Array.from(new Set(submissionFixture.map((item) => item.track))).map(
     (track) => ({ label: track, value: track }),
@@ -66,14 +70,18 @@ function readFilter(name: string) {
   return new URLSearchParams(window.location.search).get(name) ?? "";
 }
 
-function readStatusFilter() {
+function readStatusFilter(): "all" | SubmissionStatus {
   const status = readFilter("status");
-  return status === "all" || status in submissionStatusLabels ? status : "all";
+  return status === "all" || status in submissionStatusLabels
+    ? (status as "all" | SubmissionStatus)
+    : "all";
 }
 
 function readTrackFilter() {
   const track = readFilter("track");
-  return trackOptions.some((option) => option.value === track) ? track : "all";
+  return fixtureTrackOptions.some((option) => option.value === track)
+    ? track
+    : "all";
 }
 
 function getDetailId() {
@@ -169,13 +177,19 @@ function ReviewProgress({ submission }: { submission: SubmissionView }) {
   );
 }
 
-function SubmissionCards({ submissions }: { submissions: SubmissionView[] }) {
+function SubmissionCards({
+  eventKey,
+  submissions,
+}: {
+  eventKey: string;
+  submissions: SubmissionView[];
+}) {
   return (
     <div className="submission-cards" aria-label="Submission cards">
       {submissions.map((submission) => (
         <article key={submission.id}>
           <header>
-            <span>{submission.id}</span>
+            <span>{submission.reference ?? submission.id}</span>
             <StatusPill tone={submissionStatusTone(submission.status)}>
               {submissionStatusLabels[submission.status]}
             </StatusPill>
@@ -200,7 +214,7 @@ function SubmissionCards({ submissions }: { submissions: SubmissionView[] }) {
               <dd>{submission.lastActivity}</dd>
             </div>
           </dl>
-          <a href={`/app/ai-engineer-summit/submissions/${submission.id}`}>
+          <a href={`/app/${eventKey}/submissions/${submission.id}`}>
             Open submission <ArrowRight aria-hidden="true" size={15} />
           </a>
         </article>
@@ -209,19 +223,52 @@ function SubmissionCards({ submissions }: { submissions: SubmissionView[] }) {
   );
 }
 
-function SubmissionList({
+export interface SubmissionFilterValues {
+  query: string;
+  status: "all" | SubmissionStatus;
+  track: string;
+}
+
+export function SubmissionList({
+  canGoBack = false,
+  eventKey = "ai-engineer-summit",
+  filters,
   fixtureState,
+  nextCursor = null,
+  onFiltersChange,
+  onNextPage,
+  onPreviousPage,
+  onRefresh,
+  projection,
+  serverFiltered = false,
+  showSummary = true,
   submissions,
+  trackFilterOptions = fixtureTrackOptions,
 }: {
+  canGoBack?: boolean;
+  eventKey?: string;
+  filters?: SubmissionFilterValues;
   fixtureState?: SubmissionFixtureState | undefined;
+  nextCursor?: string | null;
+  onFiltersChange?: (filters: SubmissionFilterValues) => void;
+  onNextPage?: (() => void) | undefined;
+  onPreviousPage?: (() => void) | undefined;
+  onRefresh?: (() => void) | undefined;
+  projection?: OrganizerSubmissionProjection | undefined;
+  serverFiltered?: boolean;
+  showSummary?: boolean;
   submissions: SubmissionView[];
+  trackFilterOptions?: { label: string; value: string }[];
 }) {
-  const [query, setQuery] = useState(
+  const [localQuery, setLocalQuery] = useState(
     fixtureState === "empty-filter" ? "no matching proposal" : readFilter("q"),
   );
-  const [status, setStatus] = useState(readStatusFilter);
-  const [track, setTrack] = useState(readTrackFilter);
+  const [localStatus, setLocalStatus] = useState(readStatusFilter);
+  const [localTrack, setLocalTrack] = useState(readTrackFilter);
   const [stale, setStale] = useState(fixtureState === "stale");
+  const query = filters?.query ?? localQuery;
+  const status = filters?.status ?? localStatus;
+  const track = filters?.track ?? localTrack;
 
   const source = useMemo(
     () => (fixtureState === "empty" ? [] : submissions),
@@ -229,27 +276,37 @@ function SubmissionList({
   );
   const visible = useMemo(
     () =>
-      source.filter((submission) => {
-        const haystack =
-          `${submission.id} ${submission.title} ${submission.submitter} ${submission.track}`.toLowerCase();
-        return (
-          haystack.includes(query.toLowerCase()) &&
-          (status === "all" || submission.status === status) &&
-          (track === "all" || submission.track === track)
-        );
-      }),
-    [query, source, status, track],
+      serverFiltered
+        ? source
+        : source.filter((submission) => {
+            const haystack =
+              `${submission.id} ${submission.title} ${submission.submitter} ${submission.track}`.toLowerCase();
+            return (
+              haystack.includes(query.toLowerCase()) &&
+              (status === "all" || submission.status === status) &&
+              (track === "all" || submission.track === track)
+            );
+          }),
+    [query, serverFiltered, source, status, track],
   );
 
-  function update(next: { query?: string; status?: string; track?: string }) {
+  function update(next: {
+    query?: string;
+    status?: "all" | SubmissionStatus;
+    track?: string;
+  }) {
     const values = {
       query: next.query ?? query,
       status: next.status ?? status,
       track: next.track ?? track,
     };
-    if (next.query !== undefined) setQuery(next.query);
-    if (next.status !== undefined) setStatus(next.status);
-    if (next.track !== undefined) setTrack(next.track);
+    if (onFiltersChange) {
+      onFiltersChange(values);
+      return;
+    }
+    if (next.query !== undefined) setLocalQuery(next.query);
+    if (next.status !== undefined) setLocalStatus(next.status);
+    if (next.track !== undefined) setLocalTrack(next.track);
     writeFilters(values);
   }
 
@@ -260,11 +317,12 @@ function SubmissionList({
       render: (submission) => (
         <a
           className="submission-title-link"
-          href={`/app/ai-engineer-summit/submissions/${submission.id}`}
+          href={`/app/${eventKey}/submissions/${submission.id}`}
         >
           <strong>{submission.title}</strong>
           <span>
-            {submission.id} · {submission.format}
+            {submission.reference ?? submission.id}
+            {submission.format ? ` · ${submission.format}` : ""}
           </span>
         </a>
       ),
@@ -347,15 +405,26 @@ function SubmissionList({
         </div>
       </header>
 
-      {stale ? (
+      {(projection && projection.state !== "current") || stale ? (
         <section className="submission-freshness is-stale" role="status">
           <AlertTriangle aria-hidden="true" size={18} />
           <span>
-            <strong>This snapshot may be behind</strong>
-            Showing the last complete view from 6 minutes ago. Your filters are
-            preserved while the projection catches up.
+            <strong>
+              {projection?.state === "partial"
+                ? "Submission history is rebuilding"
+                : "This snapshot may be behind"}
+            </strong>
+            {projection
+              ? `Showing the last durable view from ${new Date(projection.asOf).toLocaleString()}. Your filters are preserved while data catches up.`
+              : "Showing the last complete view from 6 minutes ago. Your filters are preserved while the projection catches up."}
           </span>
-          <button onClick={() => setStale(false)} type="button">
+          <button
+            onClick={() => {
+              setStale(false);
+              onRefresh?.();
+            }}
+            type="button"
+          >
             <RefreshCw aria-hidden="true" size={14} /> Refresh
           </button>
         </section>
@@ -364,14 +433,16 @@ function SubmissionList({
           <CheckCircle2 aria-hidden="true" size={18} />
           <span>
             <strong>Submission projection is current</strong>
-            Updated 24 seconds ago. Status history is included.
+            {projection
+              ? `Authoritative data as of ${new Date(projection.asOf).toLocaleString()}.`
+              : "Updated 24 seconds ago. Status history is included."}
           </span>
         </section>
       )}
 
-      <SubmissionSummary submissions={source} />
+      {showSummary ? <SubmissionSummary submissions={source} /> : null}
 
-      {source.length === 0 ? (
+      {source.length === 0 && !query && status === "all" && track === "all" ? (
         <StatePanel
           action={
             <Button variant="secondary">
@@ -397,6 +468,7 @@ function SubmissionList({
           <div className="submission-filters">
             <TextField
               label="Search submissions"
+              maxLength={160}
               onChange={(event) => update({ query: event.target.value })}
               placeholder="Title, ID, speaker, or track"
               type="search"
@@ -404,14 +476,18 @@ function SubmissionList({
             />
             <SelectField
               label="Status"
-              onChange={(event) => update({ status: event.target.value })}
+              onChange={(event) =>
+                update({
+                  status: event.target.value as "all" | SubmissionStatus,
+                })
+              }
               options={statusOptions}
               value={status}
             />
             <SelectField
               label="Track"
               onChange={(event) => update({ track: event.target.value })}
-              options={trackOptions}
+              options={trackFilterOptions}
               value={track}
             />
           </div>
@@ -425,7 +501,7 @@ function SubmissionList({
                   rows={visible}
                 />
               </div>
-              <SubmissionCards submissions={visible} />
+              <SubmissionCards eventKey={eventKey} submissions={visible} />
             </>
           ) : (
             <StatePanel
@@ -433,10 +509,7 @@ function SubmissionList({
                 <Button
                   variant="secondary"
                   onClick={() => {
-                    setQuery("");
-                    setStatus("all");
-                    setTrack("all");
-                    writeFilters({ query: "", status: "all", track: "all" });
+                    update({ query: "", status: "all", track: "all" });
                   }}
                 >
                   Clear filters
@@ -447,6 +520,24 @@ function SubmissionList({
               title="No submissions match"
             />
           )}
+          {serverFiltered && (canGoBack || nextCursor) ? (
+            <nav
+              aria-label="Submission pages"
+              className="submission-pagination"
+            >
+              <Button
+                disabled={!canGoBack}
+                onClick={onPreviousPage}
+                variant="secondary"
+              >
+                <ArrowLeft aria-hidden="true" size={15} /> Previous
+              </Button>
+              <span>Showing {visible.length} on this page</span>
+              <Button disabled={!nextCursor} onClick={onNextPage}>
+                Next <ArrowRight aria-hidden="true" size={15} />
+              </Button>
+            </nav>
+          ) : null}
         </section>
       )}
     </div>
@@ -478,24 +569,66 @@ function lifecycleLabel(action: LifecycleAction) {
   return "Reopen submission";
 }
 
-function SubmissionDetail({
+export function SubmissionDetail({
+  allowedCommands,
+  commandBusy = false,
+  commandNotice,
+  controlsPaused = false,
   degraded,
+  eventKey = "ai-engineer-summit",
   initialSubmission,
+  onAddNote,
+  onCommandIntentAbandon,
+  onLifecycleAction,
+  onRefresh,
+  stale = false,
 }: {
+  allowedCommands?: OrganizerSubmissionCommandType[] | undefined;
+  commandBusy?: boolean;
+  commandNotice?:
+    | { message: string; title?: string; tone: "error" | "warning" }
+    | null
+    | undefined;
+  controlsPaused?: boolean;
   degraded: boolean;
+  eventKey?: string;
   initialSubmission: SubmissionView;
+  onAddNote?: ((body: string, intentId: string) => Promise<string>) | undefined;
+  onCommandIntentAbandon?: ((intentId: string) => void) | undefined;
+  onLifecycleAction?: (
+    action: LifecycleAction,
+    reason: string,
+    intentId: string,
+  ) => Promise<string>;
+  onRefresh?: (() => void) | undefined;
+  stale?: boolean;
 }) {
-  const [submission, setSubmission] = useState(initialSubmission);
+  const [fixtureSubmission, setSubmission] = useState(initialSubmission);
   const [action, setAction] = useState<LifecycleAction | null>(null);
+  const [lifecycleIntentId, setLifecycleIntentId] = useState<string | null>(
+    null,
+  );
   const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
+  const [noteIntentId, setNoteIntentId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const submission =
+    onLifecycleAction || onAddNote ? initialSubmission : fixtureSubmission;
+  const controlsDisabled = degraded || controlsPaused || commandBusy;
 
-  const showStartReview = submission.status === "submitted";
-  const showReopen =
-    submission.status !== "submitted" && submission.status !== "under_review";
-  const showWithdraw = submission.status !== "withdrawn";
+  const showStartReview = allowedCommands
+    ? allowedCommands.includes("start_review")
+    : submission.status === "submitted";
+  const showReopen = allowedCommands
+    ? allowedCommands.includes("reopen")
+    : submission.status !== "submitted" && submission.status !== "under_review";
+  const showWithdraw = allowedCommands
+    ? allowedCommands.includes("withdraw")
+    : submission.status !== "withdrawn";
+  const showAddNote = allowedCommands
+    ? allowedCommands.includes("add_note")
+    : true;
 
   function announce(title: string, message: string) {
     setAnnouncement(message);
@@ -505,8 +638,37 @@ function SubmissionDetail({
     ]);
   }
 
-  function recordAction() {
+  function abandonLifecycleIntent() {
+    if (lifecycleIntentId) onCommandIntentAbandon?.(lifecycleIntentId);
+    setLifecycleIntentId(null);
+  }
+
+  function abandonNoteIntent() {
+    if (noteIntentId) onCommandIntentAbandon?.(noteIntentId);
+    setNoteIntentId(null);
+  }
+
+  async function recordAction() {
     if (!action || !reason.trim()) return;
+    if (onLifecycleAction) {
+      const intentId = lifecycleIntentId ?? crypto.randomUUID();
+      setLifecycleIntentId(intentId);
+      try {
+        const message = await onLifecycleAction(
+          action,
+          reason.trim(),
+          intentId,
+        );
+        setAction(null);
+        setLifecycleIntentId(null);
+        setReason("");
+        announce("Status updated", message);
+      } catch {
+        // The controlled workspace keeps the reason in place and renders the
+        // typed command error next to the controls.
+      }
+      return;
+    }
     const nextStatus: SubmissionStatus =
       action === "withdraw"
         ? "withdrawn"
@@ -539,8 +701,21 @@ function SubmissionDetail({
     );
   }
 
-  function addNote() {
+  async function addNote() {
     if (!note.trim()) return;
+    if (onAddNote) {
+      const intentId = noteIntentId ?? crypto.randomUUID();
+      setNoteIntentId(intentId);
+      try {
+        const message = await onAddNote(note.trim(), intentId);
+        setNoteIntentId(null);
+        setNote("");
+        announce("Internal note added", message);
+      } catch {
+        // Preserve the organizer's note when the authoritative command fails.
+      }
+      return;
+    }
     setSubmission((current) => ({
       ...current,
       notes: [
@@ -562,7 +737,7 @@ function SubmissionDetail({
 
   return (
     <div className="submission-detail">
-      <a className="submission-back" href="/app/ai-engineer-summit/submissions">
+      <a className="submission-back" href={`/app/${eventKey}/submissions`}>
         <ArrowLeft aria-hidden="true" size={15} /> All submissions
       </a>
 
@@ -577,10 +752,49 @@ function SubmissionDetail({
         </section>
       ) : null}
 
+      {stale ? (
+        <section className="submission-freshness is-stale" role="status">
+          <AlertTriangle aria-hidden="true" size={18} />
+          <span>
+            <strong>This submission may be behind</strong>
+            The last durable detail remains available. Refresh before relying on
+            newly recorded review or lifecycle activity.
+          </span>
+          {onRefresh ? (
+            <button onClick={onRefresh} type="button">
+              <RefreshCw aria-hidden="true" size={14} /> Refresh
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {commandNotice ? (
+        <section
+          className={`submission-command-notice is-${commandNotice.tone}`}
+          role={commandNotice.tone === "error" ? "alert" : "status"}
+        >
+          <AlertTriangle aria-hidden="true" size={18} />
+          <span>
+            <strong>
+              {commandNotice.title ??
+                (commandNotice.tone === "error"
+                  ? "The change was not recorded"
+                  : "The change is durable and still synchronizing")}
+            </strong>
+            {commandNotice.message}
+          </span>
+          {onRefresh ? (
+            <button onClick={onRefresh} type="button">
+              <RefreshCw aria-hidden="true" size={14} /> Refresh
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
       <header className="submission-detail-header">
         <div>
           <p className="overline">
-            {submission.id} · {submission.track}
+            {submission.reference ?? submission.id} · {submission.track}
           </p>
           <h1>{submission.title}</h1>
           <p>
@@ -649,7 +863,9 @@ function SubmissionDetail({
                         <strong>{review.reviewer}</strong>
                         <small>{review.status}</small>
                       </div>
-                      {review.score ? <b>{review.score.toFixed(2)}</b> : null}
+                      {review.score !== undefined ? (
+                        <b>{review.score.toFixed(2)}</b>
+                      ) : null}
                     </header>
                     <p>{review.summary}</p>
                   </article>
@@ -680,17 +896,32 @@ function SubmissionDetail({
                 </article>
               ))}
             </div>
-            <TextAreaField
-              disabled={degraded}
-              label="Add an internal note"
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Context for organizers…"
-              rows={3}
-              value={note}
-            />
-            <Button disabled={degraded || !note.trim()} onClick={addNote}>
-              Add note
-            </Button>
+            {showAddNote ? (
+              <>
+                <TextAreaField
+                  disabled={controlsDisabled}
+                  label="Add an internal note"
+                  maxLength={4000}
+                  onChange={(event) => {
+                    abandonNoteIntent();
+                    setNote(event.target.value);
+                  }}
+                  placeholder="Context for organizers…"
+                  rows={3}
+                  value={note}
+                />
+                <Button
+                  disabled={controlsDisabled || !note.trim()}
+                  onClick={() => void addNote()}
+                >
+                  {commandBusy ? "Recording…" : "Add note"}
+                </Button>
+              </>
+            ) : (
+              <p className="submission-unavailable-copy">
+                Notes are read-only for this submission state.
+              </p>
+            )}
           </section>
         </div>
 
@@ -702,31 +933,40 @@ function SubmissionDetail({
             <p className="overline">Lifecycle controls</p>
             <h2>Change status safely</h2>
             <p>
-              Every change requires a reason. The server remains authoritative
-              when this view is connected to the command API.
+              {onLifecycleAction
+                ? "Every change requires a reason and is validated by the authoritative service."
+                : "Every fixture change requires a reason and demonstrates the completed organizer interaction."}
             </p>
             <div className="submission-lifecycle-actions">
               {showStartReview ? (
                 <Button
-                  disabled={degraded}
+                  disabled={controlsDisabled}
                   onClick={() => setAction("start_review")}
                 >
                   <Send aria-hidden="true" size={16} /> Move to review
                 </Button>
               ) : null}
               {showReopen ? (
-                <Button disabled={degraded} onClick={() => setAction("reopen")}>
+                <Button
+                  disabled={controlsDisabled}
+                  onClick={() => setAction("reopen")}
+                >
                   <RotateCcw aria-hidden="true" size={16} /> Reopen
                 </Button>
               ) : null}
               {showWithdraw ? (
                 <Button
-                  disabled={degraded}
+                  disabled={controlsDisabled}
                   onClick={() => setAction("withdraw")}
                   variant="secondary"
                 >
                   Withdraw
                 </Button>
+              ) : null}
+              {!showStartReview && !showReopen && !showWithdraw ? (
+                <p className="submission-unavailable-copy">
+                  No lifecycle changes are available for this submission.
+                </p>
               ) : null}
             </div>
           </section>
@@ -779,6 +1019,8 @@ function SubmissionDetail({
       <Dialog
         description={`${submission.id} · ${submission.title}`}
         onClose={() => {
+          if (commandBusy) return;
+          abandonLifecycleIntent();
           setAction(null);
           setReason("");
         }}
@@ -787,21 +1029,28 @@ function SubmissionDetail({
       >
         <div className="submission-action-dialog">
           <p>
-            This UI records one local audit entry for the demo. The eventual
-            command API validates the transition and persists the authoritative
-            status.
+            {onLifecycleAction
+              ? "The authoritative service validates this transition and records the reason in the immutable organizer history."
+              : "This fixture records one local audit entry to demonstrate the completed interaction."}
           </p>
           <TextAreaField
+            disabled={commandBusy}
             label="Reason for change"
-            onChange={(event) => setReason(event.target.value)}
+            onChange={(event) => {
+              abandonLifecycleIntent();
+              setReason(event.target.value);
+            }}
             placeholder="Explain why this transition is needed…"
             required
             rows={4}
+            maxLength={2000}
             value={reason}
           />
           <div>
             <Button
+              disabled={commandBusy}
               onClick={() => {
+                abandonLifecycleIntent();
                 setAction(null);
                 setReason("");
               }}
@@ -809,8 +1058,11 @@ function SubmissionDetail({
             >
               Cancel
             </Button>
-            <Button disabled={!reason.trim()} onClick={recordAction}>
-              Record change
+            <Button
+              disabled={commandBusy || !reason.trim()}
+              onClick={() => void recordAction()}
+            >
+              {commandBusy ? "Recording…" : "Record change"}
             </Button>
           </div>
         </div>

@@ -4,7 +4,10 @@ import { build } from "esbuild";
 import { createTestHarness } from "wrangler";
 
 const hostname = "127.0.0.1";
-const port = 8787;
+const port = Number(process.env.E2E_PORT ?? 8787);
+if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+  throw new Error("E2E_PORT must be a valid TCP port.");
+}
 const origin = `http://${hostname}:${port}`;
 const harness = createTestHarness({
   workers: [

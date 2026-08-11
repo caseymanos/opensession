@@ -55,7 +55,8 @@
 }
 
 .submission-freshness,
-.submission-degraded {
+.submission-degraded,
+.submission-command-notice {
   min-height: 3.15rem;
   display: flex;
   align-items: center;
@@ -69,14 +70,16 @@
 }
 
 .submission-freshness.is-stale,
-.submission-degraded {
+.submission-degraded,
+.submission-command-notice.is-warning {
   color: var(--warning-700);
   border-color: #dec76f;
   background: var(--warning-100);
 }
 
 .submission-freshness > span,
-.submission-degraded > span {
+.submission-degraded > span,
+.submission-command-notice > span {
   flex: 1;
   display: grid;
   gap: 0.12rem;
@@ -84,7 +87,8 @@
   line-height: 1.42;
 }
 
-.submission-freshness button {
+.submission-freshness button,
+.submission-command-notice button {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -96,6 +100,16 @@
   font-size: 0.68rem;
   font-weight: 800;
   cursor: pointer;
+}
+
+.submission-command-notice {
+  margin-bottom: 1rem;
+}
+
+.submission-command-notice.is-error {
+  color: var(--danger-700);
+  border-color: #dca7a0;
+  background: var(--danger-100);
 }
 
 .submission-metrics {
@@ -229,6 +243,23 @@
 
 .submission-table-panel .ui-table {
   min-width: 68rem;
+}
+
+.submission-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--ink-200);
+}
+
+.submission-pagination > span {
+  margin-right: auto;
+  color: var(--ink-500);
+  font-size: 0.67rem;
+  font-weight: 700;
 }
 
 .submission-title-link {
@@ -629,17 +660,20 @@
   }
 
   .submission-freshness,
-  .submission-degraded {
+  .submission-degraded,
+  .submission-command-notice {
     align-items: flex-start;
     flex-wrap: wrap;
   }
 
   .submission-freshness > span,
-  .submission-degraded > span {
+  .submission-degraded > span,
+  .submission-command-notice > span {
     min-width: calc(100% - 2rem);
   }
 
-  .submission-freshness button {
+  .submission-freshness button,
+  .submission-command-notice button {
     margin-left: 1.75rem;
   }
 
