@@ -714,8 +714,7 @@ export class SpeakerProfileService {
     if (!event) return null;
     const rows = await this.#database
       .prepare(
-        `SELECT participant.session_id, session.friendly_id,
-                contact.bio, contact.company, contact.display_name,
+        `SELECT contact.bio, contact.company, contact.display_name,
                 contact.headshot_alt_text, contact.headshot_object_key,
                 contact.pronouns, contact.projected_at, contact.social_json,
                 contact.title, contact.id,
@@ -767,7 +766,6 @@ export class SpeakerProfileService {
         bio: string | null;
         company: string | null;
         display_name: string;
-        friendly_id: string;
         headshot_alt_text: string | null;
         headshot_object_key: string | null;
         headshot_file_id: string | null;
@@ -775,58 +773,66 @@ export class SpeakerProfileService {
         id: string;
         pronouns: string | null;
         projected_at: string;
-        session_id: string;
         social_json: string;
         title: string | null;
       }>();
-    const byContact = new Map<
-      string,
-      { row: (typeof rows.results)[number]; sessionIds: Set<string> }
-    >();
+    const byContact = new Map<string, (typeof rows.results)[number]>();
     for (const row of rows.results) {
-      const current = byContact.get(row.id) ?? {
-        row,
-        sessionIds: new Set<string>(),
-      };
-      current.sessionIds.add(row.friendly_id);
-      byContact.set(row.id, current);
+      if (!byContact.has(row.id)) byContact.set(row.id, row);
     }
-    const speakers = [...byContact.values()].map(({ row, sessionIds }) => {
+    const publishedSessionIdsByName = new Map<string, Set<string>>();
+    for (const session of schedule.projection.sessions) {
+      for (const speaker of session.speakers) {
+        const sessionIds =
+          publishedSessionIdsByName.get(speaker.name) ?? new Set();
+        sessionIds.add(session.id);
+        publishedSessionIdsByName.set(speaker.name, sessionIds);
+      }
+    }
+    const publishedProfiles = [...byContact.values()].flatMap((row) => {
       const social = safeSocial(row.social_json);
       const name = row.display_name.trim();
+      const publishedSessionIds = publishedSessionIdsByName.get(name);
+      if (!publishedSessionIds?.size) return [];
       const slugValue = profileSlug(name);
-      return {
-        ...(row.bio?.trim() ? { bio: row.bio.trim() } : {}),
-        company: row.company?.trim() ?? "",
-        ...(row.headshot_object_key &&
-        row.headshot_file_id &&
-        row.headshot_version !== null &&
-        row.headshot_alt_text?.trim()
-          ? {
-              headshot: {
-                alt: row.headshot_alt_text.trim(),
-                url: `/api/v1/public/events/${event.slug}/speakers/${slugValue}/headshot?v=${encodeURIComponent(`${row.headshot_file_id}-${row.headshot_version}`)}`,
-              },
-            }
-          : {}),
-        links: [
-          ...(social.linkedin_url
-            ? [{ label: "LinkedIn" as const, url: social.linkedin_url }]
-            : []),
-          ...(social.bluesky_url
-            ? [{ label: "Bluesky" as const, url: social.bluesky_url }]
-            : []),
-          ...(social.website_url
-            ? [{ label: "Website" as const, url: social.website_url }]
-            : []),
-        ],
-        name,
-        ...(row.pronouns?.trim() ? { pronouns: row.pronouns.trim() } : {}),
-        sessionIds: [...sessionIds].sort(),
-        slug: slugValue,
-        title: row.title?.trim() ?? "",
-      };
+      return [
+        {
+          profile: {
+            ...(row.bio?.trim() ? { bio: row.bio.trim() } : {}),
+            company: row.company?.trim() ?? "",
+            ...(row.headshot_object_key &&
+            row.headshot_file_id &&
+            row.headshot_version !== null &&
+            row.headshot_alt_text?.trim()
+              ? {
+                  headshot: {
+                    alt: row.headshot_alt_text.trim(),
+                    url: `/api/v1/public/events/${event.slug}/speakers/${slugValue}/headshot?v=${encodeURIComponent(`${row.headshot_file_id}-${row.headshot_version}`)}`,
+                  },
+                }
+              : {}),
+            links: [
+              ...(social.linkedin_url
+                ? [{ label: "LinkedIn" as const, url: social.linkedin_url }]
+                : []),
+              ...(social.bluesky_url
+                ? [{ label: "Bluesky" as const, url: social.bluesky_url }]
+                : []),
+              ...(social.website_url
+                ? [{ label: "Website" as const, url: social.website_url }]
+                : []),
+            ],
+            name,
+            ...(row.pronouns?.trim() ? { pronouns: row.pronouns.trim() } : {}),
+            sessionIds: [...publishedSessionIds].sort(),
+            slug: slugValue,
+            title: row.title?.trim() ?? "",
+          },
+          projectedAt: row.projected_at,
+        },
+      ];
     });
+    const speakers = publishedProfiles.map(({ profile }) => profile);
     const names = new Set<string>();
     const slugs = new Set<string>();
     for (const speaker of speakers) {
@@ -845,16 +851,16 @@ export class SpeakerProfileService {
     const sessions = schedule.projection.sessions.map((session) => ({
       ...session,
       speakers: session.speakers.filter((speaker) =>
-        profilesByName.has(speaker.name),
+        profilesByName.get(speaker.name)?.sessionIds.includes(session.id),
       ),
     }));
     const generatedAt =
       [
-        ...rows.results.map((row) => row.projected_at),
+        ...publishedProfiles.map(({ projectedAt }) => projectedAt),
         schedule.projection.generatedAt,
       ]
         .sort()
-        .at(0) ?? schedule.projection.generatedAt;
+        .at(-1) ?? schedule.projection.generatedAt;
     return publicSpeakerProjectionSchema.parse({
       event: schedule.projection.event,
       generatedAt,
