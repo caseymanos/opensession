@@ -22,6 +22,7 @@ export const demoEventRootFields = {
   }),
   "CFP closes": "2026-08-22T00:00:00.000Z",
   "CFP opens": "2026-06-01T16:00:00.000Z",
+  "Review closes": "2026-08-28T00:00:00.000Z",
   End: demoEventEndsAt,
   "Is demo": true,
   Name: demoEventName,

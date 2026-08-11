@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { speakerPortalBrandSchema } from "./portal";
+
 const reviewIdentifierSchema = z
   .string()
   .trim()
@@ -96,10 +98,13 @@ export const reviewAssignmentAuditEntrySchema = z
       "reviews.assignment.create",
       "reviews.assignment.remove",
       "reviews.assignment.restore",
+      "reviews.review.reopen",
+      "reviews.review.submit",
     ]),
     actorDisplayName: z.string().trim().min(1).max(160),
     at: reviewInstantSchema,
     id: reviewIdentifierSchema,
+    reason: z.string().trim().min(1).max(2_000).optional(),
   })
   .strict();
 
@@ -130,6 +135,87 @@ export const reviewAssignmentSchema = z
       context.addIssue({
         code: "custom",
         message: "A removed assignment cannot require scoring.",
+      });
+    }
+  });
+
+export const reviewScoreSchema = z
+  .object({
+    criterionId: reviewIdentifierSchema,
+    score: z.int().min(1).max(5),
+  })
+  .strict();
+
+export const reviewDraftSchema = z
+  .object({
+    note: z.string().trim().max(10_000),
+    scores: z.array(reviewScoreSchema).max(5),
+  })
+  .strict()
+  .superRefine((draft, context) => {
+    if (
+      new Set(draft.scores.map(({ criterionId }) => criterionId)).size !==
+      draft.scores.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A review criterion can be scored only once.",
+        path: ["scores"],
+      });
+    }
+  });
+
+export const reviewerProposalContextSchema = z
+  .object({
+    abstract: z.string().trim().max(20_000).nullable(),
+    audience: z.string().trim().max(10_000).nullable(),
+    format: z.string().trim().max(300).nullable(),
+    outcomes: z.array(z.string().trim().min(1).max(2_000)).max(20),
+  })
+  .strict();
+
+export const reviewerWorkspaceAssignmentSchema = z
+  .object({
+    assignment: reviewAssignmentSchema,
+    context: reviewerProposalContextSchema,
+    draft: reviewDraftSchema,
+    submittedAt: reviewInstantSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const criterionIds = new Set(
+      value.assignment.rubric.criteria.map(({ id }) => id),
+    );
+    const scoreIds = new Set(
+      value.draft.scores.map(({ criterionId }) => criterionId),
+    );
+    if ([...scoreIds].some((id) => !criterionIds.has(id))) {
+      context.addIssue({
+        code: "custom",
+        message: "Review scores must use the assignment rubric snapshot.",
+        path: ["draft", "scores"],
+      });
+    }
+    if (value.assignment.status === "submitted") {
+      if (value.submittedAt === null) {
+        context.addIssue({
+          code: "custom",
+          message: "A submitted review must include its submission time.",
+          path: ["submittedAt"],
+        });
+      }
+      if (scoreIds.size !== criterionIds.size) {
+        context.addIssue({
+          code: "custom",
+          message: "A submitted review must score every criterion.",
+          path: ["draft", "scores"],
+        });
+      }
+    } else if (value.submittedAt !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "Only a submitted review can include a submission time.",
+        path: ["submittedAt"],
       });
     }
   });
@@ -203,6 +289,39 @@ export const discloseReviewConflictCommandSchema = reviewCommandBaseSchema
   })
   .strict();
 
+const reviewDraftCommandFields = {
+  assignmentId: reviewIdentifierSchema,
+  draft: reviewDraftSchema,
+};
+
+export const saveReviewDraftCommandSchema = reviewCommandBaseSchema
+  .extend({
+    ...reviewDraftCommandFields,
+    type: z.literal("save_review_draft"),
+  })
+  .strict();
+
+export const submitReviewCommandSchema = reviewCommandBaseSchema
+  .extend({
+    ...reviewDraftCommandFields,
+    type: z.literal("submit_review"),
+  })
+  .strict();
+
+export const reopenReviewCommandSchema = reviewCommandBaseSchema
+  .extend({
+    assignmentId: reviewIdentifierSchema,
+    reason: z.string().trim().min(1).max(2_000),
+    type: z.literal("reopen_review"),
+  })
+  .strict();
+
+export const reviewScoringCommandSchema = z.discriminatedUnion("type", [
+  saveReviewDraftCommandSchema,
+  submitReviewCommandSchema,
+  reopenReviewCommandSchema,
+]);
+
 export const reviewOperationsCommandSchema = z.discriminatedUnion("type", [
   publishReviewRubricCommandSchema,
   upsertReviewerGroupCommandSchema,
@@ -252,8 +371,17 @@ export const reviewOperationsCommandResponseSchema = z.discriminatedUnion(
 
 export const reviewerAssignmentListResponseSchema = z
   .object({
-    assignments: z.array(reviewAssignmentSchema).max(2_000),
-    eventId: reviewIdentifierSchema,
+    assignments: z.array(reviewerWorkspaceAssignmentSchema).max(2_000),
+    event: z
+      .object({
+        brand: speakerPortalBrandSchema,
+        id: reviewIdentifierSchema,
+        name: z.string().trim().min(1).max(200),
+        reviewDueAt: reviewInstantSchema.nullable(),
+        slug: z.string().trim().min(1).max(128),
+        timezone: z.string().trim().min(1).max(100),
+      })
+      .strict(),
     reviewer: reviewPersonSchema,
   })
   .strict();
@@ -263,6 +391,11 @@ export type ReviewRubric = z.infer<typeof reviewRubricSchema>;
 export type ReviewerGroup = z.infer<typeof reviewerGroupSchema>;
 export type ReviewProposal = z.infer<typeof reviewProposalSchema>;
 export type ReviewAssignment = z.infer<typeof reviewAssignmentSchema>;
+export type ReviewDraft = z.infer<typeof reviewDraftSchema>;
+export type ReviewScore = z.infer<typeof reviewScoreSchema>;
+export type ReviewerWorkspaceAssignment = z.infer<
+  typeof reviewerWorkspaceAssignmentSchema
+>;
 export type ReviewOperationsResponse = z.infer<
   typeof reviewOperationsResponseSchema
 >;
@@ -272,6 +405,7 @@ export type ReviewOperationsCommand = z.infer<
 export type ReviewOperationsCommandResult = z.infer<
   typeof reviewOperationsCommandResultSchema
 >;
+export type ReviewScoringCommand = z.infer<typeof reviewScoringCommandSchema>;
 export type ReviewerAssignmentListResponse = z.infer<
   typeof reviewerAssignmentListResponseSchema
 >;

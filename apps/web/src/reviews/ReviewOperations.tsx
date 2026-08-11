@@ -10,6 +10,7 @@ import {
   History,
   Plus,
   Route,
+  RotateCcw,
   ShieldCheck,
   Trash2,
   UserPlus,
@@ -31,6 +32,7 @@ import {
 import type {
   ReviewOperationsCommand,
   ReviewOperationsResponse,
+  ReviewScoringCommand,
 } from "@sessionbox-killer/contracts";
 
 import {
@@ -91,7 +93,11 @@ function productionAssignments(
             ? "Removed the assignment and revoked proposal access"
             : entry.action === "reviews.assignment.restore"
               ? "Restored the assignment and proposal access"
-              : "Created the assignment and granted proposal access",
+              : entry.action === "reviews.review.reopen"
+                ? `Reopened the review${entry.reason ? `: ${entry.reason}` : ""}`
+                : entry.action === "reviews.review.submit"
+                  ? "Submitted the final review"
+                  : "Created the assignment and granted proposal access",
       time: new Date(entry.at).toLocaleString(),
     })),
     id: assignment.id,
@@ -668,6 +674,7 @@ function Assignments({
   assignments,
   groups,
   onChange,
+  onReopen,
   proposals,
   reviewerOptions,
 }: {
@@ -680,6 +687,7 @@ function Assignments({
     action: "conflict" | "created" | "removed" | "restored",
     changed: ReviewAssignmentView,
   ) => void;
+  onReopen: (assignment: ReviewAssignmentView, reason: string) => void;
   proposals: ReviewProposalView[];
   reviewerOptions?: ReviewerOption[];
 }) {
@@ -694,6 +702,9 @@ function Assignments({
     useState<ReviewAssignmentView | null>(null);
   const [removalAssignment, setRemovalAssignment] =
     useState<ReviewAssignmentView | null>(null);
+  const [reopenAssignment, setReopenAssignment] =
+    useState<ReviewAssignmentView | null>(null);
+  const [reopenReason, setReopenReason] = useState("");
 
   const effectiveSelectedProposal = proposals.some(
     (proposal) =>
@@ -992,6 +1003,18 @@ function Assignments({
                         <Trash2 aria-hidden="true" size={15} />
                       </button>
                     ) : null}
+                    {assignment.status === "submitted" ? (
+                      <button
+                        aria-label={`Reopen review for ${assignment.reviewer} on ${assignment.proposalReference}`}
+                        onClick={() => {
+                          setReopenAssignment(assignment);
+                          setReopenReason("");
+                        }}
+                        type="button"
+                      >
+                        <RotateCcw aria-hidden="true" size={15} />
+                      </button>
+                    ) : null}
                   </div>
                 </td>
               </tr>
@@ -1082,6 +1105,52 @@ function Assignments({
               }}
             >
               Record conflict
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        description={
+          reopenAssignment
+            ? `${reopenAssignment.reviewer} will be able to edit and resubmit ${reopenAssignment.proposalReference}. The submitted scores remain as the reopened draft.`
+            : "The review will return to draft."
+        }
+        onClose={() => setReopenAssignment(null)}
+        open={Boolean(reopenAssignment)}
+        title="Reopen this review?"
+      >
+        <div className="review-ops-assign-dialog">
+          <TextAreaField
+            id="review-reopen-reason"
+            label="Reason for reopening"
+            onChange={(event) => setReopenReason(event.target.value)}
+            placeholder="Explain what the reviewer should revisit…"
+            rows={4}
+            value={reopenReason}
+          />
+          <div className="review-ops-dialog-note">
+            <History aria-hidden="true" size={16} />
+            <span>
+              The organizer, reason, and time remain in audit history.
+            </span>
+          </div>
+          <div className="review-ops-dialog-actions">
+            <Button
+              variant="secondary"
+              onClick={() => setReopenAssignment(null)}
+            >
+              Keep submitted
+            </Button>
+            <Button
+              disabled={!reopenReason.trim()}
+              onClick={() => {
+                if (!reopenAssignment || !reopenReason.trim()) return;
+                onReopen(reopenAssignment, reopenReason.trim());
+                setReopenAssignment(null);
+              }}
+            >
+              Reopen review
             </Button>
           </div>
         </div>
@@ -1208,8 +1277,9 @@ export function ReviewOperations({
     eventKey ? "loading" : "ready",
   );
   const [mutationError, setMutationError] = useState("");
-  const [pendingCommand, setPendingCommand] =
-    useState<ReviewOperationsCommand | null>(null);
+  const [pendingCommand, setPendingCommand] = useState<
+    ReviewOperationsCommand | ReviewScoringCommand | null
+  >(null);
   const mutationInFlight = useRef(false);
 
   const applyResponse = useCallback((response: ReviewOperationsResponse) => {
@@ -1262,7 +1332,7 @@ export function ReviewOperations({
   }
 
   async function executeProductionCommand(
-    command: ReviewOperationsCommand,
+    command: ReviewOperationsCommand | ReviewScoringCommand,
     notice: { message: string; title: string },
   ) {
     if (!eventKey) return;
@@ -1271,7 +1341,15 @@ export function ReviewOperations({
     setPendingCommand(command);
     setMutationError("");
     try {
-      await client.execute(eventKey, command);
+      if (
+        command.type === "reopen_review" ||
+        command.type === "save_review_draft" ||
+        command.type === "submit_review"
+      ) {
+        await client.executeReview(eventKey, command);
+      } else {
+        await client.execute(eventKey, command);
+      }
       applyResponse(await client.load(eventKey));
       setPendingCommand(null);
       announce(notice.title, notice.message);
@@ -1535,6 +1613,47 @@ export function ReviewOperations({
             }
             setAssignments(next);
             announce(notices[action].title, notices[action].message);
+          }}
+          onReopen={(assignment, reason) => {
+            if (eventKey) {
+              void executeProductionCommand(
+                {
+                  assignmentId: assignment.id,
+                  commandId: `review_reopen_${crypto.randomUUID()}`,
+                  expectedVersion: assignment.sourceVersion ?? 0,
+                  reason,
+                  type: "reopen_review",
+                },
+                {
+                  message:
+                    "The reviewer can edit the preserved scores and submit again. The reopen reason is auditable.",
+                  title: "Review reopened",
+                },
+              );
+              return;
+            }
+            setAssignments((current) =>
+              current.map((item) =>
+                item.id === assignment.id
+                  ? {
+                      ...item,
+                      audit: [
+                        ...item.audit,
+                        {
+                          actor: "Casey Manos",
+                          detail: `Reopened review: ${reason}`,
+                          time: "Just now",
+                        },
+                      ],
+                      status: "in_progress",
+                    }
+                  : item,
+              ),
+            );
+            announce(
+              "Review reopened",
+              "The reviewer can edit the preserved scores and submit again.",
+            );
           }}
           proposals={proposals}
           {...(reviewerOptions ? { reviewerOptions } : {})}

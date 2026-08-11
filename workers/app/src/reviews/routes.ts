@@ -1,6 +1,7 @@
 import {
   reviewOperationsCommandResponseSchema,
   reviewOperationsCommandSchema,
+  reviewScoringCommandSchema,
 } from "@sessionbox-killer/contracts";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -193,6 +194,24 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
         ),
     }),
   );
+  for (const path of [
+    "/api/events/:eventKey/reviewer-assignments/:assignmentId/commands",
+    "/api/events/:eventKey/review-operations/reviews/:assignmentId/commands",
+  ]) {
+    app.use(
+      path,
+      bodyLimit({
+        maxSize: commandBodyLimitBytes,
+        onError: (context) =>
+          simpleError(
+            context,
+            413,
+            "request_too_large",
+            "The review command exceeds 32 KiB.",
+          ),
+      }),
+    );
+  }
 
   app.get("/api/events/:eventKey/review-operations", async (context) => {
     try {
@@ -274,6 +293,258 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
       }
     }
   });
+
+  app.post(
+    "/api/events/:eventKey/reviewer-assignments/:assignmentId/commands",
+    async (context) => {
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return simpleError(
+          context,
+          503,
+          "writes_disabled",
+          "Changes are temporarily disabled in this environment.",
+        );
+      }
+      if (!requireSameOrigin(context)) {
+        return simpleError(
+          context,
+          403,
+          "invalid_origin",
+          "Review changes require a same-origin JSON request.",
+        );
+      }
+      let body: unknown;
+      try {
+        body = await context.req.json();
+      } catch {
+        body = null;
+      }
+      const input = reviewScoringCommandSchema.safeParse(body);
+      if (
+        !input.success ||
+        input.data.type === "reopen_review" ||
+        input.data.assignmentId !== context.req.param("assignmentId")
+      ) {
+        const issue = input.success ? undefined : input.error.issues[0];
+        return commandError(context, 400, {
+          code: "review_validation_error",
+          field: issue?.path.join(".") || "command",
+          message: issue?.message ?? "The reviewer scoring command is invalid.",
+        });
+      }
+      try {
+        const { authentication, resolution, session } =
+          await authenticate(context);
+        await authentication.verifyCsrf(
+          session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
+        if (resolution.kind !== "resolved")
+          return resolutionError(context, resolution);
+        if (!hasEventPermission(resolution.access, "review:read")) {
+          return simpleError(
+            context,
+            403,
+            "review_assignments_forbidden",
+            "Reviewer access is required to score an assignment.",
+          );
+        }
+        const reviewerId = await new D1ReviewOperationsRepository(
+          context.env.DB,
+        ).reviewerIdForEmail(
+          {
+            eventId: resolution.eventId,
+            organizationId: resolution.organizationId,
+          },
+          session.user.email,
+        );
+        if (!reviewerId) {
+          return simpleError(
+            context,
+            403,
+            "reviewer_identity_unavailable",
+            "Your account is not an active reviewer for this event.",
+          );
+        }
+        if (!resolution.authorityReady) {
+          return simpleError(
+            context,
+            503,
+            "review_operations_authority_unavailable",
+            "Authoritative review changes are temporarily unavailable.",
+          );
+        }
+        const result = await new AirtableReviewOperationsCommandService({
+          actorId: session.user.id,
+          authority: getBaseAuthority(context.env),
+          database: context.env.DB,
+          eventId: resolution.eventId,
+          organizationId: resolution.organizationId,
+          permittedReviewerId: reviewerId,
+          requestId: context.get("requestId"),
+        }).execute(input.data);
+        return context.json(
+          reviewOperationsCommandResponseSchema.parse({ ok: true, result }),
+        );
+      } catch (error) {
+        if (error instanceof ReviewOperationsValidationError) {
+          return commandError(context, 422, {
+            code: "review_validation_error",
+            field: error.field,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsVersionConflictError) {
+          return commandError(context, 409, {
+            actualVersion: error.actualVersion,
+            code: "review_version_conflict",
+            expectedVersion: error.expectedVersion,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsIdempotencyConflictError) {
+          return commandError(context, 409, {
+            code: "review_idempotency_conflict",
+            commandId: error.commandId,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsNotFoundError) {
+          return commandError(context, 404, {
+            code: "review_not_found",
+            message: error.message,
+          });
+        }
+        try {
+          return authFailure(context, error);
+        } catch {
+          return simpleError(
+            context,
+            503,
+            "review_operations_authority_unavailable",
+            "The authoritative review command is temporarily unavailable.",
+          );
+        }
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/review-operations/reviews/:assignmentId/commands",
+    async (context) => {
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return simpleError(
+          context,
+          503,
+          "writes_disabled",
+          "Changes are temporarily disabled in this environment.",
+        );
+      }
+      if (!requireSameOrigin(context)) {
+        return simpleError(
+          context,
+          403,
+          "invalid_origin",
+          "Review changes require a same-origin JSON request.",
+        );
+      }
+      let body: unknown;
+      try {
+        body = await context.req.json();
+      } catch {
+        body = null;
+      }
+      const input = reviewScoringCommandSchema.safeParse(body);
+      if (
+        !input.success ||
+        input.data.type !== "reopen_review" ||
+        input.data.assignmentId !== context.req.param("assignmentId")
+      ) {
+        const issue = input.success ? undefined : input.error.issues[0];
+        return commandError(context, 400, {
+          code: "review_validation_error",
+          field: issue?.path.join(".") || "command",
+          message: issue?.message ?? "The review reopen command is invalid.",
+        });
+      }
+      try {
+        const { authentication, resolution, session } =
+          await authenticate(context);
+        await authentication.verifyCsrf(
+          session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
+        if (resolution.kind !== "resolved")
+          return resolutionError(context, resolution);
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return simpleError(
+            context,
+            403,
+            "review_operations_forbidden",
+            "Organizer access is required to reopen a review.",
+          );
+        }
+        if (!resolution.authorityReady) {
+          return simpleError(
+            context,
+            503,
+            "review_operations_authority_unavailable",
+            "Authoritative review changes are temporarily unavailable.",
+          );
+        }
+        const result = await new AirtableReviewOperationsCommandService({
+          actorId: session.user.id,
+          authority: getBaseAuthority(context.env),
+          database: context.env.DB,
+          eventId: resolution.eventId,
+          organizationId: resolution.organizationId,
+          requestId: context.get("requestId"),
+        }).execute(input.data);
+        return context.json(
+          reviewOperationsCommandResponseSchema.parse({ ok: true, result }),
+        );
+      } catch (error) {
+        if (error instanceof ReviewOperationsValidationError) {
+          return commandError(context, 422, {
+            code: "review_validation_error",
+            field: error.field,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsVersionConflictError) {
+          return commandError(context, 409, {
+            actualVersion: error.actualVersion,
+            code: "review_version_conflict",
+            expectedVersion: error.expectedVersion,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsIdempotencyConflictError) {
+          return commandError(context, 409, {
+            code: "review_idempotency_conflict",
+            commandId: error.commandId,
+            message: error.message,
+          });
+        }
+        if (error instanceof ReviewOperationsNotFoundError) {
+          return commandError(context, 404, {
+            code: "review_not_found",
+            message: error.message,
+          });
+        }
+        try {
+          return authFailure(context, error);
+        } catch {
+          return simpleError(
+            context,
+            503,
+            "review_operations_authority_unavailable",
+            "The authoritative review command is temporarily unavailable.",
+          );
+        }
+      }
+    },
+  );
 
   app.post(
     "/api/events/:eventKey/review-operations/commands",

@@ -10,6 +10,9 @@ export interface ReviewQueueItemView {
   status: ReviewQueueStatus;
   title: string;
   track: string;
+  criteria?: ReviewCriterionView[];
+  sourceVersion?: number;
+  submittedAt?: string | null;
 }
 
 export interface ReviewCriterionView {
@@ -20,6 +23,7 @@ export interface ReviewCriterionView {
 }
 
 export interface ReviewerWorkspaceView {
+  brand?: { accent: string; background: string; ink: string };
   criteria: ReviewCriterionView[];
   dueLabel: string;
   eventName: string;

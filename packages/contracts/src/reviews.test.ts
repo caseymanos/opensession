@@ -4,6 +4,8 @@ import {
   reviewAssignmentSchema,
   reviewCriteriaSchema,
   reviewOperationsResponseSchema,
+  reviewScoringCommandSchema,
+  reviewerWorkspaceAssignmentSchema,
 } from "./index";
 
 const criteria = [
@@ -115,5 +117,46 @@ describe("review operations contract", () => {
         providerRecordId: "rec_private",
       }).success,
     ).toBe(false);
+  });
+
+  it("requires complete immutable-rubric scores only when submitting", () => {
+    const workspaceAssignment = {
+      assignment: { ...assignment, status: "submitted" },
+      context: {
+        abstract: "A proposal abstract.",
+        audience: null,
+        format: "Talk",
+        outcomes: ["Apply one pattern."],
+      },
+      draft: {
+        note: "Strong evidence.",
+        scores: [
+          { criterionId: "value", score: 4 },
+          { criterionId: "evidence", score: 5 },
+        ],
+      },
+      submittedAt: "2026-08-11T13:00:00.000Z",
+    };
+    expect(
+      reviewerWorkspaceAssignmentSchema.safeParse(workspaceAssignment).success,
+    ).toBe(true);
+    expect(
+      reviewerWorkspaceAssignmentSchema.safeParse({
+        ...workspaceAssignment,
+        draft: {
+          ...workspaceAssignment.draft,
+          scores: workspaceAssignment.draft.scores.slice(0, 1),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      reviewScoringCommandSchema.safeParse({
+        assignmentId: "assignment_one",
+        commandId: "command_submit_one",
+        draft: workspaceAssignment.draft,
+        expectedVersion: 2,
+        type: "submit_review",
+      }).success,
+    ).toBe(true);
   });
 });

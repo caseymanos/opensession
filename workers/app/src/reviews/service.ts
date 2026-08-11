@@ -1,8 +1,11 @@
 import {
   reviewCriteriaSchema,
+  reviewAssignmentSchema,
+  reviewDraftSchema,
   reviewOperationsCommandResultSchema,
   type ReviewOperationsCommand,
   type ReviewOperationsCommandResult,
+  type ReviewScoringCommand,
 } from "@sessionbox-killer/contracts";
 
 import type { BaseAuthority } from "../authority/base-authority.js";
@@ -64,6 +67,8 @@ interface AssignmentRow extends EntityRow {
   conflict: number;
   id: string;
   reviewer_id: string;
+  rubric_snapshot_json: string | null;
+  scoring_required: number;
   status: "assigned" | "draft" | "submitted" | "withdrawn";
   submission_id: string;
 }
@@ -136,7 +141,7 @@ export class AirtableReviewOperationsCommandService {
   }
 
   async execute(
-    command: ReviewOperationsCommand,
+    command: ReviewOperationsCommand | ReviewScoringCommand,
   ): Promise<ReviewOperationsCommandResult> {
     const commandHash = await hashAuthorityValue({
       actorId: this.#actorId,
@@ -277,7 +282,7 @@ export class AirtableReviewOperationsCommandService {
   }
 
   async #operation(
-    command: ReviewOperationsCommand,
+    command: ReviewOperationsCommand | ReviewScoringCommand,
   ): Promise<BaseAuthorityCommand> {
     if (command.type === "publish_rubric") return this.#publishRubric(command);
     if (command.type === "upsert_group") return this.#upsertGroup(command);
@@ -285,7 +290,13 @@ export class AirtableReviewOperationsCommandService {
       return this.#assignReviewer(command);
     if (command.type === "remove_assignment")
       return this.#removeAssignment(command);
-    return this.#discloseConflict(command);
+    if (command.type === "disclose_conflict")
+      return this.#discloseConflict(command);
+    if (command.type === "save_review_draft")
+      return this.#writeReview(command, false);
+    if (command.type === "submit_review")
+      return this.#writeReview(command, true);
+    return this.#reopenReview(command);
   }
 
   async #publishRubric(
@@ -469,6 +480,8 @@ export class AirtableReviewOperationsCommandService {
         "Rubric snapshot JSON": JSON.stringify(rubricSnapshot),
         "Rubric version": rubric.rubric_version,
         "Scoring required": true,
+        "Score snapshot JSON": "[]",
+        "Reviewer note": "",
         Status: "assigned",
         "Submitted at": null,
       },
@@ -548,6 +561,129 @@ export class AirtableReviewOperationsCommandService {
         assignmentId: command.assignmentId,
         noteLength: command.note.length,
         organizerAlerted: true,
+        reviewerId: assignment.reviewer_id,
+        submissionId: assignment.submission_id,
+      },
+    );
+  }
+
+  async #writeReview(
+    command: Extract<
+      ReviewScoringCommand,
+      { type: "save_review_draft" | "submit_review" }
+    >,
+    submit: boolean,
+  ): Promise<BaseAuthorityCommand> {
+    const assignment = await this.#assignment(command.assignmentId);
+    if (!assignment) throw new ReviewOperationsNotFoundError();
+    if (
+      this.#permittedReviewerId === undefined ||
+      assignment.reviewer_id !== this.#permittedReviewerId
+    ) {
+      throw new ReviewOperationsNotFoundError();
+    }
+    this.#version(command.expectedVersion, assignment.source_version);
+    if (
+      assignment.status === "withdrawn" ||
+      assignment.conflict === 1 ||
+      assignment.scoring_required !== 1
+    ) {
+      throw new ReviewOperationsValidationError(
+        "assignmentId",
+        "This assignment no longer accepts a review.",
+      );
+    }
+    if (assignment.status === "submitted") {
+      throw new ReviewOperationsValidationError(
+        "assignmentId",
+        "A submitted review is read-only until an organizer reopens it.",
+      );
+    }
+    if (!assignment.rubric_snapshot_json) {
+      throw new ReviewOperationsValidationError(
+        "assignmentId",
+        "The assignment rubric snapshot is unavailable.",
+      );
+    }
+    let rubric;
+    try {
+      rubric = reviewAssignmentSchema.shape.rubric.parse(
+        JSON.parse(assignment.rubric_snapshot_json) as unknown,
+      );
+    } catch {
+      throw new ReviewOperationsValidationError(
+        "assignmentId",
+        "The assignment rubric snapshot is unavailable.",
+      );
+    }
+    const draft = reviewDraftSchema.parse(command.draft);
+    const criterionIds = new Set(rubric.criteria.map(({ id }) => id));
+    if (
+      draft.scores.some(({ criterionId }) => !criterionIds.has(criterionId))
+    ) {
+      throw new ReviewOperationsValidationError(
+        "draft.scores",
+        "Scores must use the assignment's rubric snapshot.",
+      );
+    }
+    if (submit && draft.scores.length !== criterionIds.size) {
+      throw new ReviewOperationsValidationError(
+        "draft.scores",
+        "Score every rubric criterion before submitting the review.",
+      );
+    }
+    const hasDraft = draft.note.length > 0 || draft.scores.length > 0;
+    const submittedAt = submit ? new Date().toISOString() : null;
+    return this.#authorityCommand(
+      command.commandId,
+      command.assignmentId,
+      command.expectedVersion,
+      {
+        "Reviewer note": draft.note,
+        "Score snapshot JSON": JSON.stringify(draft.scores),
+        Status: submit ? "submitted" : hasDraft ? "draft" : "assigned",
+        "Submitted at": submittedAt,
+      },
+      submit ? "reviews.review.submit" : "reviews.review.draft",
+      "reviews",
+      {
+        assignmentId: command.assignmentId,
+        complete: draft.scores.length === criterionIds.size,
+        noteLength: draft.note.length,
+        scoredCriterionCount: draft.scores.length,
+        ...(submittedAt ? { submittedAt } : {}),
+      },
+    );
+  }
+
+  async #reopenReview(
+    command: Extract<ReviewScoringCommand, { type: "reopen_review" }>,
+  ): Promise<BaseAuthorityCommand> {
+    if (this.#permittedReviewerId !== undefined) {
+      throw new ReviewOperationsNotFoundError();
+    }
+    const assignment = await this.#assignment(command.assignmentId);
+    if (!assignment) throw new ReviewOperationsNotFoundError();
+    this.#version(command.expectedVersion, assignment.source_version);
+    if (assignment.status !== "submitted") {
+      throw new ReviewOperationsValidationError(
+        "assignmentId",
+        "Only a submitted review can be reopened.",
+      );
+    }
+    return this.#authorityCommand(
+      command.commandId,
+      command.assignmentId,
+      command.expectedVersion,
+      {
+        Status: "draft",
+        "Submitted at": null,
+      },
+      "reviews.review.reopen",
+      "reviews",
+      {
+        assignmentId: command.assignmentId,
+        reason: command.reason,
         reviewerId: assignment.reviewer_id,
         submissionId: assignment.submission_id,
       },
@@ -734,6 +870,7 @@ export class AirtableReviewOperationsCommandService {
     return this.#database
       .prepare(
         `SELECT id, submission_id, reviewer_id, status, conflict,
+                rubric_snapshot_json, scoring_required,
                 source_record_id, source_version
          FROM p_reviews
          WHERE organization_id = ?1 AND event_id = ?2 AND id = ?3
