@@ -489,6 +489,66 @@ function sessionCookie(label: string): string {
 }
 
 describe("speaker portal routes", () => {
+  it("reads an incomplete reusable profile and enforces scoped command boundaries", async () => {
+    const response = await server.fetch(
+      "/api/portal/open-session-summit/profile",
+      { headers: routeHeaders(sessionCookie("speaker_one")) },
+    );
+    expect(response.status).toBe(200);
+    const profile = (await response.json()) as {
+      fields: { bio: string; title: string };
+      headshot: unknown;
+      upload_context: {
+        event_id: string;
+        organization_id: string;
+        owner_contact_id: string;
+        replacement_file_id?: string;
+      };
+    };
+    expect(profile.fields).toMatchObject({ bio: "", title: "" });
+    expect(profile.headshot).toBeNull();
+    expect(profile.upload_context).toMatchObject({
+      event_id: "evt_one",
+      organization_id: "org_one",
+      owner_contact_id: "contact_one",
+    });
+    expect(profile.upload_context.replacement_file_id).toBeUndefined();
+
+    const foreign = await server.fetch(
+      "/api/portal/open-session-summit/profile",
+      { headers: routeHeaders(sessionCookie("foreign")) },
+    );
+    expect(foreign.status).toBe(403);
+
+    const csrfFailure = await server.fetch(
+      "/api/portal/open-session-summit/profile/commands",
+      {
+        body: JSON.stringify({
+          command_id: "profile_command_csrf",
+          expected_version: 1,
+          fields: {
+            bio: "A complete biography.",
+            bluesky_url: "",
+            company: "Open Session",
+            display_name: "Sam Speaker",
+            headshot_alt: "",
+            linkedin_url: "",
+            pronouns: "",
+            title: "Principal Engineer",
+            website_url: "",
+          },
+          reuse_organization: true,
+        }),
+        headers: routeHeaders(sessionCookie("speaker_one")),
+        method: "PUT",
+      },
+    );
+    expect(csrfFailure.status).toBe(403);
+    await expect(csrfFailure.json()).resolves.toMatchObject({
+      error: { code: "invalid_csrf" },
+    });
+  });
+
   it("bootstraps the event repeatedly from an authenticated speaker session", async () => {
     const first = await server.fetch(
       "/api/portal/open-session-summit/bootstrap",

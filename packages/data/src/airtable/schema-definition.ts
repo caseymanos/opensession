@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 5;
+export const AIRTABLE_SCHEMA_VERSION = 6;
 
 export type AirtableTableKey =
   | "organizations"
@@ -313,7 +313,11 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
       text("Company"),
       longText("Bio"),
       text("Headshot object key"),
+      text("Headshot alt text"),
       longText("Social JSON"),
+      select("Profile publication state", ["draft", "approved", "published"]),
+      dateTime("Profile approved at"),
+      text("Profile approved by"),
     ]),
     table("event_contacts", "Event Contacts", [
       link("Event", "events"),

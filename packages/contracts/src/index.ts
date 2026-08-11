@@ -5,6 +5,7 @@ export * from "./schedule-fixture";
 export * from "./demo";
 export * from "./organizer-submissions";
 export * from "./calendar";
+export * from "./speaker-profile";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),
@@ -14,6 +15,26 @@ export const healthResponseSchema = z.object({
 });
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+export const apiErrorDetailSchema = z
+  .object({
+    actual_version: z.int().nonnegative().optional(),
+    code: z.string().trim().min(1).max(120),
+    expected_version: z.int().nonnegative().optional(),
+    message: z.string().trim().min(1).max(500),
+    retryable: z.boolean().optional(),
+  })
+  .strict();
+
+export const apiErrorResponseSchema = z
+  .object({
+    error: apiErrorDetailSchema,
+    request_id: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+export type ApiErrorDetail = z.infer<typeof apiErrorDetailSchema>;
+export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 
 const publicIdentifierSchema = z
   .string()

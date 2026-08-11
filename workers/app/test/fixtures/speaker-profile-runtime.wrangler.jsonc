@@ -1,0 +1,92 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-speaker-profile-runtime",
+  "main": "../../src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../../../../apps/web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health/*"],
+  },
+  "exports": {
+    "AgendaCoordinator": { "type": "durable-object", "storage": "sqlite" },
+    "BaseAuthority": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "AGENDA_COORDINATOR", "class_name": "AgendaCoordinator" },
+      { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
+    ],
+  },
+  "services": [
+    {
+      "binding": "AIRTABLE_UPSTREAM",
+      "service": "opensession-airtable-authority-mock",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "speaker-profile-runtime",
+      "database_id": "local",
+      "migrations_dir": "../../../../migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "speaker-profile-runtime-uploads",
+    },
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "OBSERVABILITY",
+      "dataset": "speaker_profile_runtime_observability",
+    },
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "EMAIL_QUEUE", "queue": "speaker-profile-email" },
+      {
+        "binding": "PROJECTION_REPAIR_QUEUE",
+        "queue": "speaker-profile-repair",
+      },
+      {
+        "binding": "WEBHOOK_DELIVERY_QUEUE",
+        "queue": "speaker-profile-webhook",
+      },
+      {
+        "binding": "INTEGRATION_EXPORT_QUEUE",
+        "queue": "speaker-profile-export",
+      },
+    ],
+  },
+  "vars": {
+    "APP_ENV": "local",
+    "AIRTABLE_BASE_ID": "appAuthorityFixture",
+    "AIRTABLE_PAT": "fixture-credential",
+    "AUTH_HASH_PEPPER": "speaker-profile-runtime-pepper-000000000000000000000000",
+    "AUTHORITY_LEASE_MILLISECONDS": "20000",
+    "AUTHORITY_RECOVERY_DELAY_MILLISECONDS": "250",
+    "FEATURE_FLAGS": {
+      "ai": false,
+      "embeds": false,
+      "email": false,
+      "integrations": false,
+      "webhooks": false,
+      "writes": true,
+    },
+    "EMAIL_DELIVERY_CONFIG": {
+      "mode": "sink",
+      "allowlist": [],
+      "authFrom": "OpenSession <auth@local.opensession.test>",
+      "authReplyTo": "hello@local.opensession.test",
+    },
+    "RESEND_API_KEY": "fixture-disabled",
+    "RESEND_WEBHOOK_SECRET": "fixture-disabled",
+    "TURNSTILE_SECRET": "1x0000000000000000000000000000000AA",
+    "TURNSTILE_HOSTNAMES": "localhost,127.0.0.1",
+    "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+  },
+}
