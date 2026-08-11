@@ -11,7 +11,7 @@
     "@sessionbox-killer/domain": "workspace:*",
     "@sessionbox-killer/email": "workspace:*",
     "@sessionbox-killer/ui": "workspace:*",
-    "lucide-react": "^0.563.0",
+    "lucide-react": "^1.30.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   }
