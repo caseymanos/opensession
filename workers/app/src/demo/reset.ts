@@ -104,10 +104,24 @@ export function demoAuthorityBlockers(
 }
 
 export class D1DemoEventGuardReader implements DemoEventGuardReader {
+  readonly #baseKey: string;
   readonly #database: D1Database;
 
-  constructor(database: D1Database) {
+  constructor(database: D1Database, baseKey: string) {
     this.#database = database;
+    this.#baseKey = baseKey;
+  }
+
+  async activeOrganizationIds(): Promise<readonly string[]> {
+    const rows = await this.#database
+      .prepare(
+        `SELECT organization_id FROM tenant_registry
+         WHERE base_key = ? AND status = 'active'
+         ORDER BY organization_id`,
+      )
+      .bind(this.#baseKey)
+      .all<{ organization_id: string }>();
+    return rows.results.map(({ organization_id }) => organization_id);
   }
 
   async read(
@@ -121,6 +135,7 @@ export class D1DemoEventGuardReader implements DemoEventGuardReader {
          FROM p_events event
          JOIN tenant_registry tenant
            ON tenant.organization_id = event.organization_id
+          AND tenant.base_key = ?3
           AND tenant.status = 'active'
           AND tenant.authority_ready_at IS NOT NULL
          WHERE event.organization_id = ?1
@@ -128,7 +143,7 @@ export class D1DemoEventGuardReader implements DemoEventGuardReader {
            AND event.source_deleted_at IS NULL
          LIMIT 1`,
       )
-      .bind(organizationId, eventId)
+      .bind(organizationId, eventId, this.#baseKey)
       .first<{
         event_id: string;
         is_demo: number;
@@ -180,6 +195,64 @@ export class DemoResetService {
     this.#authority = options.authority;
     this.#eventReader = options.eventReader;
     this.#plan = options.plan;
+  }
+
+  #assertEventGuard(
+    request: DemoResetRequest,
+    minimumSourceVersion: number | null,
+    event: DemoEventGuard | null,
+  ): DemoEventGuard {
+    if (!event?.isDemo) {
+      throw new DemoResetError(
+        "not_demo",
+        "Demo reset is not available for this event.",
+      );
+    }
+    if (
+      event.organizationId !== request.organizationId ||
+      event.eventId !== request.eventId ||
+      !Number.isInteger(event.sourceVersion) ||
+      event.sourceVersion < 0 ||
+      (minimumSourceVersion !== null &&
+        event.sourceVersion < minimumSourceVersion)
+    ) {
+      throw new DemoResetError(
+        "invalid_target",
+        "Demo reset guard returned a different event target.",
+      );
+    }
+    return event;
+  }
+
+  async #activeOrganizationIds(): Promise<readonly string[]> {
+    const organizationIds = await this.#eventReader.activeOrganizationIds();
+    const sorted = [...new Set(organizationIds)].sort(compareCanonicalStrings);
+    if (
+      !sorted.includes(this.#plan.organizationId) ||
+      sorted.length !== organizationIds.length ||
+      sorted.some(
+        (organizationId, index) => organizationId !== organizationIds[index],
+      )
+    ) {
+      throw new DemoResetError(
+        "authority_unavailable",
+        "Demo authority returned an invalid active tenant roster.",
+      );
+    }
+    return sorted;
+  }
+
+  async #synchronize(organizationIds?: readonly string[]): Promise<void> {
+    try {
+      await this.#authority.synchronizeFull(
+        organizationIds ?? (await this.#activeOrganizationIds()),
+      );
+    } catch {
+      throw new DemoResetError(
+        "authority_unavailable",
+        "Demo authority did not converge after the reset.",
+      );
+    }
   }
 
   async reset(request: DemoResetRequest): Promise<DemoSeedAuthorityReceipt> {
@@ -238,29 +311,25 @@ export class DemoResetService {
       );
     }
 
-    const event = await this.#eventReader.read(
+    let synchronizedExistingRun = false;
+    let event = await this.#eventReader.read(
       request.organizationId,
       request.eventId,
     );
-    if (!event?.isDemo) {
-      throw new DemoResetError(
-        "not_demo",
-        "Demo reset is not available for this event.",
+    if (!event && existingRun) {
+      await this.#synchronize();
+      synchronizedExistingRun = true;
+      event = await this.#eventReader.read(
+        request.organizationId,
+        request.eventId,
       );
     }
-    if (
-      event.organizationId !== request.organizationId ||
-      event.eventId !== request.eventId ||
-      !Number.isInteger(event.sourceVersion) ||
-      event.sourceVersion < 0 ||
-      (existingRun !== null &&
-        event.sourceVersion < existingRun.expectedSourceVersion)
-    ) {
-      throw new DemoResetError(
-        "invalid_target",
-        "Demo reset guard returned a different event target.",
-      );
-    }
+    const guardedEvent = this.#assertEventGuard(
+      request,
+      existingRun?.expectedSourceVersion ?? null,
+      event,
+    );
+    const activeOrganizationIds = await this.#activeOrganizationIds();
 
     const blockers = demoAuthorityBlockers(
       this.#plan,
@@ -276,7 +345,7 @@ export class DemoResetService {
     const receipt = await this.#authority.replaceDemoEvent({
       actorId: request.actor.id,
       expectedSourceVersion:
-        existingRun?.expectedSourceVersion ?? event.sourceVersion,
+        existingRun?.expectedSourceVersion ?? guardedEvent.sourceVersion,
       operation: "demo.snapshot.replace",
       plan: this.#plan,
       requireActiveOwner: true,
@@ -284,6 +353,14 @@ export class DemoResetService {
       resetRunId: request.requestId,
     });
     assertReceipt(this.#plan, request.requestId, receipt);
+    if (!existingRun?.receiptAvailable || !synchronizedExistingRun) {
+      await this.#synchronize(activeOrganizationIds);
+      this.#assertEventGuard(
+        request,
+        existingRun?.expectedSourceVersion ?? guardedEvent.sourceVersion,
+        await this.#eventReader.read(request.organizationId, request.eventId),
+      );
+    }
     return receipt;
   }
 }

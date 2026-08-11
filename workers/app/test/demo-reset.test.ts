@@ -62,6 +62,7 @@ const fullCapabilities: DemoSeedAuthorityCapabilities = {
 };
 
 class RecordingEventReader implements DemoEventGuardReader {
+  activeOrganizations: readonly string[] = [demoOrganizationId];
   calls = 0;
   event: DemoEventGuard | null = {
     eventId: demoEventId,
@@ -74,11 +75,18 @@ class RecordingEventReader implements DemoEventGuardReader {
     this.calls += 1;
     return Promise.resolve(this.event);
   }
+
+  activeOrganizationIds(): Promise<readonly string[]> {
+    return Promise.resolve(this.activeOrganizations);
+  }
 }
 
 class RecordingAuthority implements DemoSeedAuthorityGateway {
   calls: Parameters<DemoSeedAuthorityGateway["replaceDemoEvent"]>[0][] = [];
   capabilityValue: DemoSeedAuthorityCapabilities = fullCapabilities;
+  onSynchronize: (() => Promise<void> | void) | null = null;
+  providerMutationCount = 0;
+  synchronizeCalls: readonly string[][] = [];
   readonly #applied = new Set<string>();
   readonly #runs = new Map<
     string,
@@ -87,6 +95,12 @@ class RecordingAuthority implements DemoSeedAuthorityGateway {
 
   capabilities(): Promise<DemoSeedAuthorityCapabilities> {
     return Promise.resolve(this.capabilityValue);
+  }
+
+  recordApplying(
+    input: Parameters<DemoSeedAuthorityGateway["replaceDemoEvent"]>[0],
+  ): void {
+    this.#runs.set(input.resetRunId, input);
   }
 
   inspectDemoEventReplacement(organizationId: string, resetRunId: string) {
@@ -125,6 +139,7 @@ class RecordingAuthority implements DemoSeedAuthorityGateway {
     }
     this.#runs.set(input.resetRunId, input);
     this.#applied.add(input.resetRunId);
+    if (!replayed) this.providerMutationCount += 1;
     return Promise.resolve({
       auditEventId: `audit_${input.resetRunId}`,
       digest: input.plan.digest,
@@ -133,6 +148,11 @@ class RecordingAuthority implements DemoSeedAuthorityGateway {
       resetRunId: input.resetRunId,
       snapshotId: input.plan.snapshotId,
     });
+  }
+
+  async synchronizeFull(organizationIds: readonly string[]): Promise<void> {
+    this.synchronizeCalls = [...this.synchronizeCalls, [...organizationIds]];
+    await this.onSynchronize?.();
   }
 }
 
@@ -228,6 +248,161 @@ describe("guarded demo reset service", () => {
       ),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(authority.calls).toHaveLength(1);
+  });
+
+  it("recovers a completed snapshot after readiness loss without another provider mutation", async () => {
+    const authority = new RecordingAuthority();
+    const eventReader = new RecordingEventReader();
+    let loseFirstResponse = true;
+    authority.onSynchronize = () => {
+      if (!loseFirstResponse) {
+        eventReader.event = {
+          eventId: demoEventId,
+          isDemo: true,
+          organizationId: demoOrganizationId,
+          sourceVersion: 8,
+        };
+        return;
+      }
+      loseFirstResponse = false;
+      eventReader.event = null;
+      throw new Error("response lost before convergence");
+    };
+    const service = new DemoResetService({ authority, eventReader, plan });
+
+    await expect(service.reset(request())).rejects.toMatchObject({
+      code: "authority_unavailable",
+    });
+    expect(authority.providerMutationCount).toBe(1);
+    expect(authority.calls).toHaveLength(1);
+
+    await expect(
+      service.reset(request({ requestId: "req_demo_reset_different" })),
+    ).rejects.toMatchObject({ code: "not_demo" });
+    expect(authority.providerMutationCount).toBe(1);
+
+    const changedPlan: CompiledDemoSeed = {
+      ...plan,
+      digest: "f".repeat(64),
+    };
+    await expect(
+      new DemoResetService({
+        authority,
+        eventReader,
+        plan: changedPlan,
+      }).reset(request()),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(authority.providerMutationCount).toBe(1);
+
+    await expect(service.reset(request())).resolves.toMatchObject({
+      digest: plan.digest,
+      outcome: "replayed",
+      resetRunId: "req_demo_reset",
+    });
+    expect(authority.providerMutationCount).toBe(1);
+    expect(authority.calls).toHaveLength(2);
+    expect(authority.synchronizeCalls).toEqual([
+      [demoOrganizationId],
+      [demoOrganizationId],
+    ]);
+  });
+
+  it("recovers an applying snapshot when readiness is unavailable", async () => {
+    const authority = new RecordingAuthority();
+    const eventReader = new RecordingEventReader();
+    eventReader.event = null;
+    authority.recordApplying({
+      actorId: "usr_demo_owner",
+      expectedSourceVersion: 7,
+      operation: "demo.snapshot.replace",
+      plan,
+      requireActiveOwner: true,
+      requireAuthoritativeDemo: true,
+      resetRunId: "req_demo_reset",
+    });
+    authority.onSynchronize = () => {
+      eventReader.event = {
+        eventId: demoEventId,
+        isDemo: true,
+        organizationId: demoOrganizationId,
+        sourceVersion: 8,
+      };
+    };
+
+    await expect(
+      new DemoResetService({ authority, eventReader, plan }).reset(request()),
+    ).resolves.toMatchObject({
+      outcome: "applied",
+      resetRunId: "req_demo_reset",
+    });
+    expect(authority.providerMutationCount).toBe(1);
+    expect(authority.calls).toHaveLength(1);
+    expect(authority.synchronizeCalls).toEqual([
+      [demoOrganizationId],
+      [demoOrganizationId],
+    ]);
+  });
+
+  it("synchronizes the complete active roster and rejects a missing demo tenant", async () => {
+    const authority = new RecordingAuthority();
+    const eventReader = new RecordingEventReader();
+    eventReader.activeOrganizations = ["org_fixture", demoOrganizationId];
+
+    await expect(
+      new DemoResetService({ authority, eventReader, plan }).reset(request()),
+    ).rejects.toMatchObject({ code: "authority_unavailable" });
+    expect(authority.providerMutationCount).toBe(0);
+
+    eventReader.activeOrganizations = [demoOrganizationId, "org_fixture"];
+
+    await expect(
+      new DemoResetService({ authority, eventReader, plan }).reset(request()),
+    ).resolves.toMatchObject({ outcome: "applied" });
+    expect(authority.synchronizeCalls).toEqual([
+      [demoOrganizationId, "org_fixture"],
+    ]);
+
+    const missingAuthority = new RecordingAuthority();
+    const missingReader = new RecordingEventReader();
+    missingReader.activeOrganizations = ["org_other"];
+    await expect(
+      new DemoResetService({
+        authority: missingAuthority,
+        eventReader: missingReader,
+        plan,
+      }).reset(request()),
+    ).rejects.toMatchObject({ code: "authority_unavailable" });
+    expect(missingAuthority.providerMutationCount).toBe(0);
+    expect(missingAuthority.calls).toHaveLength(0);
+  });
+
+  it("repairs the complete roster before replaying a completed receipt", async () => {
+    const authority = new RecordingAuthority();
+    const eventReader = new RecordingEventReader();
+    eventReader.activeOrganizations = [demoOrganizationId, "org_sibling"];
+    let synchronizeAttempts = 0;
+    authority.onSynchronize = () => {
+      synchronizeAttempts += 1;
+      if (synchronizeAttempts === 1) {
+        throw new Error("sibling tenant projection failed");
+      }
+    };
+    const service = new DemoResetService({ authority, eventReader, plan });
+
+    await expect(service.reset(request())).rejects.toMatchObject({
+      code: "authority_unavailable",
+    });
+    expect(authority.providerMutationCount).toBe(1);
+
+    await expect(service.reset(request())).resolves.toMatchObject({
+      outcome: "replayed",
+      resetRunId: "req_demo_reset",
+    });
+    expect(authority.providerMutationCount).toBe(1);
+    expect(authority.synchronizeCalls).toEqual([
+      [demoOrganizationId, "org_sibling"],
+      [demoOrganizationId, "org_sibling"],
+    ]);
   });
 
   it.each([

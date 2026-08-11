@@ -496,6 +496,13 @@ export class BaseAuthority extends DurableObject<BaseAuthorityEnvironment> {
       : this.serializeBase(() => this.reconcileAll(organizationIds));
   }
 
+  synchronizeFull(
+    organizationIds: readonly string[],
+  ): Promise<ReconciliationResult> {
+    this.assertOrganizationIds(organizationIds);
+    return this.serializeBase(() => this.reconcileAll(organizationIds));
+  }
+
   async ingestWebhook(
     organizationIds: readonly string[],
   ): Promise<ReconciliationResult> {
