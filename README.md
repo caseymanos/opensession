@@ -1,63 +1,87 @@
 # OpenSession
 
-OpenSession is an open-source conference program operating system for the complete path from call for speakers to a published, conflict-free agenda. It is the SessionBox replacement being built for the 2026 Kill My SaaS competition.
+OpenSession is an open-source conference program operating system: collect proposals, run structured reviews, make decisions, prepare speakers, build a conflict-free agenda, and publish the program from one workspace.
 
-The application ships as one Cloudflare Worker with React static assets. Airtable is the authoritative event-program store; D1 provides auth, operations, audit, and read projections; R2 stores private files; Queues, Workflows, and a per-event Durable Object own reliable background work and schedule serialization.
+[Live demo](https://opensessionboard.com/) · [API documentation](https://opensessionboard.com/docs/api) · [OpenAPI 3.1](https://opensessionboard.com/openapi.json) · [Source](https://github.com/caseymanos/opensession) · [MIT license](./LICENSE)
 
-## Prerequisites
+> **Release status — August 11, 2026:** the public release candidate is online and the source remains active competition work. The 2026 Kill My SaaS submission deadline is **August 12 at 10:00 PM America/Los_Angeles** (`2026-08-13T05:00:00Z`). Availability is not a claim that every optional integration is enabled; production email, writes, and external providers remain behind explicit release gates.
 
-- Node.js `26.7.0` from [`.nvmrc`](./.nvmrc)
-- pnpm `10.34.5` from the root `packageManager` field
-- Wrangler authentication only when using remote Cloudflare resources or deploying
+## Product tour
 
-Node 26 is an explicit project/tooling choice while it is the Current release. The deployed application runs in Cloudflare's Workers runtime rather than a Node.js server process; re-evaluate the pin when Node 26 enters LTS.
+These screenshots were captured from the current deterministic local product surfaces at this revision. They contain synthetic fixture data and are product references, not production or judge evidence.
+
+### Program operations
+
+![OpenSession agenda workspace showing publication status, conflict gates, and a two-day schedule](./docs/assets/organizer-workspace.png)
+
+### Public call for proposals
+
+![OpenSession public call-for-proposals landing page](./docs/assets/public-cfp.png)
+
+The release candidate includes the central program workflow: a versioned CFP, tenant-scoped submission and review operations, auditable decisions, speaker profiles and tasks, scheduled communications, an accessible agenda builder, published schedules and speakers, and a scoped read API with one guarded submission mutation. Accelevents export and live outbound delivery remain externally gated and are never represented by fixtures as live provider proof.
+
+## Architecture
+
+The application ships as one Cloudflare Worker with React static assets and a Hono HTTP boundary. Airtable is the authoritative event-program store. D1 owns authentication, operations, audit, idempotency, repair state, and read projections. R2 stores private files. Durable Objects serialize the Airtable base and each event agenda; Queues and a task-reminder Workflow own reliable asynchronous work.
+
+```text
+apps/web/                 React application and route modules
+workers/app/              Worker, API, Durable Objects, Workflow, queue consumers
+packages/domain/          Entities, policies, conflict and readiness logic
+packages/contracts/       Zod contracts and public API schemas
+packages/data/            Airtable authority and D1 projection boundaries
+packages/email/           Templates, merge engine and calendar attachments
+packages/integrations/    Provider adapters and deterministic fixtures
+packages/ui/              Accessible components and design tokens
+migrations/               Forward-only D1 migrations
+tests/e2e/                Playwright product and release paths
+```
+
+Read [the architecture decision record](./docs/04-architecture.md), [data ownership map](./docs/05-data-model.md), and [open-source operator guide](./docs/19-open-source-operator-guide.md) before changing a persistence or provider boundary.
+
+## Quick start
+
+Prerequisites are Node.js `26.7.0` from [`.nvmrc`](./.nvmrc) and pnpm `10.34.5` from the root `packageManager` field.
 
 ```bash
+git clone https://github.com/caseymanos/opensession.git
+cd opensession
 nvm use
 corepack enable
 pnpm install --frozen-lockfile
-```
-
-If the Corepack bundled with Node cannot verify the current package-manager signature, update Corepack from npm once, then repeat the commands above:
-
-```bash
-npm install --global corepack@latest
-corepack enable
-```
-
-## Local development
-
-Copy [`.env.example`](./.env.example) to `.dev.vars` only when a feature needs local configuration. The initial shell and health routes require no secrets.
-
-```bash
 pnpm dev
 ```
 
-Wrangler builds the React client, serves it with the Worker at `http://localhost:8787`, and uses local bindings. Useful routes:
+Open `http://localhost:8787`. The shell, deterministic UI fixtures, health endpoints, generated OpenAPI, and API docs run without provider secrets. Copy [`.env.example`](./.env.example) to `.dev.vars` only for a feature that needs local configuration; never fill placeholders in committed files.
 
-- `/` — responsive organizer shell
-- `/health/live` — Worker liveness
-- `/health/ready` — binding-readiness contract
-- `/api/v1` — API discovery response
+Useful local routes:
 
-Use `pnpm dev:web` for UI-only Vite work on port `5173`.
+- `/` — organizer workspace with synthetic data
+- `/fixtures/agenda/published?view=list` — deterministic published-agenda surface
+- `/fixtures/public-cfp/interactive` — deterministic public CFP surface
+- `/health/live` and `/health/ready` — runtime and binding readiness
+- `/openapi.json` and `/docs/api` — generated API contract and human docs
 
-## Quality commands
+Use `pnpm dev:web` for UI-only Vite work on port `5173`. For reproducible local D1 state, migration order, remote provisioning, Airtable schema bootstrap, guarded demo seed, email modes, rollback, and dual-store recovery, follow [the operator guide](./docs/19-open-source-operator-guide.md).
 
-| Command | Purpose |
-|---|---|
-| `pnpm deps:audit` | Fail on known high- or critical-severity vulnerabilities |
-| `pnpm check:public-repo` | Reject private operational data and non-redistributable source artifacts |
-| `pnpm format:check` | Verify Prettier formatting |
-| `pnpm lint` | Run strict ESLint rules |
-| `pnpm typecheck` | Typecheck every workspace boundary |
-| `pnpm test:unit` | Run domain tests and a real Wrangler Worker harness |
-| `pnpm test:e2e` | Run desktop and mobile Chromium smoke tests |
-| `pnpm wrangler:types:check` | Detect generated binding drift |
-| `pnpm build` | Build the React assets and dry-run the Worker artifact |
-| `pnpm --filter @sessionbox-killer/data airtable -- schema:check --environment preview` | Read-only Airtable schema drift check |
+## Public API
 
-Run focused tests for the changed behavior plus the local static gate before opening a pull request:
+The generated OpenAPI 3.1 document is built from the same runtime schema catalog that registers the handlers. The current v1 surface contains 13 paths for events, submissions, sessions, speakers, tasks, the published schedule, and export-run reads; submission lifecycle is the only public API mutation.
+
+```bash
+curl --fail --silent http://localhost:8787/openapi.json \
+  | jq -e '.openapi == "3.1.0" and (.paths | length == 13)'
+
+pnpm exec vitest run \
+  workers/app/test/public-api-contract.test.ts \
+  workers/app/test/public-api-runtime.test.ts
+```
+
+API keys are opaque, scoped, revocable, and shown once through the authenticated organizer flow. Never put a key in a URL or commit a transcript containing plaintext. See the executable, redacted [local curl transcript](./examples/public-api-v1/local-curl-transcript.md).
+
+## Quality gates
+
+Run focused tests for the behavior you change plus the static local gate:
 
 ```bash
 pnpm format:check
@@ -67,81 +91,28 @@ pnpm lint
 pnpm typecheck
 pnpm wrangler:types:check
 pnpm build
-# pnpm exec vitest run --config vitest.config.ts <affected-test-files>
 ```
 
-Protected CI is the full-suite authority. It runs four isolated, duration-balanced Vitest coverage shards and two Playwright shards, merges their evidence, enforces the unchanged coverage policy, and runs Gitleaks against Git history. Use `pnpm test:coverage` and `pnpm test:e2e` locally when diagnosing harness or cross-surface failures; routine changes do not duplicate both full suites before protected CI.
+Protected CI is the full-suite authority. It runs isolated coverage and Playwright shards, merges their evidence, enforces the unchanged coverage policy, and scans Git history for secrets. Use `pnpm test:coverage` and `pnpm test:e2e` locally for cross-surface changes or harness diagnosis.
 
-## Workspace boundaries
+## Environments and operations
 
-```text
-apps/web/                 React application and route modules
-workers/app/              Worker entry, API, Workflows, and queue consumers
-packages/domain/          Entities, value objects, policies, conflict logic
-packages/contracts/       Zod/OpenAPI schemas and generated client boundary
-packages/data/            Airtable command store, D1 projection, repositories
-packages/email/           Templates, merge engine, ICS generation
-packages/integrations/    Accelevents and webhook adapters
-packages/ui/              Accessible components and design tokens
-migrations/               D1 migrations
-seed/                     Deterministic demo fixture and reset guard
-tests/e2e/                Playwright judge and release paths
-```
-
-The scaffolded packages are intentionally narrow ports. Product tickets fill them in without importing provider clients into domain or UI code.
-
-## Environments
-
-| Environment | Worker name | Data posture | Email posture |
+| Environment | Data posture | Email posture | Remote mutation gate |
 |---|---|---|---|
-| `local` | `sessionbox-killer` | local fixture/D1/R2 | sink |
-| `preview` | `sessionbox-killer-preview` | isolated preview resources | allowlist |
-| `production` | `sessionbox-killer-prod` | isolated production resources | feature off + empty allowlist until release gate |
+| `local` | local D1/R2 plus deterministic fixtures | sink | none |
+| `preview` | isolated Cloudflare resources and Airtable base | feature off; private one-address allowlist injection only | explicit preview command |
+| `production` | isolated resources and production Airtable base | feature off; empty allowlist by default | CLI flag plus environment confirmation |
 
-No environment may share secrets, Airtable bases, D1 databases, R2 buckets, queues, or workflow names. Generated Cloudflare IDs stay out of source control. Safe binding names and variables belong in `wrangler.jsonc`; local secrets belong in `.dev.vars`; remote secrets use `wrangler secret put`.
+No environment may share secrets, Airtable bases, D1 databases, R2 buckets, queues, or workflow names. Generated resource IDs stay in ignored owner-readable inventory, never in Git. Preview and production provisioning are intentionally operator actions; cloning and validating the repository never requires credentials.
 
-After changing `wrangler.jsonc`, regenerate and commit Worker bindings:
+- [Operator guide](./docs/19-open-source-operator-guide.md) — local/preview/production setup and recovery
+- [Delivery runbook](./docs/08-delivery-runbook.md) — guarded release sequence and deadline plan
+- [Airtable operations](./docs/12-airtable-operations.md) — schema v10, probes, seed lineage, and repair
+- [D1 migrations](./migrations/README.md) — complete forward migration inventory
+- [Integrations and API](./docs/07-integrations.md) — email/provider modes and current contracts
 
-```bash
-pnpm wrangler:types
-```
+## Open-source project
 
-### Cloudflare preview
+Contributions are welcome through [CONTRIBUTING.md](./CONTRIBUTING.md). Report vulnerabilities privately using [SECURITY.md](./SECURITY.md). Research notes in [`docs/01`](./docs/01-sessionboard-product-research.md) and [`docs/02`](./docs/02-sessionboard-api-research.md) are timestamped, checksummed references to official sources; third-party pages, screenshots, specifications, and proprietary implementation are not redistributed or copied into this project.
 
-Wrangler is the account authority; the committed config is the safe, ID-free resource contract. Preview setup is deliberately separate from production:
-
-```bash
-pnpm cloudflare:plan
-pnpm cloudflare:provision:preview
-pnpm cloudflare:status
-pnpm cloudflare:deploy:preview
-pnpm cloudflare:rollback:preview -- --version-id <VERSION_ID>
-```
-
-`plan` and `status` are read-only. The orchestration CLI is compiled from strict TypeScript before every command. Provisioning creates only missing preview resources and is safe to rerun. Deployment revalidates the remote resources, builds the web client, deploys an ID-complete generated config, records active and last-known-good Worker versions, and smokes the shell plus live and ready health routes. Rollback requires an explicit recent version, rejects split deployments, and smokes the restored Worker; it never rolls back D1, R2, Queue, or other storage state. Generated inventory and CLI output under `.cloudflare/` are ignored, owner-readable only, and never a source-controlled input.
-
-Production has no package shortcut. The lower-level provisioner requires both `--confirm-production` and `CLOUDFLARE_PRODUCTION_CONFIRM=production` before any production provisioning, deployment, or rollback.
-
-## Architecture and delivery references
-
-1. [`docs/00-competition-brief.md`](./docs/00-competition-brief.md) — requirements, comments, bonuses, and deadline
-2. [`docs/03-product-spec.md`](./docs/03-product-spec.md) — product scope and acceptance criteria
-3. [`docs/04-architecture.md`](./docs/04-architecture.md) — Cloudflare/Airtable architecture
-4. [`docs/05-data-model.md`](./docs/05-data-model.md) — domain and persistence boundaries
-5. [`docs/06-ux-spec.md`](./docs/06-ux-spec.md) — organizer, reviewer, speaker, and public UX
-6. [`docs/08-delivery-runbook.md`](./docs/08-delivery-runbook.md) — environments, release, and handoff
-7. [`docs/09-judge-demo-and-qa.md`](./docs/09-judge-demo-and-qa.md) — judge walkthrough and ship gates
-8. [`docs/11-linear-plan.md`](./docs/11-linear-plan.md) — audited execution plan
-9. [`docs/12-airtable-operations.md`](./docs/12-airtable-operations.md) — Airtable credentials, schema bootstrap, probe, and recovery
-
-Implementation is tracked in the [SessionBox killer Linear project](https://linear.app/ralc/project/sessionbox-killer-b3345a119b61/overview).
-
-## Security
-
-Never commit secrets, provider credentials, generated resource IDs, private upload URLs, or real recipient data. See [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting, [`.env.example`](./.env.example) for the configuration contract, and [`docs/08-delivery-runbook.md`](./docs/08-delivery-runbook.md) for provisioning rules.
-
-Contributions are welcome through the workflow in [`CONTRIBUTING.md`](./CONTRIBUTING.md). CI artifacts and the private release system hold environment-specific verification evidence; the repository keeps only reproducible tests and secret-free operating guidance.
-
-## License
-
-[MIT](./LICENSE)
+OpenSession is licensed under the [MIT License](./LICENSE).

@@ -1,6 +1,8 @@
 # Sessionboard and Accelevents API research
 
-Last verified: 2026-08-08 against the official documentation linked below. Third-party documentation snapshots are intentionally not redistributed in this repository.
+Research findings verified: 2026-08-08. Source availability and response digests recaptured: 2026-08-11T19:56:27Z. Third-party documentation snapshots are intentionally not redistributed in this repository.
+
+This is a competitive contract reference, not copied implementation. The counts and behavior below describe the captured vendor documentation; OpenSession's generated schema and handlers remain independently implemented and authoritative for this project.
 
 ## Sessionboard public API inventory
 
@@ -56,20 +58,7 @@ Captured OpenAPI metadata:
 
 ## API design lessons for this entry
 
-Our deadline API is deliberately smaller. Required resources:
-
-- `/api/v1/events`
-- `/api/v1/events/{eventId}/forms`
-- `/api/v1/events/{eventId}/submissions`
-- `/api/v1/events/{eventId}/speakers`
-- `/api/v1/events/{eventId}/reviews`
-- `/api/v1/events/{eventId}/sessions`
-- `/api/v1/events/{eventId}/schedule`
-- `/api/v1/events/{eventId}/tasks`
-- `/api/v1/events/{eventId}/resources`
-- `/api/v1/events/{eventId}/exports/accelevents`
-- `/api/v1/public/events/{slug}/{schedule,speakers}`
-- `/openapi.json` and `/docs`
+OpenSession's current generated v1 contract is deliberately smaller: 13 paths covering event list/detail; submission list/detail and one lifecycle `PATCH`; session list/detail; speaker list/detail; task list/detail; published schedule; and export-run list/detail. `/openapi.json` and `/docs/api` are generated documentation routes outside the `/api/v1` server base. Aspirational form, review, resource, webhook, and provider-write routes are not represented as shipped public API.
 
 Contract rules:
 
@@ -121,3 +110,13 @@ Source of truth remains this app. The export state machine is:
 8. Retry retryable failures with bounded exponential backoff; do not replay successful operations.
 
 Every run supports dry-run, explicit manual trigger, and automatically queued export after an accepted session changes. Deletion is not propagated before the deadline; records can be hidden with an explicit operator action instead.
+
+## Source snapshot manifest
+
+The manifest records the requested URL, redirect-resolved URL, UTC capture time, HTTP status, and SHA-256 of decompressed raw response bytes. The digests identify private reference captures; no vendor response body is stored in Git.
+
+| Requested URL | Resolved URL | Captured (UTC) | Status | SHA-256 |
+|---|---|---|---:|---|
+| `https://public-api.sessionboard.com` | `https://public-api.sessionboard.com/` | 2026-08-11T19:56:27Z | 200 | `6f60f87276e15539913a9cf0dd98d85c56928d44229e7d2dbf277066ce2af233` |
+| `https://public-api-eu.sessionboard.com` | `https://public-api-eu.sessionboard.com/` | 2026-08-11T19:56:27Z | 200 | `6f60f87276e15539913a9cf0dd98d85c56928d44229e7d2dbf277066ce2af233` |
+| `https://api.accelevents.com` | `https://api.accelevents.com/` | 2026-08-11T19:56:27Z | 200 | `565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3` |

@@ -1,5 +1,7 @@
 # Delivery and infrastructure runbook
 
+Status at 2026-08-11: the public source and production shell/API documentation are online; release acceptance remains in progress until the deadline gates complete. This runbook is the guarded release authority. Fresh-clone and self-hosting steps are consolidated in [`docs/19-open-source-operator-guide.md`](./19-open-source-operator-guide.md).
+
 ## Deadline and operating cadence
 
 - Hard submission cutoff: **2026-08-12 22:00 America/Los_Angeles** (`2026-08-13T05:00:00Z`).
@@ -40,10 +42,10 @@ Expected production resource names:
 
 - D1: `sessionbox-killer-prod`
 - R2 private bucket: `sessionbox-killer-uploads-prod`
-- Queues: `email-send-prod`, `email-send-prod-dlq`, `projection-repair-prod`, `webhook-delivery-prod`, and `integration-export-prod`
+- Queues: `email-send-prod`, `email-send-prod-dlq`, `projection-repair-prod`, `projection-repair-prod-dlq`, `webhook-delivery-prod`, and `integration-export-prod`
 - Worker/static assets: `sessionbox-killer-prod`
 - Analytics Engine: `sessionbox_killer_observability_production`
-- Workflows: reminders, decisions, calendar, Accelevents export, reconciliation, demo reset
+- Workflows: `task-reminder-production`; other orchestration uses implemented D1/Durable Object/Queue boundaries, and Accelevents remains gated
 - Durable Object namespaces/migrations: per-event conflict coordinator and per-base Airtable authority gate
 - Queue producers/consumers and Cron triggers
 - KV only if a specific cache/config need survives design review; do not add redundant storage.
@@ -54,7 +56,7 @@ Expected preview resource names:
 - Analytics Engine: `sessionbox_killer_observability_preview` (created on first data point)
 - D1: `sessionbox-killer-preview`
 - R2 private bucket: `sessionbox-killer-uploads-preview`
-- Queues: `email-send-preview`, `email-send-preview-dlq`, `projection-repair-preview`, `webhook-delivery-preview`, `integration-export-preview`
+- Queues: `email-send-preview`, `email-send-preview-dlq`, `projection-repair-preview`, `projection-repair-preview-dlq`, `webhook-delivery-preview`, `integration-export-preview`
 - Custom domain: `preview.opensessionboard.com`
 
 Reserved production custom domains (attached only by a production-gated deploy):
@@ -124,14 +126,14 @@ Current preview workflow:
 pnpm cloudflare:plan                 # read-only desired/remote diff
 pnpm cloudflare:provision:preview    # idempotent create-if-missing apply
 pnpm cloudflare:status               # read-only account and inventory check
-pnpm exec wrangler d1 migrations list DB --remote --env preview --config workers/app/wrangler.jsonc
+pnpm exec wrangler d1 migrations list DB --remote --config .cloudflare/wrangler.preview.json
 pnpm cloudflare:smoke:preview        # read-only live/ready/shell release contract
 pnpm cloudflare:deploy:preview       # build, drift check, migrate, deploy, smoke
 pnpm cloudflare:public-performance:preview -- --event-slug <SLUG> --seed <SEED_ID>
 pnpm cloudflare:rollback:preview -- --version-id <VERSION_ID>
 ```
 
-The deterministic demo bootstrap is a separate operator-only release step. Run it only after the complete forward migration chain through `0015_demo_bootstrap_authorization.sql` and the same immutable Worker SHA are active. It refuses a foreign or duplicate Airtable root, writes the two canonical roots through `AirtableCommandStore`, registers the exact base and source-record lineage with readiness unset, synchronizes through `BaseAuthority`, and only then applies and verifies the 134-record snapshot plus four private assets. It does not expose a public bootstrap screen or accept an arbitrary event.
+The deterministic demo bootstrap is a separate operator-only release step. Run it only after the complete forward migration chain through `0025_task_reminder_workflows.sql`, Airtable schema v10, and the same immutable Worker SHA are active. It refuses a foreign or duplicate Airtable root, writes the two canonical roots through `AirtableCommandStore`, registers the exact base and source-record lineage with readiness unset, synchronizes through `BaseAuthority`, and only then applies and verifies the digest-bound 139-operation snapshot plus four private assets. It does not expose a public bootstrap screen or accept an arbitrary event.
 
 Supply the base, runtime PAT, and owner address only to the process. The raw owner address is stored only in the intended private D1 user identity row so normal sign-in can resolve the operational owner; it never enters the fixture, Git, logs, pull requests, Linear, or Wrangler's child environment. The raw one-time authorization token exists only in ignored mode-`0600` resume state, while D1 retains only its SHA-256 hash and immutable environment/base/operation scope. All three process-private values are filtered from Wrangler's child environment and output:
 
