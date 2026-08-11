@@ -1,5 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = Number(process.env.E2E_PORT ?? 8787);
+if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+  throw new Error("E2E_PORT must be a valid TCP port.");
+}
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: ".",
   fullyParallel: true,
@@ -7,7 +13,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   use: {
-    baseURL: "http://127.0.0.1:8787",
+    baseURL,
     trace: "on-first-retry",
   },
   projects: [
@@ -18,6 +24,6 @@ export default defineConfig({
     command: "pnpm preview:e2e",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
-    url: "http://127.0.0.1:8787/health/live",
+    url: `${baseURL}/health/live`,
   },
 });

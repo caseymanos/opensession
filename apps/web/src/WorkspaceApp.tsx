@@ -24,6 +24,8 @@ import {
   SubmissionWorkspace,
   type SubmissionFixtureState,
 } from "./submissions/SubmissionWorkspace";
+import { OrganizerSubmissionWorkspace } from "./submissions/OrganizerSubmissionWorkspace";
+import { organizerSubmissionRoute } from "./submissions/submissionRoute";
 import { OrganizerTaskReviewWorkspace } from "./tasks/TaskCompletionWorkspace";
 
 function useRuntimeEnvironment() {
@@ -81,15 +83,35 @@ export function WorkspaceApp({
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
+  const isSubmissionFixtureRoute = currentPath.startsWith(
+    "/fixtures/submissions/",
+  );
+  const submissionRoute = organizerSubmissionRoute(currentPath);
   const content = currentPath.endsWith("/cfp") ? (
     <CfpBuilder key={resetVersion} />
-  ) : currentPath.includes("/submissions") ? (
+  ) : isSubmissionFixtureRoute ? (
     <SubmissionWorkspace
       fixtureState={submissionFixtureState}
       fixtureSubmissionId={
-        submissionFixtureState === "partial" ? "AI-1042" : undefined
+        submissionFixtureState === "partial"
+          ? "AI-1042"
+          : submissionFixtureState === "interactive"
+            ? currentPath.split("/")[4]
+            : undefined
       }
       key={resetVersion}
+    />
+  ) : submissionRoute ? (
+    <OrganizerSubmissionWorkspace
+      eventKey={submissionRoute.eventKey}
+      key={`${submissionRoute.eventKey}:${submissionRoute.submissionId ?? "list"}:${resetVersion}`}
+      submissionId={submissionRoute.submissionId}
+    />
+  ) : currentPath.includes("/submissions") ? (
+    <StatePanel
+      description="Open submissions from a valid event workspace."
+      state="error"
+      title="Submission route not found"
     />
   ) : currentPath.endsWith("/reviews") ? (
     <ReviewOperations key={resetVersion} />

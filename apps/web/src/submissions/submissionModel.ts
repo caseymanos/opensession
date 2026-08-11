@@ -15,7 +15,7 @@ export interface SubmissionAnswerView {
 export interface SubmissionParticipantView {
   company: string;
   name: string;
-  role: "Primary speaker" | "Co-speaker";
+  role: string;
 }
 
 export interface SubmissionReviewView {
@@ -50,6 +50,7 @@ export interface SubmissionView {
   lastActivity: string;
   notes: SubmissionNoteView[];
   participants: SubmissionParticipantView[];
+  reference?: string;
   reviewCount: number;
   reviewersAssigned: number;
   reviews: SubmissionReviewView[];
@@ -59,6 +60,8 @@ export interface SubmissionView {
   submitter: string;
   title: string;
   track: string;
+  trackId?: string | null;
+  version?: number;
 }
 
 const productionAnswers: SubmissionAnswerView[] = [
