@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { taskAssignmentStateSchema, taskReadinessSchema } from "./tasks";
+
 const stableIdSchema = z
   .string()
   .trim()
@@ -84,6 +86,7 @@ export const speakerPortalInvitationRecoverySchema = z
 export const speakerPortalTaskSchema = z
   .object({
     approval_required: z.boolean(),
+    assignment_state: taskAssignmentStateSchema,
     completed_at: nullableDateTimeSchema,
     description: z.string().max(4_000),
     due_at: nullableDateTimeSchema,
@@ -149,6 +152,7 @@ export const speakerPortalBootstrapResponseSchema = z
         next_due_at: nullableDateTimeSchema,
         outstanding_task_count: z.number().int().nonnegative(),
         overdue_task_count: z.number().int().nonnegative(),
+        policy: taskReadinessSchema,
         required_complete: z.number().int().nonnegative(),
         required_total: z.number().int().nonnegative(),
         status: z.enum(["not_configured", "outstanding", "overdue", "ready"]),

@@ -33,6 +33,21 @@ describe("speaker portal contracts", () => {
           next_due_at: "2026-08-11T23:59:00.000Z",
           outstanding_task_count: 2,
           overdue_task_count: 1,
+          policy: {
+            configuration: "configured",
+            explanation:
+              "One or more required tasks still need completion or approval.",
+            next_due: {
+              at: "2026-08-11T23:59:00.000Z",
+              local_date: "2026-08-11",
+              local_time: "16:59",
+              timezone: "America/Los_Angeles",
+            },
+            outstanding_count: 2,
+            overdue_count: 1,
+            ratio: { complete: 1, percent: 33, total: 3 },
+            status: "overdue",
+          },
           required_complete: 1,
           required_total: 3,
           status: "overdue",
@@ -64,6 +79,7 @@ describe("speaker portal contracts", () => {
         tasks: [
           {
             approval_required: false,
+            assignment_state: "incomplete",
             completed_at: null,
             description: "Upload a square image.",
             due_at: "2026-08-01T23:59:00.000Z",
@@ -115,6 +131,16 @@ describe("speaker portal contracts", () => {
         next_due_at: null,
         outstanding_task_count: 0,
         overdue_task_count: 0,
+        policy: {
+          configuration: "configured",
+          explanation:
+            "Every required task is complete, including required approvals.",
+          next_due: null,
+          outstanding_count: 0,
+          overdue_count: 0,
+          ratio: { complete: 1, percent: 100, total: 1 },
+          status: "ready",
+        },
         required_complete: 2,
         required_total: 1,
         status: "ready",

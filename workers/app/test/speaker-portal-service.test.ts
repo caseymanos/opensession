@@ -307,6 +307,21 @@ describe("speaker portal authority", () => {
       next_due_at: "2026-08-09T16:00:00.000Z",
       outstanding_task_count: 1,
       overdue_task_count: 1,
+      policy: {
+        configuration: "configured",
+        explanation:
+          "At least one required task is incomplete after its event-local due time.",
+        next_due: {
+          at: "2026-08-09T16:00:00.000Z",
+          local_date: "2026-08-09",
+          local_time: "09:00",
+          timezone: "America/Los_Angeles",
+        },
+        outstanding_count: 1,
+        overdue_count: 1,
+        ratio: { complete: 1, percent: 50, total: 2 },
+        status: "overdue",
+      },
       required_complete: 1,
       required_total: 2,
       status: "overdue",

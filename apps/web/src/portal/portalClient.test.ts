@@ -38,6 +38,21 @@ const bootstrap = {
     next_due_at: "2026-08-09T16:00:00.000Z",
     outstanding_task_count: 1,
     overdue_task_count: 1,
+    policy: {
+      configuration: "configured",
+      explanation:
+        "At least one required task is incomplete after its event-local due time.",
+      next_due: {
+        at: "2026-08-09T16:00:00.000Z",
+        local_date: "2026-08-09",
+        local_time: "09:00",
+        timezone: "America/Los_Angeles",
+      },
+      outstanding_count: 1,
+      overdue_count: 1,
+      ratio: { complete: 0, percent: 0, total: 1 },
+      status: "overdue",
+    },
     required_complete: 0,
     required_total: 1,
     status: "overdue",
@@ -69,6 +84,7 @@ const bootstrap = {
   tasks: [
     {
       approval_required: false,
+      assignment_state: "incomplete",
       completed_at: null,
       description: "Confirm your public biography.",
       due_at: "2026-08-09T16:00:00.000Z",
@@ -147,6 +163,16 @@ describe("speaker portal client", () => {
           next_due_at: null,
           outstanding_task_count: 0,
           overdue_task_count: 0,
+          policy: {
+            configuration: "optional_only",
+            explanation:
+              "Only optional tasks are assigned; readiness is not configured until at least one task is required.",
+            next_due: null,
+            outstanding_count: 0,
+            overdue_count: 0,
+            ratio: { complete: 0, percent: null, total: 0 },
+            status: "not_configured",
+          },
           required_complete: 0,
           required_total: 0,
           status: "not_configured",
@@ -154,6 +180,7 @@ describe("speaker portal client", () => {
         tasks: [
           {
             approval_required: true,
+            assignment_state: "submitted",
             completed_at: null,
             description: "Optional supporting material.",
             due_at: "2026-08-17T16:00:00.000Z",

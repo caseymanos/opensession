@@ -1,5 +1,7 @@
 export interface PortalTaskView {
   approvalRequired: boolean;
+  assignmentState:
+    "approved" | "complete" | "incomplete" | "rejected" | "submitted";
   description: string;
   dueLabel: string;
   id: string;
@@ -64,14 +66,15 @@ function taskDueLabel(
 ): string {
   const withRequirement = (value: string) =>
     task.required ? value : `Optional · ${value.toLocaleLowerCase("en-US")}`;
-  if (task.source_status === "waived") return withRequirement("Waived");
-  if (task.source_status === "complete") return withRequirement("Complete");
-  if (task.source_status === "submitted") {
+  if (task.assignment_state === "approved") return withRequirement("Approved");
+  if (task.assignment_state === "complete") return withRequirement("Complete");
+  if (task.assignment_state === "submitted") {
     return withRequirement(
       task.approval_required ? "Submitted · awaiting approval" : "Submitted",
     );
   }
-  const state = task.source_status === "rejected" ? "Changes requested" : null;
+  const state =
+    task.assignment_state === "rejected" ? "Changes requested" : null;
   if (!task.due_at) {
     const label = state ?? (task.status === "overdue" ? "Overdue" : "Open");
     return task.required
@@ -163,6 +166,7 @@ export function speakerPortalView(
     speakerName: response.speaker.display_name,
     tasks: response.tasks.map((task) => ({
       approvalRequired: task.approval_required,
+      assignmentState: task.assignment_state,
       description: task.description,
       dueLabel: taskDueLabel(task, response.event.timezone),
       id: task.id,
@@ -216,6 +220,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
   tasks: [
     {
       approvalRequired: false,
+      assignmentState: "incomplete",
       description: "Upload a square image at least 1200px wide.",
       dueLabel: "Overdue by 2 days",
       id: "headshot",
@@ -226,6 +231,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
     },
     {
       approvalRequired: false,
+      assignmentState: "incomplete",
       description: "Review how your name, company, and bio appear publicly.",
       dueLabel: "Due August 11",
       id: "profile",
@@ -236,6 +242,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
     },
     {
       approvalRequired: true,
+      assignmentState: "submitted",
       description:
         "Your latest deck is submitted and waiting for program-team approval.",
       dueLabel: "Submitted · awaiting approval",
@@ -247,6 +254,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
     },
     {
       approvalRequired: false,
+      assignmentState: "complete",
       description: "Speaker agreement signed August 3.",
       dueLabel: "Complete",
       id: "agreement",
@@ -257,6 +265,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
     },
     {
       approvalRequired: false,
+      assignmentState: "complete",
       description: "Travel details received August 4.",
       dueLabel: "Complete",
       id: "travel",
@@ -267,6 +276,7 @@ export const speakerPortalFixture: SpeakerPortalView = {
     },
     {
       approvalRequired: false,
+      assignmentState: "complete",
       description: "AV and accessibility needs received August 5.",
       dueLabel: "Complete",
       id: "av",

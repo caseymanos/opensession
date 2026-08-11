@@ -26,6 +26,21 @@ export const portalBootstrapFixture = {
     next_due_at: "2026-08-07T23:59:00.000Z",
     outstanding_task_count: 2,
     overdue_task_count: 1,
+    policy: {
+      configuration: "configured",
+      explanation:
+        "At least one required task is incomplete after its event-local due time.",
+      next_due: {
+        at: "2026-08-07T23:59:00.000Z",
+        local_date: "2026-08-07",
+        local_time: "16:59",
+        timezone: "America/Los_Angeles",
+      },
+      outstanding_count: 2,
+      overdue_count: 1,
+      ratio: { complete: 1, percent: 33, total: 3 },
+      status: "overdue",
+    },
     required_complete: 1,
     required_total: 3,
     status: "overdue",
@@ -57,6 +72,7 @@ export const portalBootstrapFixture = {
   tasks: [
     {
       approval_required: false,
+      assignment_state: "incomplete",
       completed_at: null,
       description: "Upload a square image at least 1200px wide.",
       due_at: "2026-08-07T23:59:00.000Z",
@@ -69,6 +85,7 @@ export const portalBootstrapFixture = {
     },
     {
       approval_required: false,
+      assignment_state: "incomplete",
       completed_at: null,
       description: "Review how your name, company, and bio appear publicly.",
       due_at: "2026-08-11T23:59:00.000Z",
@@ -81,6 +98,7 @@ export const portalBootstrapFixture = {
     },
     {
       approval_required: false,
+      assignment_state: "complete",
       completed_at: "2026-08-03T20:00:00.000Z",
       description: "Speaker agreement signed August 3.",
       due_at: null,

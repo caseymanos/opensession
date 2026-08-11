@@ -35,6 +35,7 @@ import {
 import "./readiness-dashboard.css";
 
 export type ReadinessFixtureState = "lag" | "partial";
+type DemoApprovalState = "incomplete" | "submitted" | "approved";
 
 type SpeakerFilter =
   "all" | "not_configured" | "outstanding" | "overdue" | "ready";
@@ -115,9 +116,17 @@ export function ReadinessDashboard({
     getInitialOption("portal", portalOptions),
   );
   const [query, setQuery] = useState(() => readFilter("q"));
-  const [completed, setCompleted] = useState<Set<string>>(new Set());
+  const [headshotState, setHeadshotState] =
+    useState<DemoApprovalState>("incomplete");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const projectionState = fixtureState ?? "current";
+  const completed = useMemo(
+    () =>
+      headshotState === "approved"
+        ? new Set(["speaker-mina"])
+        : new Set<string>(),
+    [headshotState],
+  );
 
   const readyCount = speakerReadinessFixture.filter(
     (speaker) => getReadinessState(speaker, completed) === "ready",
@@ -225,14 +234,27 @@ export function ReadinessDashboard({
     writeFilters(values);
   }
 
-  function completeHeadshot() {
-    setCompleted((current) => new Set([...current, "speaker-mina"]));
+  function advanceHeadshot() {
+    if (headshotState === "incomplete") {
+      setHeadshotState("submitted");
+      setToasts([
+        {
+          id: "headshot-submitted",
+          title: "Headshot submitted",
+          message:
+            "Mina remains outstanding until the required organizer approval is recorded.",
+          tone: "success",
+        },
+      ]);
+      return;
+    }
+    setHeadshotState("approved");
     setToasts([
       {
         id: "headshot-approved",
-        title: "Headshot approved",
+        title: "Final approval recorded",
         message:
-          "Mina is now ready. Exact speaker and overdue counts updated immediately.",
+          "Mina is now ready. Every required task, including approval, is complete.",
         tone: "success",
       },
     ]);
@@ -513,22 +535,26 @@ export function ReadinessDashboard({
             <span>3</span>
           </div>
           <article
-            className={completed.has("speaker-mina") ? "is-resolved" : ""}
+            className={headshotState === "approved" ? "is-resolved" : ""}
           >
             <span>MO</span>
             <div>
               <strong>Mina’s headshot</strong>
               <p>
-                {completed.has("speaker-mina")
+                {headshotState === "approved"
                   ? "Approved just now"
-                  : "Overdue · blocks public profile"}
+                  : headshotState === "submitted"
+                    ? "Submitted · awaiting required approval"
+                    : "Overdue · approval required for readiness"}
               </p>
             </div>
-            {completed.has("speaker-mina") ? (
+            {headshotState === "approved" ? (
               <Check aria-hidden="true" size={17} />
             ) : (
-              <button onClick={completeHeadshot} type="button">
-                Mark received
+              <button onClick={advanceHeadshot} type="button">
+                {headshotState === "submitted"
+                  ? "Approve as organizer"
+                  : "Submit as speaker"}
               </button>
             )}
           </article>

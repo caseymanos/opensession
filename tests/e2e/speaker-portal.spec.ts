@@ -97,6 +97,16 @@ test("production portal keeps unconfigured readiness neutral", async ({
           next_due_at: null,
           outstanding_task_count: 0,
           overdue_task_count: 0,
+          policy: {
+            configuration: "optional_only",
+            explanation:
+              "Only optional tasks are assigned; readiness is not configured until at least one task is required.",
+            next_due: null,
+            outstanding_count: 0,
+            overdue_count: 0,
+            ratio: { complete: 0, percent: null, total: 0 },
+            status: "not_configured",
+          },
           required_complete: 0,
           required_total: 0,
           status: "not_configured",
@@ -105,6 +115,7 @@ test("production portal keeps unconfigured readiness neutral", async ({
           {
             ...portalBootstrapFixture.tasks[0],
             approval_required: true,
+            assignment_state: "submitted",
             required: false,
             source_status: "submitted",
             status: "open",
@@ -139,6 +150,16 @@ test("submitted required work without approval waits on the program team without
           next_due_at: null,
           outstanding_task_count: 1,
           overdue_task_count: 0,
+          policy: {
+            configuration: "configured",
+            explanation:
+              "One or more required tasks still need completion or approval.",
+            next_due: null,
+            outstanding_count: 1,
+            overdue_count: 0,
+            ratio: { complete: 0, percent: 0, total: 1 },
+            status: "outstanding",
+          },
           required_complete: 0,
           required_total: 1,
           status: "outstanding",
@@ -147,6 +168,7 @@ test("submitted required work without approval waits on the program team without
           {
             ...portalBootstrapFixture.tasks[0],
             approval_required: false,
+            assignment_state: "submitted",
             required: true,
             source_status: "submitted",
             status: "open",
@@ -178,6 +200,21 @@ test("mixed actionable and submitted work separates the speaker's part from prog
           next_due_at: "2026-08-16T16:00:00.000Z",
           outstanding_task_count: 2,
           overdue_task_count: 0,
+          policy: {
+            configuration: "configured",
+            explanation:
+              "One or more required tasks still need completion or approval.",
+            next_due: {
+              at: "2026-08-16T16:00:00.000Z",
+              local_date: "2026-08-16",
+              local_time: "09:00",
+              timezone: "America/Los_Angeles",
+            },
+            outstanding_count: 2,
+            overdue_count: 0,
+            ratio: { complete: 0, percent: 0, total: 2 },
+            status: "outstanding",
+          },
           required_complete: 0,
           required_total: 2,
           status: "outstanding",
@@ -186,6 +223,7 @@ test("mixed actionable and submitted work separates the speaker's part from prog
           {
             ...portalBootstrapFixture.tasks[0],
             approval_required: false,
+            assignment_state: "incomplete",
             required: true,
             source_status: "not_started",
             status: "open",
@@ -194,6 +232,7 @@ test("mixed actionable and submitted work separates the speaker's part from prog
           {
             ...portalBootstrapFixture.tasks[0],
             approval_required: true,
+            assignment_state: "submitted",
             id: "task_slides",
             required: true,
             source_status: "submitted",

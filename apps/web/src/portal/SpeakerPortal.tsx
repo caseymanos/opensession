@@ -89,7 +89,7 @@ function TaskRow({
   task: PortalTaskView;
 }) {
   const complete =
-    task.sourceStatus === "complete" || task.sourceStatus === "waived";
+    task.assignmentState === "complete" || task.assignmentState === "approved";
   const action = fixtureRoute
     ? task.id === "final-slides"
       ? {
@@ -554,13 +554,13 @@ export function SpeakerPortal({
   const sessions = state === "empty" ? [] : portal.sessions;
   const openTasks = portal.tasks.filter((task) => task.status !== "complete");
   const actionableRequiredTasks = openTasks.filter(
-    (task) => task.required && task.sourceStatus !== "submitted",
+    (task) => task.required && task.assignmentState !== "submitted",
   );
   const actionableOverdueTasks = actionableRequiredTasks.filter(
     (task) => task.status === "overdue",
   );
   const submittedRequiredTasks = openTasks.filter(
-    (task) => task.required && task.sourceStatus === "submitted",
+    (task) => task.required && task.assignmentState === "submitted",
   );
   const optionalTasks = portal.tasks.filter((task) => !task.required);
   const profileActive =
