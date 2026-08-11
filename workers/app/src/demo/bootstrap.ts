@@ -355,7 +355,7 @@ export class DemoBootstrapService {
     try {
       return await new DemoResetService({
         authority: this.#authority,
-        eventReader: new D1DemoEventGuardReader(this.#database),
+        eventReader: new D1DemoEventGuardReader(this.#database, this.#baseKey),
         plan: this.#plan,
       }).reset({
         actor: {

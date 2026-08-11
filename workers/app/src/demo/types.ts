@@ -88,6 +88,7 @@ export interface DemoEventGuard {
 }
 
 export interface DemoEventGuardReader {
+  activeOrganizationIds(): Promise<readonly string[]>;
   read(organizationId: string, eventId: string): Promise<DemoEventGuard | null>;
 }
 
@@ -137,6 +138,7 @@ export interface DemoSeedAuthorityGateway {
     readonly requireAuthoritativeDemo: true;
     readonly resetRunId: string;
   }): Promise<DemoSeedAuthorityReceipt>;
+  synchronizeFull(organizationIds: readonly string[]): Promise<unknown>;
 }
 
 export interface DemoBootstrapRootInspection {

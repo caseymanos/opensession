@@ -962,6 +962,12 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       resetRunId,
       snapshotId: plan.snapshotId,
     });
+    const readinessAfterReset = (await (
+      await fixtureFetch(
+        `/tenant-readiness?organizationId=${demoOrganizationId}`,
+      )
+    ).json()) as { authority_ready_at: string | null };
+    expect(readinessAfterReset.authority_ready_at).not.toBeNull();
     expect(await providerMutationCount()).toBe(
       preSnapshotMutations + plan.operations.length + 1,
     );
@@ -972,6 +978,76 @@ describe.sequential("RAL-34 completed authority data plane", () => {
     });
     await expect(replay.json()).resolves.toMatchObject({ outcome: "replayed" });
     expect(await providerMutationCount()).toBe(mutationCount);
+
+    const responseLostRunId = "req_demo_snapshot_response_lost";
+    const responseLostEventState = (await (
+      await fixtureFetch(
+        `/event-state?organizationId=${demoOrganizationId}&id=${demoEventId}`,
+      )
+    ).json()) as { source_version: number };
+    const responseLostInput = {
+      ...snapshotInput,
+      expectedSourceVersion: responseLostEventState.source_version,
+      resetRunId: responseLostRunId,
+    };
+    const responseLostSnapshot = await post("/snapshot", responseLostInput);
+    expect(responseLostSnapshot.status).toBe(200);
+    const responseLostMutationCount = await providerMutationCount();
+    expect(
+      (
+        await post("/invalidate-tenant-readiness-for-test", {
+          organizationId: demoOrganizationId,
+        })
+      ).status,
+    ).toBe(204);
+    await expect(
+      (
+        await fixtureFetch(
+          `/tenant-readiness?organizationId=${demoOrganizationId}`,
+        )
+      ).json(),
+    ).resolves.toMatchObject({ authority_ready_at: null });
+
+    const changedKeyWhileUnready = await post("/demo-reset", {
+      plan,
+      request: {
+        ...resetRequest,
+        requestId: "req_demo_snapshot_changed_key",
+      },
+    });
+    expect(changedKeyWhileUnready.status).toBe(409);
+    expect(await providerMutationCount()).toBe(responseLostMutationCount);
+
+    const recoveredResponse = await post("/demo-reset", {
+      plan,
+      request: { ...resetRequest, requestId: responseLostRunId },
+    });
+    expect(recoveredResponse.status).toBe(200);
+    await expect(recoveredResponse.json()).resolves.toMatchObject({
+      digest: plan.digest,
+      outcome: "replayed",
+      resetRunId: responseLostRunId,
+      snapshotId: plan.snapshotId,
+    });
+    expect(await providerMutationCount()).toBe(responseLostMutationCount);
+    const restoredReadiness = (await (
+      await fixtureFetch(
+        `/tenant-readiness?organizationId=${demoOrganizationId}`,
+      )
+    ).json()) as { authority_ready_at: string | null };
+    expect(restoredReadiness.authority_ready_at).not.toBeNull();
+
+    const changedActorAfterRecovery = await post("/demo-reset", {
+      plan,
+      request: {
+        ...resetRequest,
+        actor: { ...resetRequest.actor, id: "usr_other_demo_owner" },
+        requestId: responseLostRunId,
+      },
+    });
+    expect(changedActorAfterRecovery.status).toBe(409);
+    expect(await providerMutationCount()).toBe(responseLostMutationCount);
+
     const changedPlan: CompiledDemoSeed = {
       ...plan,
       operations: plan.operations.map((operation, index) =>
@@ -988,7 +1064,7 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       request: resetRequest,
     });
     expect(conflictingReplay.status).toBe(409);
-    expect(await providerMutationCount()).toBe(mutationCount);
+    expect(await providerMutationCount()).toBe(responseLostMutationCount);
     const conflictingActor = await post("/demo-reset", {
       plan,
       request: {
@@ -997,7 +1073,7 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       },
     });
     expect(conflictingActor.status).toBe(409);
-    expect(await providerMutationCount()).toBe(mutationCount);
+    expect(await providerMutationCount()).toBe(responseLostMutationCount);
 
     const assets = await fixtureFetch(`/assets?prefix=demo/${demoEventId}/`);
     await expect(assets.json()).resolves.toHaveLength(plan.assets.length);

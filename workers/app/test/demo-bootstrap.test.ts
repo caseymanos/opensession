@@ -8,7 +8,10 @@ import {
   demoOrganizationId,
   demoSeedSource,
 } from "../src/demo/fixture";
-import { currentRal34DemoCapabilities } from "../src/demo/reset";
+import {
+  currentRal34DemoCapabilities,
+  D1DemoEventGuardReader,
+} from "../src/demo/reset";
 import type {
   CompiledDemoSeed,
   DemoBootstrapAuthorityGateway,
@@ -47,6 +50,10 @@ class RootAuthority implements DemoBootstrapAuthorityGateway {
   synchronize(): Promise<void> {
     this.synchronizeCalls += 1;
     return Promise.resolve();
+  }
+
+  synchronizeFull(): Promise<void> {
+    return this.synchronize();
   }
 }
 
@@ -174,6 +181,10 @@ class ConvergingAuthority implements DemoBootstrapAuthorityGateway {
         )
         .bind(demoOrganizationId, timestamp),
     ]);
+  }
+
+  synchronizeFull(): Promise<void> {
+    return this.synchronize();
   }
 
   async replaceDemoEvent(
@@ -307,6 +318,39 @@ afterAll(async () => {
 });
 
 describe("demo bootstrap registration", () => {
+  it("scopes and sorts the active tenant roster for the exact base", async () => {
+    const environment = await server.getWorker<Env>().getEnv();
+    await environment.DB.batch([
+      environment.DB.prepare(
+        `INSERT INTO tenant_registry (
+           organization_id, base_key, source_record_id, status,
+           created_at, updated_at
+         ) VALUES ('org_zeta', ?1, ?2, 'active', ?3, ?3)`,
+      ).bind(baseKey, `rec${"Z".repeat(14)}`, timestamp),
+      environment.DB.prepare(
+        `INSERT INTO tenant_registry (
+           organization_id, base_key, source_record_id, status,
+           created_at, updated_at
+         ) VALUES (?1, ?2, ?3, 'active', ?4, ?4)`,
+      ).bind(demoOrganizationId, baseKey, organizationRecordId, timestamp),
+      environment.DB.prepare(
+        `INSERT INTO tenant_registry (
+           organization_id, base_key, source_record_id, status,
+           created_at, updated_at
+         ) VALUES ('org_foreign', 'local:appForeign', ?1, 'active', ?2, ?2)`,
+      ).bind(`rec${"F".repeat(14)}`, timestamp),
+    ]);
+
+    await expect(
+      new D1DemoEventGuardReader(
+        environment.DB,
+        baseKey,
+      ).activeOrganizationIds(),
+    ).resolves.toEqual([demoOrganizationId, "org_zeta"]);
+
+    await environment.DB.prepare("DELETE FROM tenant_registry").run();
+  });
+
   it("does not repair an owner when an exact tenant coexists with a foreign tenant", async () => {
     const environment = await server.getWorker<Env>().getEnv();
     await environment.DB.batch([

@@ -760,6 +760,20 @@ const fixtureHandler = {
         .run();
       return new Response(null, { status: 204 });
     }
+    if (url.pathname === "/invalidate-tenant-readiness-for-test") {
+      const body = (await request.json()) as { organizationId: string };
+      const result = await env.DB.prepare(
+        `UPDATE tenant_registry
+         SET authority_ready_at = NULL, updated_at = ?
+         WHERE organization_id = ? AND status = 'active'
+           AND authority_ready_at IS NOT NULL`,
+      )
+        .bind(new Date().toISOString(), body.organizationId)
+        .run();
+      return new Response(null, {
+        status: result.meta.changes === 1 ? 204 : 409,
+      });
+    }
     if (url.pathname === "/snapshot") {
       try {
         return Response.json(
@@ -784,7 +798,10 @@ const fixtureHandler = {
         return Response.json(
           await new DemoResetService({
             authority: authority(env),
-            eventReader: new D1DemoEventGuardReader(env.DB),
+            eventReader: new D1DemoEventGuardReader(
+              env.DB,
+              `${env.APP_ENV}:${env.AIRTABLE_BASE_ID}`,
+            ),
             plan: body.plan,
           }).reset(body.request),
         );

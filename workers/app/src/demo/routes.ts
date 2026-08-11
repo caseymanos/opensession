@@ -467,7 +467,10 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
       }
       const receipt = await new DemoResetService({
         authority: getBaseAuthority(context.env),
-        eventReader: new D1DemoEventGuardReader(context.env.DB),
+        eventReader: new D1DemoEventGuardReader(
+          context.env.DB,
+          `${context.env.APP_ENV}:${context.env.AIRTABLE_BASE_ID}`,
+        ),
         plan,
       }).reset({
         actor: {
