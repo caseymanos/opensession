@@ -9,12 +9,16 @@ export default tseslint.config(
     ignores: [
       "**/dist/**",
       "**/coverage/**",
+      "**/coverage-shard-*/**",
       "**/node_modules/**",
       "**/playwright-report/**",
       "**/test-results/**",
       "**/.wrangler/**",
       "**/.cloudflare/**",
       "**/.sbek/**",
+      "**/.vitest-attachments/**",
+      "**/.vitest-reports/**",
+      "**/blob-report*/**",
       "**/worker-configuration.d.ts",
     ],
   },
@@ -63,7 +67,10 @@ export default tseslint.config(
     files: ["scripts/**/*.ts"],
     languageOptions: {
       parserOptions: {
-        project: ["./scripts/cloudflare/tsconfig.json"],
+        project: [
+          "./scripts/ci/tsconfig.json",
+          "./scripts/cloudflare/tsconfig.json",
+        ],
         tsconfigRootDir: import.meta.dirname,
       },
     },

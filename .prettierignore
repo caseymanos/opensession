@@ -1,8 +1,12 @@
 node_modules
 dist
 coverage
+coverage-shard-*
 playwright-report
 test-results
+.vitest-attachments
+.vitest-reports
+blob-report*
 *.cpuprofile
 .wrangler
 .cloudflare

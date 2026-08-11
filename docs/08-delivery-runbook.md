@@ -181,6 +181,12 @@ Required checks for main and release candidate:
 9. secret scan, dependency audit, license inventory;
 10. preview deploy and synthetic smoke.
 
+The protected `Quality and build`, `Browser smoke`, and `Secret scan` names are stable fail-closed aggregate checks. Static/type/build work runs in parallel with four duration-balanced Vitest shards. The coverage aggregate merges the blob reports, regenerates JUnit/HTML/JSON evidence, and independently enforces the same global and path-scoped thresholds; a missing shard, missing scope, test failure, static failure, or threshold regression fails the aggregate. Browser coverage runs in two Playwright shards across the unchanged desktop/mobile projects, retries and Axe/overflow assertions, then merges one retained HTML report. CodeQL and secret scanning remain independent required checks.
+
+The workflow accepts `pull_request`, `merge_group`, and `main` push events. A release merge must use the reviewed expected head on an unchanged base or a green merge-queue group. For an expected-head squash, verify the canonical merge has the expected sole parent and that its tree exactly equals the protected green head tree. That tree identity is the release gate; the duplicate `main` run is asynchronous integrity monitoring and does not hold the next repo-only branch. A parent/tree mismatch or a failed main integrity run freezes deployment and subsequent merges until diagnosed.
+
+For local handoff, run focused affected tests plus format, lint, typecheck, public-surface, binding, dependency and production-build checks. Protected CI owns the complete coverage and browser matrices. Run the monolithic `pnpm test:coverage` and `pnpm test:e2e` commands locally only for cross-surface changes or harness diagnosis. To roll back CI sharding, restore the prior single-runner workflow and use those two monolithic commands; do not bypass the aggregate required checks or lower coverage, retry, browser-project or assertion policy.
+
 Production deploy is a manual, named release job from a green immutable SHA.
 
 ## Release strategy and rollback

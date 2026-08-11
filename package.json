@@ -47,9 +47,12 @@
     "sbek:verify": "node scripts/sbek.mjs verify",
     "test": "pnpm test:unit",
     "test:coverage": "pnpm build:web && vitest run --config vitest.config.ts --coverage --reporter=default --reporter=junit --outputFile.junit=coverage/test-results.junit.xml",
+    "test:coverage:merge": "vitest --config vitest.config.ts --merge-reports=.vitest-reports --reporter=default --reporter=junit --outputFile.junit=coverage/test-results.junit.xml --coverage && node scripts/ci/verify-coverage.ts coverage/coverage-summary.json",
+    "test:coverage:shard": "pnpm build:web && vitest run --config vitest.config.ts --coverage --reporter=blob",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:merge": "playwright merge-reports --reporter=github,html blob-report",
     "test:unit": "pnpm build:web && vitest run --config vitest.config.ts",
-    "typecheck": "tsc --project scripts/cloudflare/tsconfig.json && pnpm -r --if-present typecheck",
+    "typecheck": "tsc --project scripts/ci/tsconfig.json && tsc --project scripts/cloudflare/tsconfig.json && pnpm -r --if-present typecheck",
     "wrangler:types": "wrangler types --config workers/app/wrangler.jsonc workers/app/worker-configuration.d.ts",
     "wrangler:types:check": "wrangler types --check --config workers/app/wrangler.jsonc workers/app/worker-configuration.d.ts"
   },
