@@ -158,7 +158,7 @@ test("decision workspace remains usable at 360px without document overflow", asy
   expect(results.violations).toEqual([]);
 });
 
-test("production decision records and retries one exact authoritative command", async ({
+test("@judge @judge-e2e-02 production decision records and retries one exact authoritative command", async ({
   page,
 }) => {
   const csrf = `decision-csrf-${"c".repeat(40)}`;

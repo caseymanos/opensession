@@ -82,7 +82,7 @@ test("fixture route covers explicit states and guarded production data", async (
   await expect(page.getByRole("button", { name: "Reset demo" })).toHaveCount(0);
 });
 
-test("dialog traps focus and the fixture passes axe at 360px", async ({
+test("@judge @judge-a11y dialog traps focus and the fixture passes axe at 360px", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 360, height: 800 });
@@ -108,7 +108,7 @@ test("dialog traps focus and the fixture passes axe at 360px", async ({
   expect(results.violations).toEqual([]);
 });
 
-test("demo reset requires the exact phrase and reports the durable completion", async ({
+test("@judge @judge-e2e-07 demo reset requires the exact phrase and reports the durable completion", async ({
   page,
 }) => {
   const csrfToken = "demo-reset-e2e-csrf-token-that-is-at-least-forty-chars";
@@ -175,7 +175,7 @@ test("demo reset requires the exact phrase and reports the durable completion", 
   expect(requestCount).toBe(1);
 });
 
-test("workspace remains usable at a 200 percent text scale", async ({
+test("@judge @judge-a11y workspace remains usable at a 200 percent text scale", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 640, height: 450 });
