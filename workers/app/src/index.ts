@@ -41,6 +41,11 @@ import { registerDemoRoutes } from "./demo/routes.js";
 import { registerSpeakerPortalRoutes } from "./portal/routes";
 import { registerSpeakerProfileRoutes } from "./speaker-profile/routes.js";
 import { registerOrganizerSubmissionRoutes } from "./organizer-submissions/routes.js";
+import {
+  registerApiKeyManagementRoutes,
+  registerPublicApiDocumentationRoutes,
+  registerPublicApiRoutes,
+} from "./public-api/routes.js";
 import { registerTaskRoutes } from "./tasks/routes.js";
 import { UploadService } from "./uploads/service";
 import { pruneExpiredAbuseLimits } from "./security/abuse";
@@ -55,7 +60,10 @@ export { AgendaCoordinator } from "./schedule/coordinator.js";
 
 function operationalRoute(context: Context<AppContext>): string {
   const matchedRoute = routePath(context, -1);
-  return matchedRoute && matchedRoute !== "*" && matchedRoute !== "/*"
+  return matchedRoute &&
+    matchedRoute !== "*" &&
+    matchedRoute !== "/*" &&
+    !matchedRoute.endsWith("/*")
     ? matchedRoute
     : "unmatched";
 }
@@ -302,6 +310,7 @@ app.get("/api/v1/public/events/:slug/schedule", async (context) => {
 });
 
 registerAuthRoutes(app);
+registerApiKeyManagementRoutes(app);
 registerOrganizerCfpFormRoutes(app);
 registerSpeakerPortalRoutes(app);
 registerSpeakerProfileRoutes(app);
@@ -313,6 +322,8 @@ registerCampaignRoutes(app);
 registerEmailTemplateRoutes(app);
 registerOrganizerSubmissionRoutes(app);
 registerEmailWebhookRoutes(app);
+registerPublicApiRoutes(app);
+registerPublicApiDocumentationRoutes(app);
 
 app.notFound((context) => {
   return context.json(

@@ -1,0 +1,28 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-public-api-runtime",
+  "main": "public-api-runtime.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "public-api-fixture",
+      "database_id": "local",
+      "migrations_dir": "../../../../migrations",
+    },
+  ],
+  "vars": {
+    "APP_ENV": "local",
+    "AIRTABLE_BASE_ID": "appPublicApiFixture",
+    "AUTH_HASH_PEPPER": "00000000000000000000000000000000",
+    "FEATURE_FLAGS": {
+      "ai": false,
+      "embeds": false,
+      "email": false,
+      "integrations": false,
+      "webhooks": false,
+      "writes": true,
+    },
+  },
+}

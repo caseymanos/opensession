@@ -13,6 +13,7 @@
     "@sessionbox-killer/domain": "workspace:*",
     "@sessionbox-killer/email": "workspace:*",
     "hono": "^4.12.3",
-    "resend": "^6.18.1"
+    "resend": "^6.18.1",
+    "zod": "^4.3.6"
   }
 }

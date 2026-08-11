@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./public-api": "./src/public-api.ts",
     "./portal": "./src/portal.ts",
     "./tasks": "./src/tasks.ts"
   },

@@ -16,6 +16,8 @@ import { Dashboard } from "./Dashboard";
 import { DecisionWorkspace } from "./decisions/DecisionWorkspace";
 import { EmailTemplateWorkspace } from "./email-templates/EmailTemplateWorkspace";
 import { emailTemplateEventKey } from "./email-templates/emailTemplateRoute";
+import { ApiAccessWorkspace } from "./integrations/ApiAccessWorkspace";
+import { apiAccessEventKey } from "./integrations/apiAccessRoute";
 import {
   ReadinessDashboard,
   type ReadinessFixtureState,
@@ -93,6 +95,7 @@ export function WorkspaceApp({
   const agendaEventSlug = workspaceEventSlug(currentPath);
   const emailTemplateEvent = emailTemplateEventKey(currentPath);
   const campaignEvent = campaignEventKey(currentPath);
+  const apiAccessEvent = apiAccessEventKey(currentPath);
   const isReadinessRoute =
     currentPath.endsWith("/people") ||
     currentPath.startsWith("/fixtures/readiness/");
@@ -101,76 +104,80 @@ export function WorkspaceApp({
   );
   const submissionRoute = organizerSubmissionRoute(currentPath);
   const cfpEvent = cfpEventKey(currentPath);
-  const content =
-    currentPath.endsWith("/cfp") && cfpEvent ? (
-      <CfpBuilder eventKey={cfpEvent} key={resetVersion} />
-    ) : isSubmissionFixtureRoute ? (
-      <SubmissionWorkspace
-        fixtureState={submissionFixtureState}
-        fixtureSubmissionId={
-          submissionFixtureState === "partial"
-            ? "AI-1042"
-            : submissionFixtureState === "interactive"
-              ? currentPath.split("/")[4]
-              : undefined
-        }
-        key={resetVersion}
+  const content = apiAccessEvent ? (
+    <ApiAccessWorkspace
+      eventKey={apiAccessEvent}
+      key={`${apiAccessEvent}:${resetVersion}`}
+    />
+  ) : currentPath.endsWith("/cfp") && cfpEvent ? (
+    <CfpBuilder eventKey={cfpEvent} key={resetVersion} />
+  ) : isSubmissionFixtureRoute ? (
+    <SubmissionWorkspace
+      fixtureState={submissionFixtureState}
+      fixtureSubmissionId={
+        submissionFixtureState === "partial"
+          ? "AI-1042"
+          : submissionFixtureState === "interactive"
+            ? currentPath.split("/")[4]
+            : undefined
+      }
+      key={resetVersion}
+    />
+  ) : submissionRoute ? (
+    <OrganizerSubmissionWorkspace
+      eventKey={submissionRoute.eventKey}
+      key={`${submissionRoute.eventKey}:${submissionRoute.submissionId ?? "list"}:${resetVersion}`}
+      submissionId={submissionRoute.submissionId}
+    />
+  ) : currentPath.includes("/submissions") ? (
+    <StatePanel
+      description="Open submissions from a valid event workspace."
+      state="error"
+      title="Submission route not found"
+    />
+  ) : currentPath.endsWith("/reviews") ? (
+    <ReviewOperations key={resetVersion} />
+  ) : currentPath.endsWith("/decisions") ? (
+    <DecisionWorkspace key={resetVersion} />
+  ) : isAgendaRoute ? (
+    isAgendaFixtureRoute ? (
+      <AgendaBuilder fixtureState={agendaFixtureState} key={resetVersion} />
+    ) : agendaEventSlug ? (
+      <AgendaWorkspace
+        eventSlug={agendaEventSlug}
+        key={`${agendaEventSlug}:${resetVersion}`}
       />
-    ) : submissionRoute ? (
-      <OrganizerSubmissionWorkspace
-        eventKey={submissionRoute.eventKey}
-        key={`${submissionRoute.eventKey}:${submissionRoute.submissionId ?? "list"}:${resetVersion}`}
-        submissionId={submissionRoute.submissionId}
-      />
-    ) : currentPath.includes("/submissions") ? (
-      <StatePanel
-        description="Open submissions from a valid event workspace."
-        state="error"
-        title="Submission route not found"
-      />
-    ) : currentPath.endsWith("/reviews") ? (
-      <ReviewOperations key={resetVersion} />
-    ) : currentPath.endsWith("/decisions") ? (
-      <DecisionWorkspace key={resetVersion} />
-    ) : isAgendaRoute ? (
-      isAgendaFixtureRoute ? (
-        <AgendaBuilder fixtureState={agendaFixtureState} key={resetVersion} />
-      ) : agendaEventSlug ? (
-        <AgendaWorkspace
-          eventSlug={agendaEventSlug}
-          key={`${agendaEventSlug}:${resetVersion}`}
-        />
-      ) : (
-        <StatePanel
-          description="Open the agenda from a valid event workspace."
-          state="error"
-          title="Event route not found"
-        />
-      )
-    ) : currentPath.endsWith("/people/mina-okafor/tasks/final-slides") ? (
-      <OrganizerTaskReviewWorkspace key={resetVersion} />
-    ) : campaignEvent ? (
-      <CampaignWorkspace
-        eventKey={campaignEvent}
-        fixture={currentPath.startsWith("/fixtures/campaigns/")}
-        key={`${campaignEvent}:${resetVersion}`}
-      />
-    ) : emailTemplateEvent ? (
-      <EmailTemplateWorkspace
-        eventKey={emailTemplateEvent}
-        fixture={currentPath.startsWith("/fixtures/email-templates/")}
-        key={`${emailTemplateEvent}:${resetVersion}`}
-      />
-    ) : isReadinessRoute ? (
-      <ReadinessDashboard
-        fixtureState={readinessFixtureState}
-        key={resetVersion}
-      />
-    ) : currentPath.endsWith("/settings") ? (
-      <EventSetup key={resetVersion} />
     ) : (
-      <Dashboard key={resetVersion} />
-    );
+      <StatePanel
+        description="Open the agenda from a valid event workspace."
+        state="error"
+        title="Event route not found"
+      />
+    )
+  ) : currentPath.endsWith("/people/mina-okafor/tasks/final-slides") ? (
+    <OrganizerTaskReviewWorkspace key={resetVersion} />
+  ) : campaignEvent ? (
+    <CampaignWorkspace
+      eventKey={campaignEvent}
+      fixture={currentPath.startsWith("/fixtures/campaigns/")}
+      key={`${campaignEvent}:${resetVersion}`}
+    />
+  ) : emailTemplateEvent ? (
+    <EmailTemplateWorkspace
+      eventKey={emailTemplateEvent}
+      fixture={currentPath.startsWith("/fixtures/email-templates/")}
+      key={`${emailTemplateEvent}:${resetVersion}`}
+    />
+  ) : isReadinessRoute ? (
+    <ReadinessDashboard
+      fixtureState={readinessFixtureState}
+      key={resetVersion}
+    />
+  ) : currentPath.endsWith("/settings") ? (
+    <EventSetup key={resetVersion} />
+  ) : (
+    <Dashboard key={resetVersion} />
+  );
 
   return (
     <AppShell
