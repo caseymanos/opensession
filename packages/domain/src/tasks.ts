@@ -110,6 +110,40 @@ export interface TaskTransition {
   readonly to: TaskAssignmentState;
 }
 
+export type TaskSubmissionResponse =
+  | { readonly acknowledged: true; readonly kind: "ack" }
+  | { readonly acknowledged: true; readonly kind: "link" }
+  | {
+      readonly answers: readonly {
+        readonly fieldId: string;
+        readonly value: boolean | readonly string[] | string;
+      }[];
+      readonly kind: "form";
+    }
+  | {
+      readonly acknowledged: true;
+      readonly fileIds: readonly string[];
+      readonly kind: "file";
+      readonly notes: string;
+    };
+
+export type TaskResponseConfiguration =
+  | { readonly kind: "ack" }
+  | { readonly kind: "link" }
+  | {
+      readonly fields: readonly {
+        readonly id: string;
+        readonly options: readonly string[];
+        readonly required: boolean;
+        readonly type: "checkbox" | "select" | "text" | "textarea";
+      }[];
+      readonly kind: "form";
+    }
+  | {
+      readonly kind: "file";
+      readonly maxFiles: number;
+    };
+
 export type TaskReadinessStatus =
   "not_configured" | "outstanding" | "overdue" | "ready";
 
@@ -147,6 +181,7 @@ export type TaskDomainErrorCode =
   | "ambiguous_local_due"
   | "illegal_transition"
   | "invalid_local_due"
+  | "invalid_response"
   | "invalid_timezone"
   | "reason_required"
   | "version_conflict";
@@ -510,10 +545,86 @@ function requiresReason(
   transition: TaskTransition,
 ): boolean {
   return (
+    transition.to === "approved" ||
     transition.to === "rejected" ||
     (transition.to === "incomplete" && current !== "incomplete") ||
     (transition.to === "complete" && current === "incomplete")
   );
+}
+
+export function validateTaskSubmissionResponse(
+  configuration: TaskResponseConfiguration,
+  response: TaskSubmissionResponse,
+): void {
+  if (configuration.kind !== response.kind) {
+    throw new TaskDomainError(
+      "invalid_response",
+      "The response does not match this task type.",
+    );
+  }
+  if (response.kind === "ack" || response.kind === "link") return;
+  if (configuration.kind === "file" && response.kind === "file") {
+    if (
+      response.fileIds.length === 0 ||
+      response.fileIds.length > configuration.maxFiles ||
+      new Set(response.fileIds).size !== response.fileIds.length
+    ) {
+      throw new TaskDomainError(
+        "invalid_response",
+        `This task accepts between 1 and ${configuration.maxFiles} files.`,
+      );
+    }
+    return;
+  }
+  if (configuration.kind !== "form" || response.kind !== "form") {
+    throw new TaskDomainError(
+      "invalid_response",
+      "The response does not match this task type.",
+    );
+  }
+  const fields = new Map(
+    configuration.fields.map((field) => [field.id, field]),
+  );
+  const seen = new Set<string>();
+  for (const answer of response.answers) {
+    if (seen.has(answer.fieldId) || !fields.has(answer.fieldId)) {
+      throw new TaskDomainError(
+        "invalid_response",
+        "The form response contains an unknown or duplicate field.",
+      );
+    }
+    seen.add(answer.fieldId);
+    const field = fields.get(answer.fieldId);
+    if (!field) continue;
+    const valid =
+      field.type === "checkbox"
+        ? typeof answer.value === "boolean"
+        : field.type === "select"
+          ? typeof answer.value === "string" &&
+            field.options.includes(answer.value)
+          : typeof answer.value === "string";
+    if (!valid) {
+      throw new TaskDomainError(
+        "invalid_response",
+        `The response for ${field.id} has the wrong value type.`,
+      );
+    }
+  }
+  for (const field of configuration.fields) {
+    if (!field.required) continue;
+    const answer = response.answers.find(({ fieldId }) => fieldId === field.id);
+    const populated =
+      answer !== undefined &&
+      (field.type === "checkbox"
+        ? answer.value === true
+        : typeof answer.value === "string" && answer.value.trim().length > 0);
+    if (!populated) {
+      throw new TaskDomainError(
+        "invalid_response",
+        `A response is required for ${field.id}.`,
+      );
+    }
+  }
 }
 
 function legalTransition(
@@ -596,6 +707,47 @@ export function transitionTaskAssignment(
       },
     ],
     state: transition.to,
+    version,
+  };
+}
+
+export function submitTaskAssignment(
+  assignment: TaskAssignment,
+  transition: Omit<TaskTransition, "reason" | "to">,
+): TaskAssignment {
+  const target = assignment.approvalRequired ? "submitted" : "complete";
+  if (transition.expectedVersion !== assignment.version) {
+    throw new TaskDomainError(
+      "version_conflict",
+      `Expected assignment version ${transition.expectedVersion}, received ${assignment.version}.`,
+    );
+  }
+  if (transition.actorType !== "speaker" || transition.actorId === null) {
+    throw new TaskDomainError(
+      "illegal_transition",
+      "Only the assigned speaker can submit a task response.",
+    );
+  }
+  if (!Number.isFinite(Date.parse(transition.at))) {
+    throw new TypeError("Transition time must be an ISO timestamp.");
+  }
+  const version = assignment.version + 1;
+  return {
+    ...assignment,
+    history: [
+      ...assignment.history,
+      {
+        actorId: transition.actorId,
+        actorType: "speaker",
+        at: new Date(transition.at).toISOString(),
+        commandId: transition.commandId,
+        from: assignment.state,
+        reason: null,
+        to: target,
+        version,
+      },
+    ],
+    state: target,
     version,
   };
 }

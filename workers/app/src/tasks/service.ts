@@ -1,4 +1,6 @@
 import {
+  taskAssignmentDetailSchema,
+  taskAssignmentMutationResponseSchema,
   taskAssignmentSchema,
   taskBackfillPreviewSchema,
   taskCommandResponseSchema,
@@ -6,6 +8,10 @@ import {
   taskReadinessResponseSchema,
   type TaskAcceptanceMaterializationCommand,
   type TaskAssignment,
+  type TaskAssignmentDetail,
+  type TaskAssignmentMutationResponse,
+  type TaskAssignmentReviewCommand,
+  type TaskAssignmentSubmissionCommand,
   type TaskAssignmentTransitionCommand,
   type TaskBackfillPreview,
   type TaskBackfillPreviewRequest,
@@ -13,12 +19,18 @@ import {
   type TaskDefinition,
   type TaskDefinitionCommand,
   type TaskReadinessResponse,
+  type TaskResponseHistory,
+  type TaskSubmissionReceipt,
+  type TaskSubmissionResponse,
 } from "@sessionbox-killer/contracts/tasks";
 import {
   applicableTaskAssignments,
   previewTaskBackfill,
+  submitTaskAssignment,
   TaskDomainError,
+  taskSatisfiesReadiness,
   transitionTaskAssignment,
+  validateTaskSubmissionResponse,
   type TaskAssignmentDraft as DomainAssignmentDraft,
   type TaskAssignmentIdentity as DomainAssignmentIdentity,
   type TaskTargetingSnapshot,
@@ -26,12 +38,17 @@ import {
 
 import {
   AuthorityOutcomeUnknownError,
+  hashAuthorityRequest,
   parseBaseAuthorityCommand,
   type AuthorityResponse,
   type BaseAuthorityCommand,
 } from "../authority/types.js";
 import {
+  assignmentCurrentResponse,
+  assignmentEnvelopeFromRow,
   assignmentProviderStatus,
+  assignmentResponseHistory,
+  assignmentSubmissionReceipts,
   assignmentResponseJson,
   contractTaskAssignment,
   domainTaskAssignment,
@@ -49,6 +66,7 @@ const maximumAssignments = 5_000;
 const maximumDefinitions = 500;
 const maximumSpeakers = 5_000;
 const receiptLifetimeMilliseconds = 90 * 24 * 60 * 60 * 1_000;
+const downloadReceiptLifetimeMilliseconds = 5 * 60 * 1_000;
 
 export interface TaskEventScope {
   readonly eventId: string;
@@ -71,7 +89,43 @@ interface TaskAuthority {
 interface TaskServiceOptions {
   readonly authority: TaskAuthority | (() => TaskAuthority);
   readonly database: D1Database;
+  readonly downloadReceiptSecret?: string;
   readonly now?: () => Date;
+}
+
+export interface TaskDetailPermissions {
+  readonly canReview: boolean;
+  readonly canSubmit: boolean;
+}
+
+interface TaskFileRow {
+  byte_size: number;
+  checksum_sha256: string | null;
+  declared_mime_type: string;
+  detected_mime_type: string | null;
+  display_filename: string;
+  event_id: string | null;
+  finalized_at: string | null;
+  id: string;
+  intent_status: string | null;
+  is_latest_ready_version: number;
+  lineage_id: string | null;
+  organization_id: string;
+  owner_contact_id: string | null;
+  purpose: string;
+  replaces_file_id: string | null;
+  status: string;
+  version_number: number;
+}
+
+interface TaskSpeakerRow {
+  display_name: string;
+  email_normalized: string;
+}
+
+interface TaskSessionDetailRow {
+  id: string;
+  title: string;
 }
 
 interface EventContactRow {
@@ -106,6 +160,16 @@ interface TaskPlanReceiptRow {
   request_hash: string;
   status:
     "committed" | "committed_with_repair" | "failed" | "pending" | "unknown";
+}
+
+interface TaskMutationPreparationRow {
+  original_response_json: string | null;
+  request_hash: string;
+}
+
+interface TaskMutationPreparation {
+  recordedAt: string;
+  requestId: string;
 }
 
 interface StoredTaskPlan {
@@ -189,6 +253,100 @@ async function sha256(value: unknown): Promise<string> {
     .join("");
 }
 
+function base64Url(bytes: ArrayBuffer): string {
+  let binary = "";
+  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
+
+async function downloadReceiptSignature(
+  secret: string,
+  event: TaskEventScope,
+  assignmentId: string,
+  fileId: string,
+  expiresAt: number,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { hash: "SHA-256", name: "HMAC" },
+    false,
+    ["sign"],
+  );
+  return base64Url(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(
+        [
+          "task-download-v1",
+          event.organizationId,
+          event.eventId,
+          assignmentId,
+          fileId,
+          expiresAt,
+        ].join("\u0000"),
+      ),
+    ),
+  );
+}
+
+export async function createTaskDownloadReceipt(
+  secret: string,
+  event: TaskEventScope,
+  assignmentId: string,
+  fileId: string,
+  expiresAt: Date,
+): Promise<string> {
+  const epochSeconds = Math.floor(expiresAt.getTime() / 1_000);
+  const signature = await downloadReceiptSignature(
+    secret,
+    event,
+    assignmentId,
+    fileId,
+    epochSeconds,
+  );
+  return `${epochSeconds}.${signature}`;
+}
+
+export async function verifyTaskDownloadReceipt(
+  secret: string,
+  event: TaskEventScope,
+  assignmentId: string,
+  fileId: string,
+  receipt: string,
+  now: Date,
+): Promise<"expired" | "invalid" | "valid"> {
+  const match = /^(\d{10})\.([A-Za-z0-9_-]{43})$/.exec(receipt);
+  if (!match) return "invalid";
+  const expiresAt = Number(match[1]);
+  if (!Number.isSafeInteger(expiresAt)) return "invalid";
+  if (expiresAt * 1_000 <= now.getTime()) return "expired";
+  if (
+    expiresAt * 1_000 >
+    now.getTime() + downloadReceiptLifetimeMilliseconds + 1_000
+  ) {
+    return "invalid";
+  }
+  const expected = await downloadReceiptSignature(
+    secret,
+    event,
+    assignmentId,
+    fileId,
+    expiresAt,
+  );
+  const provided = match[2] ?? "";
+  if (provided.length !== expected.length) return "invalid";
+  let difference = 0;
+  for (let index = 0; index < expected.length; index += 1) {
+    difference |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
+  }
+  return difference === 0 ? "valid" : "invalid";
+}
+
 function parseRoles(value: string): ("chair" | "moderator" | "speaker")[] {
   let parsed: unknown;
   try {
@@ -218,7 +376,8 @@ function assignmentRowQuery(): string {
                  assignment.contact_id, assignment.session_id,
                  assignment.due_at, assignment.required, assignment.status,
                  assignment.completed_at, assignment.approved_at,
-                 assignment.response_json, assignment.source_record_id,
+                 assignment.response_json, assignment.file_object_ids_json,
+                 assignment.source_record_id,
                  assignment.source_version,
                  definition.approval_required
           FROM p_task_assignments assignment
@@ -321,13 +480,100 @@ function providerFailure(
   throw error;
 }
 
+function parsedFileIds(value: string | undefined): string[] {
+  if (!value) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new Error("Task file associations are invalid.");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length > 20 ||
+    parsed.some(
+      (id) =>
+        typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(id),
+    ) ||
+    new Set(parsed).size !== parsed.length
+  ) {
+    throw new Error("Task file associations are invalid.");
+  }
+  return parsed;
+}
+
+function domainSubmissionResponse(
+  response: TaskSubmissionResponse,
+): Parameters<typeof validateTaskSubmissionResponse>[1] {
+  if (response.kind === "form") {
+    return {
+      answers: response.answers.map((answer) => ({
+        fieldId: answer.field_id,
+        value: answer.value,
+      })),
+      kind: "form",
+    };
+  }
+  if (response.kind === "file") {
+    return {
+      acknowledged: true,
+      fileIds: response.file_ids,
+      kind: "file",
+      notes: response.notes,
+    };
+  }
+  return response;
+}
+
+function domainResponseConfiguration(
+  definition: TaskDefinition,
+): Parameters<typeof validateTaskSubmissionResponse>[0] {
+  const configuration = definition.configuration;
+  if (configuration.kind === "form") {
+    return {
+      fields: configuration.fields.map((field) => ({
+        id: field.id,
+        options: field.options,
+        required: field.required,
+        type: field.type,
+      })),
+      kind: "form",
+    };
+  }
+  if (configuration.kind === "file") {
+    return { kind: "file", maxFiles: configuration.max_files };
+  }
+  return { kind: configuration.kind };
+}
+
+function fileExtension(filename: string): string {
+  return filename.split(".").at(-1)?.toLowerCase() ?? "";
+}
+
+const mimeExtensions = new Map<string, readonly string[]>([
+  ["application/pdf", ["pdf"]],
+  [
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ["pptx"],
+  ],
+  ["image/jpeg", ["jpg", "jpeg"]],
+  ["image/png", ["png"]],
+  ["image/webp", ["webp"]],
+]);
+
 export class TaskReadService {
   readonly #database: D1Database;
+  readonly #downloadReceiptSecret: string | null;
   readonly #now: () => Date;
 
-  constructor(database: D1Database, now: () => Date = () => new Date()) {
+  constructor(
+    database: D1Database,
+    now: () => Date = () => new Date(),
+    downloadReceiptSecret: string | null = null,
+  ) {
     this.#database = database;
     this.#now = now;
+    this.#downloadReceiptSecret = downloadReceiptSecret;
   }
 
   async definitions(event: TaskEventScope): Promise<TaskDefinition[]> {
@@ -363,6 +609,222 @@ export class TaskReadService {
       throw new Error("Task assignment projection exceeds its bounded limit.");
     }
     return result.results.map(taskAssignmentFromRow);
+  }
+
+  async detail(
+    event: TaskEventScope,
+    assignmentId: string,
+    permissions: TaskDetailPermissions,
+  ): Promise<TaskAssignmentDetail> {
+    const row = await this.#database
+      .prepare(`${assignmentRowQuery()} AND assignment.id = ?3 LIMIT 1`)
+      .bind(event.organizationId, event.eventId, assignmentId)
+      .first<TaskAssignmentRow>();
+    if (!row) throw new TaskNotFoundError("Task assignment");
+    const assignment = taskAssignmentFromRow(row);
+    const envelope = assignmentEnvelopeFromRow(row);
+    const definitionRow = await this.#database
+      .prepare(`${definitionRowQuery()} AND id = ?3 LIMIT 1`)
+      .bind(event.organizationId, event.eventId, row.definition_id)
+      .first<TaskDefinitionRow>();
+    if (!definitionRow) throw new TaskNotFoundError("Task definition");
+    const [speaker, session, assignments, eventView] = await Promise.all([
+      this.#database
+        .prepare(
+          `SELECT contact.display_name, contact.email_normalized
+           FROM p_contacts contact
+           JOIN p_event_contacts event_contact
+             ON event_contact.organization_id = contact.organization_id
+            AND event_contact.contact_id = contact.id
+            AND event_contact.event_id = ?2
+            AND event_contact.source_deleted_at IS NULL
+           WHERE contact.organization_id = ?1 AND contact.id = ?3
+             AND contact.source_deleted_at IS NULL LIMIT 1`,
+        )
+        .bind(event.organizationId, event.eventId, row.contact_id)
+        .first<TaskSpeakerRow>(),
+      row.session_id
+        ? this.#database
+            .prepare(
+              `SELECT id, title FROM p_sessions
+               WHERE organization_id = ?1 AND event_id = ?2 AND id = ?3
+                 AND source_deleted_at IS NULL LIMIT 1`,
+            )
+            .bind(event.organizationId, event.eventId, row.session_id)
+            .first<TaskSessionDetailRow>()
+        : Promise.resolve(null),
+      this.assignments(event, row.contact_id),
+      this.#database
+        .prepare(
+          `SELECT name FROM p_events
+           WHERE organization_id = ?1 AND id = ?2
+             AND source_deleted_at IS NULL LIMIT 1`,
+        )
+        .bind(event.organizationId, event.eventId)
+        .first<{ name: string }>(),
+    ]);
+    if (!speaker || !eventView) throw new TaskNotFoundError("Task speaker");
+
+    const responseHistory = assignmentResponseHistory(envelope);
+    const currentFileIds = parsedFileIds(row.file_object_ids_json);
+    const historicalFileIds = responseHistory.flatMap(({ response }) =>
+      response.kind === "file" ? response.file_ids : [],
+    );
+    const fileIds = [...new Set([...currentFileIds, ...historicalFileIds])];
+    if (fileIds.length > 500) {
+      throw new Error("Task file history exceeds its bounded limit.");
+    }
+    const fileRows =
+      fileIds.length === 0
+        ? []
+        : (
+            await this.#database
+              .prepare(
+                `SELECT file.id, file.organization_id, file.event_id,
+                        file.owner_contact_id, file.display_filename,
+                        file.declared_mime_type, file.detected_mime_type,
+                        file.byte_size, file.checksum_sha256, file.status,
+                        file.finalized_at, file.purpose, file.lineage_id,
+                        file.version_number, file.replaces_file_id,
+                        intent.status AS intent_status,
+                        CASE WHEN NOT EXISTS (
+                          SELECT 1 FROM file_objects newer
+                          WHERE COALESCE(newer.lineage_id, newer.id) =
+                                COALESCE(file.lineage_id, file.id)
+                            AND newer.status = 'ready'
+                            AND newer.version_number > file.version_number
+                        ) THEN 1 ELSE 0 END AS is_latest_ready_version
+                 FROM file_objects file
+                 LEFT JOIN file_upload_intents intent
+                   ON intent.file_object_id = file.id
+                 WHERE file.organization_id = ?1 AND file.event_id = ?2
+                   AND file.id IN (SELECT value FROM json_each(?3))
+                 ORDER BY file.version_number DESC, file.id
+                 LIMIT 501`,
+              )
+              .bind(
+                event.organizationId,
+                event.eventId,
+                JSON.stringify(fileIds),
+              )
+              .all<TaskFileRow>()
+          ).results;
+    if (fileRows.length > 500) {
+      throw new Error("Task file history exceeds its bounded limit.");
+    }
+    const now = this.#now();
+    const expiresAt = new Date(
+      now.getTime() + downloadReceiptLifetimeMilliseconds,
+    );
+    const files = await Promise.all(
+      fileRows.map(async (file) => {
+        const isCurrent = currentFileIds.includes(file.id);
+        const available =
+          isCurrent &&
+          file.status === "ready" &&
+          file.intent_status === "finalized" &&
+          file.is_latest_ready_version === 1;
+        const receipt =
+          available && this.#downloadReceiptSecret
+            ? await createTaskDownloadReceipt(
+                this.#downloadReceiptSecret,
+                event,
+                assignmentId,
+                file.id,
+                expiresAt,
+              )
+            : null;
+        return {
+          byte_size: file.byte_size,
+          checksum_sha256: file.checksum_sha256,
+          declared_mime_type: file.declared_mime_type,
+          detected_mime_type: file.detected_mime_type,
+          display_filename: file.display_filename,
+          download: receipt
+            ? {
+                expires_at: expiresAt.toISOString(),
+                url: `/api/events/${encodeURIComponent(event.eventId)}/task-assignments/${encodeURIComponent(assignmentId)}/files/${encodeURIComponent(file.id)}?receipt=${encodeURIComponent(receipt)}`,
+              }
+            : null,
+          finalized_at: file.finalized_at,
+          id: file.id,
+          status: available
+            ? ("current" as const)
+            : isCurrent
+              ? ("unavailable" as const)
+              : ("replaced" as const),
+          version: file.version_number,
+        };
+      }),
+    );
+    const overdue =
+      assignment.required &&
+      !taskSatisfiesReadiness(domainTaskAssignment(assignment)) &&
+      assignment.due_at !== null &&
+      Date.parse(assignment.due_at) < now.getTime();
+    return taskAssignmentDetailSchema.parse({
+      assignment,
+      current_response: assignmentCurrentResponse(envelope),
+      definition: taskDefinitionFromRow(definitionRow),
+      event: {
+        id: event.eventId,
+        name: eventView.name,
+        slug: event.slug,
+        timezone: event.timezone,
+      },
+      files,
+      generated_at: now.toISOString(),
+      organization_id: event.organizationId,
+      overdue,
+      permissions: {
+        can_review: permissions.canReview,
+        can_submit: permissions.canSubmit,
+      },
+      readiness: readinessForAssignments(assignments, event.timezone, now),
+      response_history: responseHistory,
+      session,
+      speaker: {
+        contact_id: row.contact_id,
+        display_name: speaker.display_name,
+        email: speaker.email_normalized,
+      },
+    });
+  }
+
+  async fileIsCurrent(
+    event: TaskEventScope,
+    assignmentId: string,
+    fileId: string,
+  ): Promise<boolean> {
+    const result = await this.#database
+      .prepare(
+        `SELECT 1 AS allowed
+         FROM p_task_assignments assignment
+         JOIN file_objects file
+           ON file.organization_id = assignment.organization_id
+          AND file.event_id = assignment.event_id
+          AND file.id = ?4
+         JOIN file_upload_intents intent ON intent.file_object_id = file.id
+         WHERE assignment.organization_id = ?1
+           AND assignment.event_id = ?2 AND assignment.id = ?3
+           AND assignment.source_deleted_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM json_each(assignment.file_object_ids_json)
+             WHERE json_each.value = file.id
+           )
+           AND file.status = 'ready' AND intent.status = 'finalized'
+           AND NOT EXISTS (
+             SELECT 1 FROM file_objects newer
+             WHERE COALESCE(newer.lineage_id, newer.id) =
+                   COALESCE(file.lineage_id, file.id)
+               AND newer.status = 'ready'
+               AND newer.version_number > file.version_number
+           )
+         LIMIT 1`,
+      )
+      .bind(event.organizationId, event.eventId, assignmentId, fileId)
+      .first<{ allowed: number }>();
+    return result?.allowed === 1;
   }
 
   async readiness(event: TaskEventScope): Promise<TaskReadinessResponse> {
@@ -449,6 +911,7 @@ export class TaskReadService {
 export class TaskAuthorityService {
   readonly #authority: () => TaskAuthority;
   readonly #database: D1Database;
+  readonly #downloadReceiptSecret: string | null;
   readonly #now: () => Date;
   readonly #reads: TaskReadService;
 
@@ -457,8 +920,13 @@ export class TaskAuthorityService {
     this.#authority =
       typeof authority === "function" ? authority : () => authority;
     this.#database = options.database;
+    this.#downloadReceiptSecret = options.downloadReceiptSecret ?? null;
     this.#now = options.now ?? (() => new Date());
-    this.#reads = new TaskReadService(options.database, this.#now);
+    this.#reads = new TaskReadService(
+      options.database,
+      this.#now,
+      this.#downloadReceiptSecret,
+    );
   }
 
   reads(): TaskReadService {
@@ -782,6 +1250,351 @@ export class TaskAuthorityService {
     });
   }
 
+  async submitAssignment(
+    event: TaskEventScope,
+    assignmentId: string,
+    command: TaskAssignmentSubmissionCommand,
+    actor: TaskCommandActor,
+    requestId: string,
+  ): Promise<TaskAssignmentMutationResponse> {
+    const row = await this.#assignmentRow(event, assignmentId);
+    if (!row) throw new TaskNotFoundError("Task assignment");
+    const definitionRow = await this.#definitionRow(event, row.definition_id);
+    if (!definitionRow) throw new TaskNotFoundError("Task definition");
+    const definition = taskDefinitionFromRow(definitionRow);
+    const current = taskAssignmentFromRow(row);
+    const envelope = assignmentEnvelopeFromRow(row);
+    const responseHistory = assignmentResponseHistory(envelope);
+    if (actor.actorId === null) {
+      throw new TaskDomainError(
+        "illegal_transition",
+        "Task submissions require a speaker actor.",
+      );
+    }
+    const submissionRequestHash = await sha256({
+      actorId: actor.actorId,
+      assignmentId,
+      command,
+    });
+    const submissionReceipts = assignmentSubmissionReceipts(envelope);
+    const replayReceipt = submissionReceipts.find(
+      ({ command_id }) => command_id === command.command_id,
+    );
+    const replayEntry = responseHistory.find(
+      ({ command_id }) => command_id === command.command_id,
+    );
+    if (replayReceipt || replayEntry) {
+      if (
+        (replayReceipt &&
+          (replayReceipt.version !== command.expected_version + 1 ||
+            replayReceipt.actor_id !== actor.actorId ||
+            replayReceipt.request_hash !== submissionRequestHash)) ||
+        (!replayReceipt &&
+          replayEntry &&
+          (replayEntry.version !== command.expected_version + 1 ||
+            replayEntry.actor_id !== actor.actorId ||
+            canonicalJson(replayEntry.response) !==
+              canonicalJson(command.response)))
+      ) {
+        throw new TaskIdempotencyConflictError(command.command_id);
+      }
+      const replayedAt = replayReceipt?.at ?? replayEntry?.at;
+      if (!replayedAt) throw new Error("Task submission receipt is invalid.");
+      return this.#mutationResponse(
+        event,
+        assignmentId,
+        command.command_id,
+        "tasks.assignment.submit",
+        replayedAt,
+        false,
+        true,
+        { canReview: false, canSubmit: true },
+      );
+    }
+    validateTaskSubmissionResponse(
+      domainResponseConfiguration(definition),
+      domainSubmissionResponse(command.response),
+    );
+    const fileIds =
+      command.response.kind === "file"
+        ? await this.#validatedSubmissionFiles(
+            event,
+            row,
+            definition,
+            command.response.file_ids,
+          )
+        : [];
+    const preparation = await this.#mutationPreparation(
+      event,
+      "tasks.assignment.submit.prepare",
+      assignmentId,
+      command.command_id,
+      submissionRequestHash,
+      requestId,
+    );
+    const submittedAt = preparation.recordedAt;
+    let next;
+    try {
+      next = submitTaskAssignment(domainTaskAssignment(current), {
+        actorId: actor.actorId,
+        actorType: actor.domainActorType,
+        at: submittedAt,
+        commandId: command.command_id,
+        expectedVersion: command.expected_version,
+      });
+    } catch (error) {
+      if (
+        error instanceof TaskDomainError &&
+        error.code === "version_conflict"
+      ) {
+        throw new TaskVersionConflictError(
+          command.expected_version,
+          current.version,
+        );
+      }
+      throw error;
+    }
+    const nextResponseHistory: TaskResponseHistory[] = [
+      ...responseHistory.slice(-7),
+      {
+        actor_id: actor.actorId,
+        at: submittedAt,
+        command_id: command.command_id,
+        response: command.response,
+        version: next.version,
+      },
+    ];
+    const nextSubmissionReceipts: TaskSubmissionReceipt[] = [
+      ...submissionReceipts.slice(-199),
+      {
+        actor_id: actor.actorId,
+        at: submittedAt,
+        command_id: command.command_id,
+        request_hash: submissionRequestHash,
+        version: next.version,
+      },
+    ];
+    const authorityCommand = {
+      audit: {
+        action: "tasks.assignment.submit",
+        actorId: actor.actorId,
+        actorType: actor.auditActorType,
+        eventId: event.eventId,
+        requestId: preparation.requestId,
+        safeDiff: {
+          fileCount: fileIds.length,
+          from: current.state,
+          kind: command.response.kind,
+          overdue:
+            current.due_at !== null &&
+            Date.parse(current.due_at) < Date.parse(submittedAt),
+          to: next.state,
+          version: next.version,
+        },
+      },
+      commandId: command.command_id,
+      entityId: assignmentId,
+      expectedVersion: command.expected_version,
+      fields: {
+        "Approved at": null,
+        "Approved by": [],
+        "Completed at": next.state === "complete" ? submittedAt : null,
+        "File object IDs JSON": JSON.stringify(fileIds),
+        "Response JSON": assignmentResponseJson(
+          next,
+          command.response,
+          nextResponseHistory,
+          nextSubmissionReceipts,
+        ),
+        Status: assignmentProviderStatus(next.state),
+      },
+      operation: "tasks.assignment.submit",
+      organizationId: event.organizationId,
+      table: "task_assignments",
+    } satisfies BaseAuthorityCommand;
+    let response: AuthorityResponse;
+    try {
+      response = await this.#authority().execute(authorityCommand);
+    } catch (error) {
+      providerFailure(error, command.command_id, command.expected_version);
+    }
+    const requestHash = await hashAuthorityRequest(authorityCommand);
+    return this.#mutationResponse(
+      event,
+      assignmentId,
+      command.command_id,
+      "tasks.assignment.submit",
+      submittedAt,
+      response.projection === "repair_pending",
+      response.authority.replayed,
+      { canReview: false, canSubmit: true },
+      `aud_${requestHash.slice(0, 26)}`,
+    );
+  }
+
+  async reviewAssignment(
+    event: TaskEventScope,
+    assignmentId: string,
+    command: TaskAssignmentReviewCommand,
+    actor: TaskCommandActor,
+    requestId: string,
+  ): Promise<TaskAssignmentMutationResponse> {
+    const row = await this.#assignmentRow(event, assignmentId);
+    if (!row) throw new TaskNotFoundError("Task assignment");
+    const current = taskAssignmentFromRow(row);
+    const envelope = assignmentEnvelopeFromRow(row);
+    const target = command.decision === "approve" ? "approved" : "rejected";
+    const reviewRequestHash = await sha256({
+      actorId: actor.actorId,
+      assignmentId,
+      command,
+    });
+    const replayEntry = current.history.find(
+      ({ command_id }) => command_id === command.command_id,
+    );
+    if (replayEntry) {
+      if (
+        replayEntry.version !== command.expected_version + 1 ||
+        replayEntry.to !== target ||
+        replayEntry.reason !== command.reason.trim() ||
+        replayEntry.actor_id !== actor.actorId ||
+        replayEntry.actor_type !== actor.domainActorType
+      ) {
+        throw new TaskIdempotencyConflictError(command.command_id);
+      }
+      return this.#mutationResponse(
+        event,
+        assignmentId,
+        command.command_id,
+        "tasks.assignment.review",
+        replayEntry.at,
+        false,
+        true,
+        { canReview: true, canSubmit: false },
+      );
+    }
+    const currentResponse = assignmentCurrentResponse(envelope);
+    if (!currentResponse) {
+      throw new TaskDomainError(
+        "invalid_response",
+        "A typed task response is required before this assignment can be reviewed.",
+      );
+    }
+    const definitionRow = await this.#definitionRow(event, row.definition_id);
+    if (!definitionRow) throw new TaskNotFoundError("Task definition");
+    const definition = taskDefinitionFromRow(definitionRow);
+    validateTaskSubmissionResponse(
+      domainResponseConfiguration(definition),
+      domainSubmissionResponse(currentResponse),
+    );
+    if (currentResponse.kind === "file") {
+      const associatedFileIds = parsedFileIds(row.file_object_ids_json);
+      if (
+        associatedFileIds.length !== currentResponse.file_ids.length ||
+        associatedFileIds.some(
+          (fileId, index) => fileId !== currentResponse.file_ids[index],
+        )
+      ) {
+        throw new TaskDomainError(
+          "invalid_response",
+          "The current file association does not match the submitted response.",
+        );
+      }
+      if (command.decision === "approve") {
+        await this.#validatedReadyTaskFiles(
+          event,
+          row,
+          definition,
+          associatedFileIds,
+        );
+      }
+    }
+    const preparation = await this.#mutationPreparation(
+      event,
+      "tasks.assignment.review.prepare",
+      assignmentId,
+      command.command_id,
+      reviewRequestHash,
+      requestId,
+    );
+    const reviewedAt = preparation.recordedAt;
+    let next;
+    try {
+      next = transitionTaskAssignment(domainTaskAssignment(current), {
+        actorId: actor.actorId,
+        actorType: actor.domainActorType,
+        at: reviewedAt,
+        commandId: command.command_id,
+        expectedVersion: command.expected_version,
+        reason: command.reason,
+        to: target,
+      });
+    } catch (error) {
+      if (
+        error instanceof TaskDomainError &&
+        error.code === "version_conflict"
+      ) {
+        throw new TaskVersionConflictError(
+          command.expected_version,
+          current.version,
+        );
+      }
+      throw error;
+    }
+    const authorityCommand = {
+      audit: {
+        action: "tasks.assignment.review",
+        ...(actor.actorId ? { actorId: actor.actorId } : {}),
+        actorType: actor.auditActorType,
+        eventId: event.eventId,
+        requestId: preparation.requestId,
+        safeDiff: {
+          decision: command.decision,
+          from: current.state,
+          reasonPresent: true,
+          to: next.state,
+          version: next.version,
+        },
+      },
+      commandId: command.command_id,
+      entityId: assignmentId,
+      expectedVersion: command.expected_version,
+      fields: {
+        "Approved at": next.state === "approved" ? reviewedAt : null,
+        "Approved by": [],
+        "Completed at": next.state === "approved" ? reviewedAt : null,
+        "Response JSON": assignmentResponseJson(
+          next,
+          assignmentCurrentResponse(envelope),
+          assignmentResponseHistory(envelope),
+          assignmentSubmissionReceipts(envelope),
+        ),
+        Status: assignmentProviderStatus(next.state),
+      },
+      operation: "tasks.assignment.review",
+      organizationId: event.organizationId,
+      table: "task_assignments",
+    } satisfies BaseAuthorityCommand;
+    let response: AuthorityResponse;
+    try {
+      response = await this.#authority().execute(authorityCommand);
+    } catch (error) {
+      providerFailure(error, command.command_id, command.expected_version);
+    }
+    const requestHash = await hashAuthorityRequest(authorityCommand);
+    return this.#mutationResponse(
+      event,
+      assignmentId,
+      command.command_id,
+      "tasks.assignment.review",
+      reviewedAt,
+      response.projection === "repair_pending",
+      response.authority.replayed,
+      { canReview: true, canSubmit: false },
+      `aud_${requestHash.slice(0, 26)}`,
+    );
+  }
+
   async transitionAssignment(
     event: TaskEventScope,
     assignmentId: string,
@@ -871,7 +1684,12 @@ export class TaskAuthorityService {
             next.state === "complete" || next.state === "approved"
               ? transitionAt
               : null,
-          "Response JSON": assignmentResponseJson(next),
+          "Response JSON": assignmentResponseJson(
+            next,
+            assignmentCurrentResponse(assignmentEnvelopeFromRow(row)),
+            assignmentResponseHistory(assignmentEnvelopeFromRow(row)),
+            assignmentSubmissionReceipts(assignmentEnvelopeFromRow(row)),
+          ),
           Status: assignmentProviderStatus(next.state),
         },
         operation: "tasks.assignment.transition",
@@ -907,6 +1725,195 @@ export class TaskAuthorityService {
       .bind(event.organizationId, event.eventId, assignmentId, contactId)
       .first<{ allowed: number }>();
     return row?.allowed === 1;
+  }
+
+  async #mutationResponse(
+    event: TaskEventScope,
+    assignmentId: string,
+    commandId: string,
+    action: "tasks.assignment.review" | "tasks.assignment.submit",
+    recordedAt: string,
+    repairPending: boolean,
+    replayed: boolean,
+    permissions: TaskDetailPermissions,
+    expectedAuditId?: string,
+  ): Promise<TaskAssignmentMutationResponse> {
+    const audit = await this.#database
+      .prepare(
+        `SELECT id, created_at FROM audit_events
+         WHERE organization_id = ?1 AND action = ?2 AND command_id = ?3
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(event.organizationId, action, commandId)
+      .first<{ created_at: string; id: string }>();
+    const auditId = audit?.id ?? expectedAuditId;
+    if (!auditId) {
+      throw new Error("Task audit receipt is unavailable.");
+    }
+    return taskAssignmentMutationResponseSchema.parse({
+      ok: true,
+      repair_pending: repairPending,
+      replayed,
+      result: {
+        audit: {
+          action,
+          id: auditId,
+          recorded_at: audit?.created_at ?? recordedAt,
+        },
+        detail: await this.#reads.detail(event, assignmentId, permissions),
+      },
+    });
+  }
+
+  async #fileRows(
+    event: TaskEventScope,
+    fileIds: readonly string[],
+  ): Promise<TaskFileRow[]> {
+    if (fileIds.length === 0) return [];
+    return (
+      await this.#database
+        .prepare(
+          `SELECT file.id, file.organization_id, file.event_id,
+                  file.owner_contact_id, file.display_filename,
+                  file.declared_mime_type, file.detected_mime_type,
+                  file.byte_size, file.checksum_sha256, file.status,
+                  file.finalized_at, file.purpose, file.lineage_id,
+                  file.version_number, file.replaces_file_id,
+                  intent.status AS intent_status,
+                  CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM file_objects newer
+                    WHERE COALESCE(newer.lineage_id, newer.id) =
+                          COALESCE(file.lineage_id, file.id)
+                      AND newer.status = 'ready'
+                      AND newer.version_number > file.version_number
+                  ) THEN 1 ELSE 0 END AS is_latest_ready_version
+           FROM file_objects file
+           LEFT JOIN file_upload_intents intent ON intent.file_object_id = file.id
+           WHERE file.organization_id = ?1 AND file.event_id = ?2
+             AND file.id IN (SELECT value FROM json_each(?3))
+           ORDER BY file.id LIMIT 21`,
+        )
+        .bind(event.organizationId, event.eventId, JSON.stringify(fileIds))
+        .all<TaskFileRow>()
+    ).results;
+  }
+
+  async #validatedReadyTaskFiles(
+    event: TaskEventScope,
+    assignmentRow: TaskAssignmentRow,
+    definition: TaskDefinition,
+    fileIds: readonly string[],
+  ): Promise<TaskFileRow[]> {
+    if (definition.configuration.kind !== "file") {
+      throw new TaskDomainError(
+        "invalid_response",
+        "Only file-request tasks can associate uploads.",
+      );
+    }
+    const rows = await this.#fileRows(event, fileIds);
+    if (rows.length !== fileIds.length) {
+      throw new TaskDomainError(
+        "invalid_response",
+        "Every submitted file must be a finalized upload in this event.",
+      );
+    }
+    const lineages = new Set<string>();
+    for (const file of rows) {
+      const extension = fileExtension(file.display_filename);
+      const allowedMimeExtensions = mimeExtensions.get(file.declared_mime_type);
+      const detectedMatches =
+        file.declared_mime_type ===
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          ? file.detected_mime_type === "application/zip"
+          : file.detected_mime_type === file.declared_mime_type;
+      if (
+        file.event_id !== event.eventId ||
+        file.owner_contact_id !== assignmentRow.contact_id ||
+        (file.purpose !== "task_attachment" && file.purpose !== "slides") ||
+        file.status !== "ready" ||
+        file.intent_status !== "finalized" ||
+        file.is_latest_ready_version !== 1 ||
+        file.finalized_at === null ||
+        file.checksum_sha256 === null ||
+        file.byte_size > definition.configuration.max_bytes ||
+        !definition.configuration.extensions.includes(extension) ||
+        !allowedMimeExtensions?.includes(extension) ||
+        !detectedMatches
+      ) {
+        throw new TaskDomainError(
+          "invalid_response",
+          "A submitted file is unavailable or does not satisfy this task's type, size, ownership, and finalization policy.",
+        );
+      }
+      const lineage = file.lineage_id ?? file.id;
+      if (lineages.has(lineage)) {
+        throw new TaskDomainError(
+          "invalid_response",
+          "A task response cannot include two versions from the same file lineage.",
+        );
+      }
+      lineages.add(lineage);
+    }
+    return rows;
+  }
+
+  async #validatedSubmissionFiles(
+    event: TaskEventScope,
+    assignmentRow: TaskAssignmentRow,
+    definition: TaskDefinition,
+    fileIds: readonly string[],
+  ): Promise<string[]> {
+    const rows = await this.#validatedReadyTaskFiles(
+      event,
+      assignmentRow,
+      definition,
+      fileIds,
+    );
+
+    const currentFileIds = parsedFileIds(assignmentRow.file_object_ids_json);
+    if (currentFileIds.length > 0) {
+      if (
+        currentFileIds.length === fileIds.length &&
+        currentFileIds.every((id) => fileIds.includes(id))
+      ) {
+        throw new TaskDomainError(
+          "invalid_response",
+          "This file version is already the current task response.",
+        );
+      }
+      const previous = await this.#fileRows(event, currentFileIds);
+      if (previous.length !== currentFileIds.length) {
+        throw new Error("The current task file association is incomplete.");
+      }
+      const previousByLineage = new Map(
+        previous.map((file) => [file.lineage_id ?? file.id, file]),
+      );
+      let replaced = false;
+      for (const candidate of rows) {
+        if (currentFileIds.includes(candidate.id)) continue;
+        const prior = previousByLineage.get(
+          candidate.lineage_id ?? candidate.id,
+        );
+        if (
+          !prior ||
+          candidate.version_number <= prior.version_number ||
+          candidate.replaces_file_id === null
+        ) {
+          throw new TaskDomainError(
+            "invalid_response",
+            "Each changed file must be a finalized replacement of a current task file.",
+          );
+        }
+        replaced = true;
+      }
+      if (!replaced) {
+        throw new TaskDomainError(
+          "invalid_response",
+          "Submit a finalized replacement of the current task file.",
+        );
+      }
+    }
+    return [...fileIds];
   }
 
   async #definitionRows(event: TaskEventScope): Promise<TaskDefinitionRow[]> {
@@ -953,6 +1960,82 @@ export class TaskAuthorityService {
       .bind(event.organizationId, operation, commandId)
       .first<{ present: number }>();
     return result?.present === 1;
+  }
+
+  async #mutationPreparation(
+    event: TaskEventScope,
+    operation:
+      "tasks.assignment.review.prepare" | "tasks.assignment.submit.prepare",
+    assignmentId: string,
+    commandId: string,
+    requestHash: string,
+    requestId: string,
+  ): Promise<TaskMutationPreparation> {
+    const now = this.#now();
+    const initial = {
+      recorded_at: now.toISOString(),
+      request_id: requestId,
+      schema_version: 1,
+    };
+    await this.#database
+      .prepare(
+        `INSERT OR IGNORE INTO idempotency_keys (
+           tenant_key, operation, command_id, request_hash, status,
+           entity_type, entity_id, original_response_status,
+           original_response_json, created_at, updated_at, expires_at
+         ) VALUES (?1, ?2, ?3, ?4, 'committed', 'task_mutation_preparation',
+                   ?5, 200, ?6, ?7, ?7, ?8)`,
+      )
+      .bind(
+        event.organizationId,
+        operation,
+        commandId,
+        requestHash,
+        assignmentId,
+        JSON.stringify(initial),
+        now.toISOString(),
+        new Date(now.getTime() + receiptLifetimeMilliseconds).toISOString(),
+      )
+      .run();
+    const row = await this.#database
+      .prepare(
+        `SELECT request_hash, original_response_json
+         FROM idempotency_keys
+         WHERE tenant_key = ?1 AND operation = ?2 AND command_id = ?3
+         LIMIT 1`,
+      )
+      .bind(event.organizationId, operation, commandId)
+      .first<TaskMutationPreparationRow>();
+    if (!row) throw new Error("Task mutation preparation was not persisted.");
+    if (row.request_hash !== requestHash) {
+      throw new TaskIdempotencyConflictError(commandId);
+    }
+    let parsed: unknown;
+    try {
+      parsed = row.original_response_json
+        ? (JSON.parse(row.original_response_json) as unknown)
+        : null;
+    } catch {
+      throw new Error("Task mutation preparation is invalid.");
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !("schema_version" in parsed) ||
+      parsed.schema_version !== 1 ||
+      !("recorded_at" in parsed) ||
+      typeof parsed.recorded_at !== "string" ||
+      !Number.isFinite(Date.parse(parsed.recorded_at)) ||
+      !("request_id" in parsed) ||
+      typeof parsed.request_id !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(parsed.request_id)
+    ) {
+      throw new Error("Task mutation preparation is invalid.");
+    }
+    return {
+      recordedAt: new Date(parsed.recorded_at).toISOString(),
+      requestId: parsed.request_id,
+    };
   }
 
   async #targetingSnapshot(
@@ -1152,9 +2235,12 @@ export class TaskAuthorityService {
         "File object IDs JSON": "[]",
         Required: draft.required,
         "Response JSON": JSON.stringify({
+          current_response: null,
           history: [],
-          schema_version: 1,
+          response_history: [],
+          schema_version: 2,
           state: "incomplete",
+          submission_receipts: [],
           version: 1,
         }),
         Session: sessionRecordId ? [sessionRecordId] : [],

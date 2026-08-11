@@ -175,6 +175,10 @@
   background: var(--paper-50);
 }
 
+.task-current-file + .task-current-file {
+  margin-top: 0.65rem;
+}
+
 .task-file-identity {
   min-width: 0;
   display: flex;
@@ -359,7 +363,8 @@
 }
 
 .task-upload-progress,
-.task-upload-failure {
+.task-upload-failure,
+.task-sync-pending {
   margin-bottom: 1rem;
   padding: 1rem;
   border-radius: 0.85rem;
@@ -447,6 +452,44 @@
 
 .task-upload-failure .ui-button {
   width: fit-content;
+}
+
+.task-sync-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  border: 1px solid var(--blue-500);
+  color: var(--blue-700);
+  background: var(--blue-100);
+}
+
+.task-sync-pending > svg {
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+}
+
+.task-sync-pending > span {
+  min-width: 0;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.2rem;
+  color: var(--ink-700);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.task-sync-pending strong {
+  color: var(--blue-700);
+  font-size: 0.78rem;
+}
+
+.task-sync-pending .ui-button {
+  flex: 0 0 auto;
+}
+
+.task-completion > .task-sync-pending {
+  width: min(calc(100% - 3rem), 82rem);
+  margin: 1rem auto 0;
 }
 
 .task-response-fields {
@@ -796,6 +839,17 @@
   column-gap: 1rem;
 }
 
+.organizer-file-item {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.organizer-file-item + .organizer-file-item {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--ink-200);
+}
+
 .organizer-file-card > .task-access-note {
   margin-top: 1rem;
   padding: 0.75rem;
@@ -912,6 +966,36 @@
   display: flex;
   justify-content: flex-end;
   gap: 0.6rem;
+}
+
+.task-production-copy,
+.task-production-error {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.task-production-copy a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--blue-700);
+  font-weight: 750;
+}
+
+.task-production-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.task-production-error {
+  width: min(100%, 82rem);
+  margin: 1rem auto;
+  padding: 0.8rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--danger-700) 35%, white);
+  border-radius: 0.75rem;
+  color: var(--danger-700);
+  background: var(--danger-100);
 }
 
 @media (max-width: 1050px) {

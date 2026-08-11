@@ -1,5 +1,7 @@
 import {
   taskAcceptanceMaterializationCommandSchema,
+  taskAssignmentReviewCommandSchema,
+  taskAssignmentSubmissionCommandSchema,
   taskAssignmentTransitionCommandSchema,
   taskBackfillPreviewRequestSchema,
   taskDefinitionCommandSchema,
@@ -32,9 +34,12 @@ import {
   TaskPreviewConflictError,
   TaskReadService,
   TaskVersionConflictError,
+  verifyTaskDownloadReceipt,
   type TaskCommandActor,
   type TaskEventScope,
 } from "./service.js";
+import { safeAttachmentDisposition } from "../uploads/policy.js";
+import { UploadError, UploadService } from "../uploads/service.js";
 
 const taskBodyLimitBytes = 64 * 1024;
 
@@ -122,7 +127,7 @@ async function resolveTaskScope(
 
 function standardError(
   context: Context<AppContext>,
-  status: 400 | 403 | 404 | 409 | 413 | 503,
+  status: 400 | 403 | 404 | 409 | 410 | 413 | 503,
   code: string,
   message: string,
 ) {
@@ -239,6 +244,7 @@ function taskError(context: Context<AppContext>, error: unknown) {
       "ambiguous_local_due",
       "assignment_limit_exceeded",
       "invalid_local_due",
+      "invalid_response",
       "invalid_timezone",
     ]);
     return context.json(
@@ -315,6 +321,7 @@ function authorityService(context: Context<AppContext>) {
   return new TaskAuthorityService({
     authority: () => getBaseAuthority(context.env),
     database: context.env.DB,
+    downloadReceiptSecret: context.env.AUTH_HASH_PEPPER,
   });
 }
 
@@ -323,6 +330,8 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
     "/api/events/:eventKey/task-definitions/backfill-preview",
     "/api/events/:eventKey/task-definitions/commands",
     "/api/events/:eventKey/task-materializations/commands",
+    "/api/events/:eventKey/task-assignments/:assignmentId/reviews",
+    "/api/events/:eventKey/task-assignments/:assignmentId/submissions",
     "/api/events/:eventKey/task-assignments/:assignmentId/transitions",
   ]) {
     app.use(
@@ -407,6 +416,61 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
       }
     }
   });
+
+  app.get(
+    "/api/events/:eventKey/task-assignments/:assignmentId",
+    async (context) => {
+      const assignmentId = taskStableIdSchema.safeParse(
+        context.req.param("assignmentId"),
+      );
+      if (!assignmentId.success) {
+        return standardError(
+          context,
+          404,
+          "task_not_found",
+          "The task assignment does not exist.",
+        );
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        const service = authorityService(context);
+        const canReview = hasEventPermission(resolution.access, "event:manage");
+        const canSubmit =
+          !canReview &&
+          Boolean(resolution.access.speakerContactId) &&
+          hasEventPermission(resolution.access, "portal:write:self") &&
+          (await service.assignmentBelongsToContact(
+            resolution.event,
+            assignmentId.data,
+            resolution.access.speakerContactId ?? "",
+          ));
+        if (!canReview && !canSubmit) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "You cannot read this task assignment.",
+          );
+        }
+        const response = context.json(
+          await service.reads().detail(resolution.event, assignmentId.data, {
+            canReview,
+            canSubmit,
+          }),
+        );
+        response.headers.set("Cache-Control", "private, no-store");
+        return response;
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
 
   app.post(
     "/api/events/:eventKey/task-definitions/backfill-preview",
@@ -560,6 +624,237 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
     },
   );
 
+  app.get(
+    "/api/events/:eventKey/task-assignments/:assignmentId/files/:fileId",
+    async (context) => {
+      const assignmentId = taskStableIdSchema.safeParse(
+        context.req.param("assignmentId"),
+      );
+      const fileId = taskStableIdSchema.safeParse(context.req.param("fileId"));
+      const receipt = context.req.query("receipt") ?? "";
+      if (!assignmentId.success || !fileId.success || receipt.length > 256) {
+        return standardError(
+          context,
+          404,
+          "task_file_not_found",
+          "The task file does not exist.",
+        );
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        const service = authorityService(context);
+        const manages = hasEventPermission(resolution.access, "event:manage");
+        const owns =
+          Boolean(resolution.access.speakerContactId) &&
+          hasEventPermission(resolution.access, "portal:write:self") &&
+          (await service.assignmentBelongsToContact(
+            resolution.event,
+            assignmentId.data,
+            resolution.access.speakerContactId ?? "",
+          ));
+        if (!manages && !owns) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "You cannot download this task file.",
+          );
+        }
+        const receiptState = await verifyTaskDownloadReceipt(
+          context.env.AUTH_HASH_PEPPER,
+          resolution.event,
+          assignmentId.data,
+          fileId.data,
+          receipt,
+          new Date(),
+        );
+        if (receiptState === "expired") {
+          return standardError(
+            context,
+            410,
+            "task_file_link_expired",
+            "This task file link has expired. Refresh the task to continue.",
+          );
+        }
+        if (
+          receiptState !== "valid" ||
+          !(await service
+            .reads()
+            .fileIsCurrent(resolution.event, assignmentId.data, fileId.data))
+        ) {
+          return standardError(
+            context,
+            404,
+            "task_file_not_found",
+            "The task file does not exist.",
+          );
+        }
+        const download = await new UploadService({
+          bucket: context.env.UPLOADS,
+          database: context.env.DB,
+        }).download(resolution.session, fileId.data);
+        return new Response(download.body, {
+          headers: {
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": safeAttachmentDisposition(download.filename),
+            "Content-Length": String(download.size),
+            "Content-Security-Policy": "sandbox",
+            "Content-Type": download.contentType,
+            "Cross-Origin-Resource-Policy": "same-origin",
+            ETag: download.etag,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      } catch (error) {
+        if (error instanceof UploadError) {
+          return standardError(
+            context,
+            error.code === "file_not_found" ? 404 : 409,
+            "task_file_unavailable",
+            "The task file is no longer available. Refresh the task to continue.",
+          );
+        }
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-assignments/:assignmentId/submissions",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task submissions require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      const assignmentId = taskStableIdSchema.safeParse(
+        context.req.param("assignmentId"),
+      );
+      const input = taskAssignmentSubmissionCommandSchema.safeParse(
+        await parsedJson(context),
+      );
+      if (!assignmentId.success || !input.success) {
+        return invalidRequest(context, "The task submission is invalid.");
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        await authService(context).verifyCsrf(
+          resolution.session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
+        const contactId = resolution.access.speakerContactId;
+        const service = authorityService(context);
+        if (
+          !contactId ||
+          !hasEventPermission(resolution.access, "portal:write:self") ||
+          !(await service.assignmentBelongsToContact(
+            resolution.event,
+            assignmentId.data,
+            contactId,
+          ))
+        ) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Only the assigned speaker can submit this task response.",
+          );
+        }
+        const response = await service.submitAssignment(
+          resolution.event,
+          assignmentId.data,
+          input.data,
+          {
+            actorId: contactId,
+            auditActorType: "portal",
+            domainActorType: "speaker",
+          },
+          context.get("requestId"),
+        );
+        return context.json(
+          response,
+          response.ok && response.repair_pending ? 202 : 200,
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/task-assignments/:assignmentId/reviews",
+    async (context) => {
+      if (!requireSameOrigin(context)) {
+        return invalidRequest(
+          context,
+          "Task reviews require same-origin JSON requests.",
+        );
+      }
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return writeUnavailable(context);
+      }
+      const assignmentId = taskStableIdSchema.safeParse(
+        context.req.param("assignmentId"),
+      );
+      const input = taskAssignmentReviewCommandSchema.safeParse(
+        await parsedJson(context),
+      );
+      if (!assignmentId.success || !input.success) {
+        return invalidRequest(context, "The task review is invalid.");
+      }
+      try {
+        const resolution = await resolveTaskScope(
+          context,
+          context.req.param("eventKey"),
+        );
+        if (resolution.kind !== "resolved") {
+          return scopeFailure(context, resolution);
+        }
+        await authService(context).verifyCsrf(
+          resolution.session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
+        if (!hasEventPermission(resolution.access, "event:manage")) {
+          return standardError(
+            context,
+            403,
+            "forbidden",
+            "Organizer access is required to review task responses.",
+          );
+        }
+        const response = await authorityService(context).reviewAssignment(
+          resolution.event,
+          assignmentId.data,
+          input.data,
+          organizerActor(resolution),
+          context.get("requestId"),
+        );
+        return context.json(
+          response,
+          response.ok && response.repair_pending ? 202 : 200,
+        );
+      } catch (error) {
+        return taskError(context, error);
+      }
+    },
+  );
+
   app.post(
     "/api/events/:eventKey/task-assignments/:assignmentId/transitions",
     async (context) => {
@@ -592,38 +887,37 @@ export function registerTaskRoutes(app: Hono<AppContext>): void {
         if (resolution.kind !== "resolved") {
           return scopeFailure(context, resolution);
         }
+        await authService(context).verifyCsrf(
+          resolution.session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
         const service = authorityService(context);
-        let actor: TaskCommandActor;
-        if (hasEventPermission(resolution.access, "event:manage")) {
-          actor = organizerActor(resolution);
-        } else if (
-          resolution.access.speakerContactId &&
-          hasEventPermission(resolution.access, "portal:write:self") &&
-          input.data.to === "submitted" &&
-          (await service.assignmentBelongsToContact(
-            resolution.event,
-            assignmentId.data,
-            resolution.access.speakerContactId,
-          ))
-        ) {
-          actor = {
-            actorId: resolution.access.speakerContactId,
-            auditActorType: "portal",
-            domainActorType: "speaker",
-          };
-        } else {
+        if (!hasEventPermission(resolution.access, "event:manage")) {
           return standardError(
             context,
             403,
             "forbidden",
-            "You cannot transition this task assignment.",
+            "Speaker task responses must use the submission route.",
+          );
+        }
+        if (
+          input.data.to === "submitted" ||
+          input.data.to === "approved" ||
+          input.data.to === "rejected"
+        ) {
+          return taskError(
+            context,
+            new TaskDomainError(
+              "illegal_transition",
+              "Submissions and review decisions must use their typed task routes.",
+            ),
           );
         }
         const response = await service.transitionAssignment(
           resolution.event,
           assignmentId.data,
           input.data,
-          actor,
+          organizerActor(resolution),
           context.get("requestId"),
         );
         return context.json(

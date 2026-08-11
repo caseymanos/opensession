@@ -6,8 +6,10 @@ import {
   evaluateTaskReadiness,
   previewTaskBackfill,
   resolveEventLocalDue,
+  submitTaskAssignment,
   TaskDomainError,
   transitionTaskAssignment,
+  validateTaskSubmissionResponse,
   type TaskAssignment,
   type TaskDefinition,
   type TaskTargetingSnapshot,
@@ -273,6 +275,63 @@ describe("task targeting and materialization", () => {
 });
 
 describe("task assignment transitions", () => {
+  it("submits and replaces typed responses without losing state history", () => {
+    const initial = assignment({ approvalRequired: true });
+    const submitted = submitTaskAssignment(initial, {
+      actorId: "contact_alpha",
+      actorType: "speaker",
+      at: "2026-08-10T18:00:00.000Z",
+      commandId: "command_submit_typed",
+      expectedVersion: 1,
+    });
+    const replacement = submitTaskAssignment(submitted, {
+      actorId: "contact_alpha",
+      actorType: "speaker",
+      at: "2026-08-10T19:00:00.000Z",
+      commandId: "command_replace_typed",
+      expectedVersion: 2,
+    });
+
+    expect(replacement).toMatchObject({ state: "submitted", version: 3 });
+    expect(replacement.history).toEqual([
+      expect.objectContaining({ from: "incomplete", to: "submitted" }),
+      expect.objectContaining({ from: "submitted", to: "submitted" }),
+    ]);
+  });
+
+  it("validates configured form and file responses", () => {
+    expect(() =>
+      validateTaskSubmissionResponse(
+        {
+          fields: [
+            {
+              id: "field_name",
+              options: [],
+              required: true,
+              type: "text",
+            },
+          ],
+          kind: "form",
+        },
+        {
+          answers: [{ fieldId: "field_name", value: "  " }],
+          kind: "form",
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "invalid_response" }));
+    expect(() =>
+      validateTaskSubmissionResponse(
+        { kind: "file", maxFiles: 1 },
+        {
+          acknowledged: true,
+          fileIds: ["file_one", "file_two"],
+          kind: "file",
+          notes: "",
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "invalid_response" }));
+  });
+
   it("keeps approval-required submissions outstanding until approval", () => {
     const initial = assignment({ approvalRequired: true });
     const submitted = transitionTaskAssignment(initial, {
@@ -296,7 +355,7 @@ describe("task assignment transitions", () => {
       at: "2026-08-10T19:00:00.000Z",
       commandId: "command_approve",
       expectedVersion: 2,
-      reason: null,
+      reason: "Reviewed the submitted response.",
       to: "approved",
     });
     expect(approved.history).toEqual([

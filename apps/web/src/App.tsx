@@ -18,6 +18,16 @@ const SpeakerPortal = lazy(() =>
     default: module.SpeakerPortal,
   })),
 );
+const OrganizerTaskFixture = lazy(() =>
+  import("./tasks/TaskCompletionWorkspace").then((module) => ({
+    default: module.OrganizerTaskReviewWorkspace,
+  })),
+);
+const ProductionOrganizerTaskPage = lazy(() =>
+  import("./tasks/ProductionTaskCompletionWorkspace").then((module) => ({
+    default: module.ProductionOrganizerTaskPage,
+  })),
+);
 const PublicSchedule = lazy(() =>
   import("./public/PublicSchedule").then((module) => ({
     default: module.PublicSchedule,
@@ -41,6 +51,10 @@ const AuthScreen = lazy(() =>
 
 export function App() {
   let route;
+  const organizerTaskRoute =
+    /^\/app\/([^/]+)\/people\/[^/]+\/tasks\/([^/]+)\/?$/.exec(
+      window.location.pathname,
+    );
 
   if (window.location.pathname.startsWith("/auth/")) {
     route = <AuthScreen />;
@@ -59,6 +73,8 @@ export function App() {
         fixtureView="task"
       />
     );
+  } else if (window.location.pathname.startsWith("/fixtures/organizer-task/")) {
+    route = <OrganizerTaskFixture />;
   } else if (window.location.pathname.startsWith("/fixtures/agenda/")) {
     const fixtureState = window.location.pathname.split("/").at(-1);
     route =
@@ -146,6 +162,13 @@ export function App() {
       );
   } else if (window.location.pathname.startsWith("/review/")) {
     route = <ReviewerWorkspace />;
+  } else if (organizerTaskRoute?.[1] && organizerTaskRoute[2]) {
+    route = (
+      <ProductionOrganizerTaskPage
+        assignmentId={organizerTaskRoute[2]}
+        eventKey={organizerTaskRoute[1]}
+      />
+    );
   } else if (window.location.pathname.startsWith("/portal/")) {
     route = <SpeakerPortal />;
   } else if (/^\/e\/[^/]+\/cfp\/?$/.test(window.location.pathname)) {
