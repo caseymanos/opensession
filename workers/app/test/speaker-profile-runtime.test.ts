@@ -514,5 +514,79 @@ describe.sequential("speaker profile runtime", () => {
     const publicHeadshot = await runtime.fetch(origin + (headshotUrl ?? ""));
     expect(publicHeadshot.status).toBe(200);
     expect(publicHeadshot.headers.get("Content-Type")).toBe("image/png");
+
+    const scheduleResponse = await runtime.fetch(
+      origin + "/api/v1/public/events/open-session/schedule",
+    );
+    expect(scheduleResponse.status).toBe(200);
+    const committedSchedule: unknown = await scheduleResponse.json();
+    await env.DB.prepare(
+      `INSERT INTO schedule_publications (
+         organization_id, event_id, publication_version, schedule_version,
+         snapshot_id, command_id, schedule_snapshot_json,
+         public_projection_json, snapshot_sha256, published_at, created_at
+       ) VALUES ('org_one', 'evt_one', 1, 1, 'snapshot_public_one',
+         'publish_public_one', '{}', ?, ?, ?, ?)`,
+    )
+      .bind(
+        JSON.stringify(committedSchedule),
+        "c".repeat(64),
+        timestamp,
+        timestamp,
+      )
+      .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO p_contacts (
+           id, organization_id, email_normalized, display_name, title, company,
+           bio, social_json, profile_publication_state, source_record_id,
+           source_version, source_content_hash, projected_at
+         ) VALUES ('contact_late', 'org_one', 'late@example.test',
+           'Late Speaker', 'Staff Engineer', 'After Publish',
+           'A profile assigned after publication.', '{}', 'published',
+           'rec_contacts_late', 1, ?, '2026-08-11T12:05:00.000Z')`,
+      ).bind(hash),
+      env.DB.prepare(
+        `INSERT INTO p_event_contacts (
+           id, organization_id, event_id, contact_id, roles_json, portal_state,
+           source_record_id, source_version, source_content_hash, projected_at
+         ) VALUES ('event_contact_late', 'org_one', 'evt_one', 'contact_late',
+           '["speaker"]', 'active', 'rec_event_contacts_late', 1, ?,
+           '2026-08-11T12:05:00.000Z')`,
+      ).bind(hash),
+      env.DB.prepare(
+        `INSERT INTO p_session_participants (
+           id, organization_id, event_id, session_id, contact_id, role,
+           sort_order, confirmed_state, source_record_id, source_version,
+           source_content_hash, projected_at
+         ) VALUES ('participant_late', 'org_one', 'evt_one', 'session_one',
+           'contact_late', 'speaker', 3, 'confirmed', 'rec_participant_late',
+           1, ?, '2026-08-11T12:05:00.000Z')`,
+      ).bind(hash),
+    ]);
+
+    const afterParticipantDrift = await runtime.fetch(
+      origin + "/api/v1/public/events/open-session/speakers",
+    );
+    expect(afterParticipantDrift.status).toBe(200);
+    expect(afterParticipantDrift.headers.get("ETag")).toBe(
+      publicResponse.headers.get("ETag"),
+    );
+    const driftBody = (await afterParticipantDrift.json()) as {
+      speakers: { name: string; sessionIds: string[] }[];
+      sessions: { id: string; speakers: { name: string }[] }[];
+    };
+    expect(driftBody.speakers).toEqual([
+      expect.objectContaining({
+        name: "Sam Speaker",
+        sessionIds: ["session-one"],
+      }),
+    ]);
+    expect(driftBody.sessions).toEqual([
+      expect.objectContaining({
+        id: "session-one",
+        speakers: [expect.objectContaining({ name: "Sam Speaker" })],
+      }),
+    ]);
   });
 });
