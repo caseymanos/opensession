@@ -8,6 +8,7 @@ export * from "./calendar";
 export * from "./speaker-profile";
 export * from "./cfp-forms";
 export * from "./public-api";
+export * from "./reviews";
 
 export const healthResponseSchema = z.object({
   environment: z.enum(["local", "preview", "production"]),

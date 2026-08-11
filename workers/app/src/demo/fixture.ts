@@ -447,12 +447,79 @@ const submissionDetails = submissions.flatMap((submission, index) => {
 });
 
 const rubricId = "rubric_program_quality";
+const rubricCriteriaSnapshot = [
+  {
+    guidance: "Does this serve working AI engineers?",
+    id: "criterion_relevance",
+    label: "Audience relevance",
+    weight: 40,
+  },
+  {
+    guidance: "Are the lessons concrete and reusable?",
+    id: "criterion_practicality",
+    label: "Practical value",
+    weight: 40,
+  },
+  {
+    guidance: "Does this add a distinct point of view?",
+    id: "criterion_originality",
+    label: "Originality",
+    weight: 20,
+  },
+];
+const rubricSnapshot = {
+  criteria: rubricCriteriaSnapshot,
+  id: rubricId,
+  name: "Program quality",
+  version: 2,
+};
+const reviewerGroupDefinitions = [
+  [
+    "group-ai-engineering",
+    "AI Engineering reviewers",
+    "ai-engineering",
+    ["event_contact_reviewer_01", "event_contact_reviewer_02"],
+  ],
+  [
+    "group-evaluation",
+    "Evaluation reviewers",
+    "evaluation",
+    ["event_contact_reviewer_02", "event_contact_reviewer_03"],
+  ],
+  [
+    "group-infrastructure",
+    "Infrastructure reviewers",
+    "infrastructure",
+    ["event_contact_reviewer_01", "event_contact_reviewer_03"],
+  ],
+  [
+    "group-product",
+    "Product reviewers",
+    "product-track-d",
+    [
+      "event_contact_reviewer_01",
+      "event_contact_reviewer_02",
+      "event_contact_reviewer_03",
+    ],
+  ],
+] as const;
 const reviewEntities: DemoSeedEntity[] = [
   entity("rubrics", rubricId, {
+    "Criteria snapshot JSON": json(rubricCriteriaSnapshot),
     Event: links(demoEventId),
     Name: "Program quality",
     Status: "active",
+    Version: 2,
   }),
+  ...reviewerGroupDefinitions.map(([id, name, routeKey, memberIds]) =>
+    entity("reviewer_groups", id, {
+      Event: links(demoEventId),
+      "Member IDs JSON": json(memberIds),
+      Name: name,
+      "Route key": routeKey,
+      Status: "active",
+    }),
+  ),
   entity("criteria", "criterion_relevance", {
     Guidance: "Does this serve working AI engineers?",
     Label: "Audience relevance",
@@ -490,11 +557,19 @@ const reviewEntities: DemoSeedEntity[] = [
   ].flatMap((status, index) => {
     const number = String(index + 1).padStart(2, "0");
     const reviewerNumber = String((index % 3) + 1).padStart(2, "0");
+    const reviewerGroupId =
+      reviewerGroupDefinitions[index % reviewerGroupDefinitions.length]?.[0] ??
+      "group-ai-engineering";
     const reviewId = `review_${number}`;
     const review = entity("reviews", reviewId, {
+      "Assigned at": `2026-07-${String(index + 20).padStart(2, "0")}T16:00:00.000Z`,
       Conflict: index === 3,
       "Conflict note": index === 3 ? "Prior collaborator" : "",
+      "Reviewer group ID": reviewerGroupId,
       "Reviewer membership": links(`event_contact_reviewer_${reviewerNumber}`),
+      "Rubric snapshot JSON": json(rubricSnapshot),
+      "Rubric version": 2,
+      "Scoring required": index !== 3,
       Status: status,
       Submission: links(`submission_${number}`),
       "Submitted at":

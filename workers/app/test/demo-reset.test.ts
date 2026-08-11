@@ -39,6 +39,7 @@ const fullCapabilities: DemoSeedAuthorityCapabilities = {
     "submissions",
     "submission_answers",
     "submission_participants",
+    "reviewer_groups",
     "rubrics",
     "criteria",
     "reviews",

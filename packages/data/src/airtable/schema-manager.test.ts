@@ -59,14 +59,14 @@ function completeSchema(): AirtableBaseSchema {
 
 describe("Airtable schema", () => {
   it("defines every authoritative table with lifecycle fields", () => {
-    expect(expectedAirtableSchema.version).toBe(7);
-    expect(expectedAirtableSchema.tables).toHaveLength(30);
+    expect(expectedAirtableSchema.version).toBe(8);
+    expect(expectedAirtableSchema.tables).toHaveLength(31);
     expect(
       expectedAirtableSchema.tables.reduce(
         (count, table) => count + table.fields.length,
         0,
       ),
-    ).toBe(448);
+    ).toBe(467);
     expect(
       expectedAirtableSchema.tables.every(
         (table) =>
@@ -111,7 +111,7 @@ describe("Airtable schema", () => {
     const report = compareAirtableSchema(schema);
     const index = createAirtableSchemaIndex(schema);
 
-    expect(report).toMatchObject({ ready: true, schemaVersion: 7 });
+    expect(report).toMatchObject({ ready: true, schemaVersion: 8 });
     expect(report.issues).toEqual([]);
     expect(index.tables.get("events")?.id).toBe("tbl_1");
   });
@@ -695,7 +695,7 @@ describe("Airtable schema", () => {
     );
 
     expect(report.ready).toBe(true);
-    expect(schema.tables).toHaveLength(30);
+    expect(schema.tables).toHaveLength(31);
     expect(firstLink).toBeGreaterThan(lastNonLink);
   });
 

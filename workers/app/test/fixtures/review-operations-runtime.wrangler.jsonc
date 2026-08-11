@@ -1,0 +1,78 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-review-operations-runtime",
+  "main": "review-operations-runtime.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "exports": {
+    "BaseAuthority": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" }],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "review-operations-fixture",
+      "database_id": "local",
+      "migrations_dir": "../../../../migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "review-operations-uploads-fixture",
+    },
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "EMAIL_QUEUE", "queue": "review-operations-email-fixture" },
+      {
+        "binding": "PROJECTION_REPAIR_QUEUE",
+        "queue": "review-operations-repair-fixture",
+      },
+      {
+        "binding": "WEBHOOK_DELIVERY_QUEUE",
+        "queue": "review-operations-webhook-fixture",
+      },
+      {
+        "binding": "INTEGRATION_EXPORT_QUEUE",
+        "queue": "review-operations-integration-fixture",
+      },
+    ],
+  },
+  "services": [
+    {
+      "binding": "AIRTABLE_UPSTREAM",
+      "service": "opensession-airtable-authority-mock",
+    },
+  ],
+  "vars": {
+    "APP_ENV": "local",
+    "AIRTABLE_BASE_ID": "appAuthorityFixture",
+    "AIRTABLE_PAT": "fixture-credential",
+    "AIRTABLE_REQUESTS_PER_SECOND": "1000",
+    "AUTHORITY_LEASE_MILLISECONDS": "20000",
+    "AUTHORITY_RECOVERY_DELAY_MILLISECONDS": "250",
+    "AUTH_HASH_PEPPER": "00000000000000000000000000000000",
+    "EMAIL_DELIVERY_CONFIG": {
+      "mode": "sink",
+      "allowlist": [],
+      "authFrom": "OpenSession <auth@local.opensession.test>",
+      "authReplyTo": "hello@local.opensession.test",
+    },
+    "FEATURE_FLAGS": {
+      "ai": false,
+      "embeds": false,
+      "email": false,
+      "integrations": false,
+      "webhooks": false,
+      "writes": true,
+    },
+    "RESEND_API_KEY": "fixture-disabled",
+    "RESEND_WEBHOOK_SECRET": "fixture-disabled",
+    "TURNSTILE_HOSTNAMES": "localhost,127.0.0.1",
+    "TURNSTILE_SECRET": "1x0000000000000000000000000000000AA",
+    "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+  },
+}

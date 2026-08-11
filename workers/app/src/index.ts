@@ -41,6 +41,7 @@ import { registerDemoRoutes } from "./demo/routes.js";
 import { registerSpeakerPortalRoutes } from "./portal/routes";
 import { registerSpeakerProfileRoutes } from "./speaker-profile/routes.js";
 import { registerOrganizerSubmissionRoutes } from "./organizer-submissions/routes.js";
+import { registerReviewOperationsRoutes } from "./reviews/routes.js";
 import {
   registerApiKeyManagementRoutes,
   registerPublicApiDocumentationRoutes,
@@ -321,6 +322,7 @@ registerDemoRoutes(app);
 registerCampaignRoutes(app);
 registerEmailTemplateRoutes(app);
 registerOrganizerSubmissionRoutes(app);
+registerReviewOperationsRoutes(app);
 registerEmailWebhookRoutes(app);
 registerPublicApiRoutes(app);
 registerPublicApiDocumentationRoutes(app);

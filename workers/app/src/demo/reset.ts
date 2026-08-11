@@ -52,6 +52,7 @@ export const currentRal34DemoCapabilities: DemoSeedAuthorityCapabilities = {
     "submissions",
     "submission_answers",
     "submission_participants",
+    "reviewer_groups",
     "rubrics",
     "criteria",
     "reviews",

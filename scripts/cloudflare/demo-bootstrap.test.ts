@@ -21,7 +21,7 @@ const manifest = {
   assetCount: 4,
   digest: "a".repeat(64),
   eventId: "evt_demo",
-  operationCount: 134,
+  operationCount: 138,
   organizationId: "org_demo",
   schemaVersion: 1 as const,
   seedVersion: 1,

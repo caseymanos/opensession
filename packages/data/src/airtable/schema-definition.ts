@@ -1,4 +1,4 @@
-export const AIRTABLE_SCHEMA_VERSION = 7;
+export const AIRTABLE_SCHEMA_VERSION = 8;
 
 export type AirtableTableKey =
   | "organizations"
@@ -12,6 +12,7 @@ export type AirtableTableKey =
   | "submission_answers"
   | "submission_participants"
   | "submission_notes"
+  | "reviewer_groups"
   | "rubrics"
   | "criteria"
   | "reviews"
@@ -377,7 +378,16 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
     table("rubrics", "Rubrics", [
       link("Event", "events"),
       text("Name"),
+      number("Version"),
+      longText("Criteria snapshot JSON"),
       select("Status", ["draft", "active", "archived"]),
+    ]),
+    table("reviewer_groups", "Reviewer Groups", [
+      link("Event", "events"),
+      text("Name"),
+      text("Route key"),
+      longText("Member IDs JSON"),
+      select("Status", ["active", "archived"]),
     ]),
     table("criteria", "Criteria", [
       link("Rubric", "rubrics"),
@@ -391,6 +401,11 @@ export const expectedAirtableSchema: AirtableSchemaSpec = {
     table("reviews", "Reviews", [
       link("Submission", "submissions"),
       link("Reviewer membership", "event_contacts"),
+      text("Reviewer group ID"),
+      number("Rubric version"),
+      longText("Rubric snapshot JSON"),
+      checkbox("Scoring required"),
+      dateTime("Assigned at"),
       select("Status", statuses.review),
       checkbox("Conflict"),
       longText("Conflict note"),

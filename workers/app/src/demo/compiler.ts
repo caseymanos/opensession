@@ -54,6 +54,7 @@ const linkTargets: Partial<
   messages: { Campaign: "campaigns", Contact: "contacts" },
   resources: { Event: "events" },
   review_scores: { Criterion: "criteria", Review: "reviews" },
+  reviewer_groups: { Event: "events" },
   reviews: {
     "Reviewer membership": "event_contacts",
     Submission: "submissions",
