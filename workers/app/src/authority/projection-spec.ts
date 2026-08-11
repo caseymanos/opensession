@@ -73,6 +73,16 @@ const json = (
   kind: `json_${shape}`,
   required: defaultValue === undefined,
 });
+const optionalJson = (
+  field: string,
+  column: string,
+  shape: "array" | "object" | "value",
+): ProjectionFieldSpec => ({
+  column,
+  field,
+  kind: `json_${shape}`,
+  required: false,
+});
 const multi = (field: string, column: string): ProjectionFieldSpec => ({
   column,
   defaultValue: "[]",
@@ -272,10 +282,23 @@ export const projectionSpecs: Readonly<
     fields: [
       link("Event", "event_id", "events"),
       text("Name", "name", true),
+      number("Version", "rubric_version", true, 1),
+      json("Criteria snapshot JSON", "criteria_snapshot_json", "array", "[]"),
       text("Status", "status", true),
     ],
     scope: "event",
     table: "p_rubrics",
+  },
+  reviewer_groups: {
+    fields: [
+      link("Event", "event_id", "events"),
+      text("Name", "name", true),
+      text("Route key", "route_key", true),
+      json("Member IDs JSON", "member_ids_json", "array", "[]"),
+      text("Status", "status", true),
+    ],
+    scope: "event",
+    table: "p_reviewer_groups",
   },
   criteria: {
     fields: [
@@ -294,6 +317,11 @@ export const projectionSpecs: Readonly<
     fields: [
       link("Submission", "submission_id", "submissions"),
       link("Reviewer membership", "reviewer_id", "event_contacts"),
+      text("Reviewer group ID", "reviewer_group_id"),
+      number("Rubric version", "rubric_version"),
+      optionalJson("Rubric snapshot JSON", "rubric_snapshot_json", "object"),
+      boolean("Scoring required", "scoring_required"),
+      text("Assigned at", "assigned_at"),
       text("Status", "status", true),
       boolean("Conflict", "conflict"),
       text("Conflict note", "conflict_note"),
@@ -546,6 +574,7 @@ export const projectionTableOrder: readonly AirtableTableKey[] = [
   "submission_answers",
   "submission_participants",
   "submission_notes",
+  "reviewer_groups",
   "rubrics",
   "criteria",
   "reviews",

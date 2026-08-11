@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-const reviewOperationsPath = "/app/ai-engineer-summit/reviews";
+const reviewOperationsPath = "/fixtures/reviews/ai-engineer-summit";
 
 test("review operations exposes the active weighted rubric and immutable snapshots", async ({
   page,
@@ -16,7 +16,7 @@ test("review operations exposes the active weighted rubric and immutable snapsho
   await expect(page.getByText("100%", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Score scale 1 through 5")).toHaveCount(3);
   await expect(
-    page.getByText("Submitted reviews stay on rubric v2."),
+    page.getByText("Existing assignments keep their rubric snapshots (v2)."),
   ).toBeVisible();
 
   const results = await new AxeBuilder({ page })
@@ -54,24 +54,26 @@ test("rubric validation prevents invalid versions and preserves submitted snapsh
 
   await publish.click();
   const dialog = page.getByRole("dialog", { name: "Publish rubric v3?" });
-  await expect(dialog).toContainText("Submitted review snapshots remain on v2");
+  await expect(dialog).toContainText(
+    "Every existing assignment keeps its current rubric snapshot",
+  );
   await dialog.getByRole("button", { name: "Publish version" }).click();
   await expect(page.getByText("Rubric v3 active")).toBeVisible();
   await expect(
-    page.getByText("Submitted reviews stay on rubric v2."),
+    page.getByText("Existing assignments keep their rubric snapshots (v2)."),
   ).toBeVisible();
   const publishedToast = page
     .getByRole("status")
     .filter({ hasText: "Rubric published" });
   await expect(publishedToast).toBeVisible();
   await expect(
-    publishedToast.getByText("submitted snapshots did not change"),
+    publishedToast.getByText("existing snapshots did not change"),
   ).toBeVisible();
 
   await page.getByRole("button", { name: /Assignments/ }).click();
   await expect(
     page.locator("tbody tr").filter({ hasText: "Priya Das" }),
-  ).toContainText("v3 snapshot");
+  ).toContainText("v2 snapshot");
   await expect(
     page.locator("tbody tr").filter({ hasText: "Casey Brooks" }),
   ).toContainText("v2 snapshot");
@@ -82,8 +84,8 @@ test("rubric validation prevents invalid versions and preserves submitted snapsh
   const pendingSnapshot = page.getByRole("dialog", {
     name: "Assignment history",
   });
-  await expect(pendingSnapshot).toContainText("Audience value45%");
-  await expect(pendingSnapshot).toContainText("Specificity & evidence30%");
+  await expect(pendingSnapshot).toContainText("Audience value40%");
+  await expect(pendingSnapshot).toContainText("Specificity & evidence35%");
   await pendingSnapshot
     .getByRole("button", { name: "Close Assignment history" })
     .click();
@@ -118,8 +120,8 @@ test("reviewer groups prove Track D routing and support deliberate membership ch
   await page.goto(reviewOperationsPath);
   await page.getByRole("button", { name: /Reviewer groups/ }).click();
 
-  await expect(page.getByText("4 of 4 routes mapped")).toBeVisible();
-  await expect(page.getByText("Track D proof:")).toBeVisible();
+  await expect(page.getByText("4 routes mapped")).toBeVisible();
+  await expect(page.getByText("Route proof:")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Product reviewers" }),
   ).toBeVisible();

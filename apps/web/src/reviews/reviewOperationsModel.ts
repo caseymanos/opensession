@@ -8,9 +8,12 @@ export interface RubricCriterionView {
 export interface ReviewerGroupView {
   color: string;
   id: string;
+  memberIds?: string[];
   members: string[];
   name: string;
   route: string;
+  routeKey?: string;
+  sourceVersion?: number;
 }
 
 export type AssignmentStatus =
@@ -20,11 +23,24 @@ export interface ReviewAssignmentView {
   audit: { actor: string; detail: string; time: string }[];
   id: string;
   proposalReference: string;
+  submissionId?: string;
   proposalTitle: string;
   rubricSnapshot: RubricCriterionView[];
   reviewer: string;
+  reviewerGroupId?: string;
+  reviewerId?: string;
   rubricVersion: number;
+  sourceVersion?: number;
   status: AssignmentStatus;
+  track: string;
+}
+
+export interface ReviewProposalView {
+  proposalReference: string;
+  proposalTitle: string;
+  reviewerGroupId?: string;
+  routeKey?: string;
+  submissionId?: string;
   track: string;
 }
 

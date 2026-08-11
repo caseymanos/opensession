@@ -87,6 +87,7 @@ function readMigrationStatements(): string[] {
     "0018_schedule_publication.sql",
     "0019_speaker_profiles.sql",
     "0020_versioned_cfp_forms.sql",
+    "0022_review_operations.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -457,7 +458,7 @@ describe.sequential("RAL-34 completed authority data plane", () => {
         table_key: string;
       }[];
     };
-    expect(sourceState.sources).toHaveLength(29);
+    expect(sourceState.sources).toHaveLength(30);
     expect(
       sourceState.sources.reduce((sum, row) => sum + row.record_count, 0),
     ).toBe(plan.operations.length);
