@@ -49,6 +49,9 @@ importers:
       globals:
         specifier: ^17.4.0
         version: 17.9.0
+      ical.js:
+        specifier: 2.2.1
+        version: 2.2.1
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -95,6 +98,12 @@ importers:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
 
+  packages/calendar:
+    dependencies:
+      "@sessionbox-killer/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/contracts:
     dependencies:
       "@sessionbox-killer/domain":
@@ -131,6 +140,9 @@ importers:
 
   workers/app:
     dependencies:
+      "@sessionbox-killer/calendar":
+        specifier: workspace:*
+        version: link:../../packages/calendar
       "@sessionbox-killer/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -1800,6 +1812,12 @@ packages:
     resolution:
       {
         integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==,
+      }
+
+  ical.js@2.2.1:
+    resolution:
+      {
+        integrity: sha512-yK/UlPbEs316igb/tjRgbFA8ZV75rCsBJp/hWOatpyaPNlgw0dGDmU+FoicOcwX4xXkeXOkYiOmCqNPFpNPkQg==,
       }
 
   ignore@5.3.2:
@@ -3553,6 +3571,8 @@ snapshots:
   hono@4.13.1: {}
 
   html-escaper@2.0.2: {}
+
+  ical.js@2.2.1: {}
 
   ignore@5.3.2: {}
 

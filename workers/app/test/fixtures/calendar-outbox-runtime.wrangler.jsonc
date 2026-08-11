@@ -1,0 +1,15 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "opensession-calendar-outbox-runtime",
+  "main": "calendar-outbox-runtime.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "calendar-outbox-fixture",
+      "database_id": "local",
+      "migrations_dir": "../../../../migrations",
+    },
+  ],
+}
