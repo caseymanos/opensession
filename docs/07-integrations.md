@@ -14,9 +14,9 @@ Airtable is the authoritative store for event-program business records and must 
 
 - Dedicated production base and separate preview/test base.
 - Personal access token with least privilege to only required bases.
-- Server-side secrets: `AIRTABLE_PAT`, `AIRTABLE_BASE_ID`.
-- `airtable:schema:check` compares expected tables/fields to the base without destructive mutation.
-- `airtable:bootstrap` may create missing development tables/fields only after explicit environment confirmation.
+- Server-only runtime inputs: secret `AIRTABLE_PAT` and non-secret environment-specific `AIRTABLE_BASE_ID`; generated/owner-specific values stay out of public source.
+- `pnpm --filter @sessionbox-killer/data airtable schema:check --environment <preview|production>` compares schema v10 to the selected base without mutation.
+- `pnpm --filter @sessionbox-killer/data airtable schema:bootstrap --environment <preview|production> --apply` may add missing managed tables/fields only after explicit environment confirmation.
 
 ### Runtime contract
 
@@ -24,11 +24,11 @@ Airtable is the authoritative store for event-program business records and must 
 - Batch record operations where supported; honor `Retry-After` with jitter.
 - Stable internal ID is stored in an Airtable field and is the app's public identity; record IDs are implementation metadata.
 - Write `Source version` and `Updated at`; projection consumes only newer versions.
-- Nightly and on-demand reconciliation reports created/updated/missing/divergent rows.
+- `BaseAuthority` exposes webhook-cursor and bounded full-scan reconciliation that reports created/updated/missing/divergent rows. The current public config does not claim a provider webhook or reconciliation Cron; release operations invoke and evidence the full scan explicitly.
 
-### Health proof
+### Operator health proof
 
-Integrations page shows base identifier suffix, schema version, last successful read/write probe, projection lag, queued repairs, and reconciliation result—never the token.
+Release evidence records only a safe base suffix, schema version, last successful synthetic probe, projection lag, queued-repair count, and reconciliation result—never the token or generated base ID. The authenticated integration surface may render those safe fields when the corresponding runtime ticket is enabled; provider fixtures are not live proof.
 
 ## Resend/email provider
 
@@ -104,33 +104,31 @@ Deletion is out of scope. Removed source records become warnings/manual review s
 
 ### Shape
 
-- Base: `/api/v1`; JSON, UTC ISO timestamps, stable internal IDs.
-- Auth: opaque API key in `Authorization: Bearer`; public published endpoints may be anonymous.
+- Base: `/api/v1`; JSON, RFC 3339 timestamps, stable internal IDs.
+- Auth: opaque API key in `Authorization: Bearer`. The v1 catalog is authenticated; anonymous CFP/schedule/speaker routes are separate public product contracts.
 - Pagination: cursor with default 25/max 100.
 - Errors: problem-details-like `{type,title,status,code,detail,request_id,errors?}`.
-- Mutations accept `Idempotency-Key`; conflicting replay returns original response or 409 for different payload.
+- The submission lifecycle `PATCH` requires `Idempotency-Key` and `If-Match`; a changed replay or stale version fails closed.
 - Optimistic concurrency via ETag/`If-Match` for mutable singular resources.
 
-### Initial resource surface
+### Current generated resource surface
 
 | Method | Route | Scope |
 |---|---|---|
-| GET | `/events`, `/events/:id` | `events:read` |
-| GET/POST/PATCH | `/events/:id/submissions[/…]` | `submissions:read|write` |
-| GET/POST/PATCH | `/events/:id/sessions[/…]` | `sessions:read|write` |
-| GET | `/events/:id/speakers` | `speakers:read` |
-| GET/POST/PATCH | `/events/:id/tasks[/…]` | `tasks:read|write` |
-| GET | `/events/:id/schedule` | public when published |
-| GET | `/public/events/:slug/cfp` | anonymous, projected published CFP only |
-| POST | `/events/:id/exports/accelevents` | `integrations:write` |
-| GET | `/events/:id/export-runs/:runId` | `integrations:read` |
-| GET/POST | `/events/:id/webhooks` | `webhooks:read|write` |
+| GET | `/events`, `/events/:eventId` | `events:read` |
+| GET | `/events/:eventId/submissions`, `/events/:eventId/submissions/:submissionId` | `submissions:read` |
+| PATCH | `/events/:eventId/submissions/:submissionId` | `submissions:write` |
+| GET | `/events/:eventId/sessions`, `/events/:eventId/sessions/:sessionId` | `sessions:read` |
+| GET | `/events/:eventId/speakers`, `/events/:eventId/speakers/:speakerId` | `speakers:read` |
+| GET | `/events/:eventId/tasks`, `/events/:eventId/tasks/:taskId` | `tasks:read` |
+| GET | `/events/:eventId/schedule` | `schedule:read` |
+| GET | `/events/:eventId/export-runs`, `/events/:eventId/export-runs/:runId` | `integrations:read` |
 
-The OpenAPI file is generated from runtime schemas, validated in CI, served at `/openapi.json`, and rendered at `/docs/api`. Seeded curl examples must execute in production smoke tests.
+The OpenAPI file is generated from the same runtime catalog that registers handlers, validated in CI, served at `/openapi.json`, and rendered at `/docs/api`. The catalog currently produces 13 paths. The executable local curl exchange is in [`examples/public-api-v1/local-curl-transcript.md`](../examples/public-api-v1/local-curl-transcript.md); production smoke checks the public document/docs but never exposes a plaintext key.
 
 The public CFP configuration returns presentation-safe event, form, field, conditional-rule, track-label, and format data. Canonical route keys and default reviewer-group IDs remain server-only. The final submission handler must resolve them again from authoritative policy and must never let a caller select an internal queue by editing the request.
 
-## Outgoing webhooks
+## Outgoing webhooks (gated contract)
 
 - Initial events: submission submitted/status changed, session changed/scheduled/published, task completed/overdue, speaker readiness changed.
 - Signature: `t=<unix>,v1=<hex HMAC-SHA256>` over `timestamp + '.' + rawBody`.

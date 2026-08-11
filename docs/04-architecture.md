@@ -1,12 +1,23 @@
 # Cloudflare/Airtable architecture
 
-Status: foundation implemented; product workflows remain in progress. Architecture should be simplified only if the six firm workflows remain fully provable.
+Status: current through Airtable schema v10 and D1 migration `0025_task_reminder_workflows.sql` at the 2026-08-11 release-candidate base. Provider and optional integration gates are called out explicitly below.
 
 ## Decision summary
 
-Use a TypeScript monorepo deployed as one Cloudflare Worker with static assets and a Hono-style HTTP boundary. React/Vite powers the organizer, reviewer, speaker, and public clients. Airtable is the authoritative business-data store; D1 holds authentication/operational state and an indexed edge read projection; R2 stores private user files. Cloudflare Workflows and Queues own reminders, emails, projection repair, and integrations.
+Use a TypeScript monorepo deployed as one Cloudflare Worker with static assets and a Hono HTTP boundary. React/Vite powers the organizer, reviewer, speaker, and public clients. Airtable is the authoritative business-data store; D1 holds authentication/operational state and an indexed edge read projection; R2 stores private user files. A task-reminder Workflow and Queue consumers own implemented asynchronous work; additional provider exports/webhook consumers remain feature-gated.
 
 This makes the Airtable bonus real while keeping public pages, dashboard queries, and conflict detection fast and reliable.
+
+## Current runtime inventory
+
+- One Worker/static-assets deployment per environment.
+- `BaseAuthority`: per-environment/base SQLite Durable Object and the only Airtable writer.
+- `AgendaCoordinator`: per-event SQLite Durable Object for schedule serialization.
+- `TaskReminderWorkflow`: the configured Workflow binding.
+- Active Queue consumers: email delivery and projection repair, each with an environment-specific dead-letter queue.
+- Reserved producer bindings: webhook delivery and integration export; they are not production-complete provider claims.
+- Two Cron triggers: daily bounded operational retention and hourly email queue-handoff recovery while email is enabled.
+- Generated public API: 13 authenticated v1 paths plus `/openapi.json` and `/docs/api`.
 
 ## Logical components
 
@@ -57,7 +68,7 @@ Constraints:
 
 - Airtable Web API limit is 5 requests/second per base; every app read/write is routed through one Durable Object keyed by environment and base ID. That object owns one long-lived client, request limiter, 429 cooldown, and command store.
 - Per-event Durable Objects may enforce event-local invariants, but they call the base authority object and never call Airtable directly.
-- Personal access token and base ID are server-only Wrangler secrets.
+- The personal access token is a server-only Wrangler secret. The base ID is non-secret environment configuration, but generated/owner-specific values stay in the ignored rendered config and never in public source.
 - Writes include idempotency/source IDs so retries do not create duplicates.
 - Multi-record commands use an operation record and compensating/reconciliation workflow; never pretend Airtable is transactional.
 
@@ -69,7 +80,7 @@ Projection rules:
 
 - A successful command durably records the Airtable result in the base authority object before attempting the atomic D1 projection/idempotency/audit/outbox batch.
 - If D1 fails after Airtable succeeds, the repair state remains in the object that survived the failed D1 call. The response is committed-with-repair, and an object alarm retries D1 convergence without replaying Airtable.
-- Airtable webhook cursors trigger projection repair for organizer edits; a scheduled full scan remains the missed-webhook safety net. Reconciliation compares canonical managed-content hashes, not only app-written source versions.
+- `BaseAuthority` implements webhook-cursor ingestion and bounded full-scan reconciliation for organizer edits. The current public config does not attach an Airtable webhook or a reconciliation Cron, so release operations must invoke and evidence reconciliation explicitly; a future trigger must use these same methods. Reconciliation compares canonical managed-content hashes, not only app-written source versions.
 - D1 projection rows include `source_record_id`, `source_version`, `source_content_hash`, provider change cursor/time, and `projected_at`.
 
 ### R2: binary objects
@@ -111,21 +122,16 @@ Lifecycle changes and notes use one versioned command envelope. A D1 receipt dur
 
 ### Cloudflare Workflows
 
-- `ReminderWorkflow`: wait until reminder time, re-query incomplete assignments, enqueue one email per eligible recipient, record skipped reasons.
-- `DecisionWorkflow`: generate portal/task/session side effects and communication after acceptance/decline.
-- `CalendarWorkflow`: send/update/cancel stable-UID calendar invitation.
-- `AcceleventsExportWorkflow`: validate, dry-run, reconcile, export, checkpoint, retry.
-- `ProjectionReconcileWorkflow`: repair D1 read model from Airtable.
-- `DemoResetWorkflow`: guarded teardown/reseed of the demo event only.
+`TaskReminderWorkflow` is the configured runtime Workflow. It freezes a bounded reminder plan, waits until the reminder time, re-queries incomplete assignments, and hands eligible delivery intents to the durable email path with stable identities and skipped reasons.
 
-Workflows are appropriate because current Cloudflare docs support scheduled triggers, durable steps, explicit sleeps, retries, and unlimited wall time per step (subject to CPU limit).
+Decision orchestration, calendar invitation changes, projection reconciliation, and demo reset use their implemented D1/Durable Object/Queue boundaries rather than pretending that undeployed Workflow classes exist. A future Accelevents Workflow remains gated on credentialed contract proof. Any additional Workflow must be added to `workers/app/wrangler.jsonc`, generated bindings, tests, provisioning inventory, and recovery docs in the same change.
 
 ### Queues
 
 - `email-send`: provider delivery fan-out and bounded retries.
 - `projection-repair`: commands that committed in Airtable but missed D1.
-- `webhook-delivery`: signed outgoing delivery/replay.
-- `integration-export`: coalesced Accelevents changes.
+- `webhook-delivery`: reserved producer binding; consumer remains gated.
+- `integration-export`: reserved producer binding; consumer remains gated on Accelevents proof.
 
 Every message has deterministic ID and dedupe record in D1.
 

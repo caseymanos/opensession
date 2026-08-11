@@ -5,6 +5,9 @@ Forward-only D1 migrations live here. Schema tickets add numbered SQL files and 
 - `0001_operational_foundation.sql`: tenant, projection, delivery, audit, and workflow foundation.
 - `0002_auth_security.sql`: passwordless authentication and session hardening.
 - `0003_operational_observability.sql`: append-only redacted events, correlation indexes, retention controls, and aggregate metric snapshot.
+- `0003_private_uploads.sql`: private upload purpose, version, checksum, detected-type, capability, and finalize lifecycle fields. The duplicate numeric prefix is historical; lexical filename order is authoritative and both files are required.
+- `0004_email_delivery.sql`: hashed-recipient delivery state, suppression, provider webhook normalization, and operational email metrics.
+- `0005_auth_browser_binding.sql`: browser-bound magic-link exchange and replacement-link safety state.
 - `0006_authority_completion.sql`: canonical source registry, complete Airtable-owned projections, safe authority traces, and durable demo snapshot state.
 - `0007_public_abuse_protection.sql`: hashed, strict rate-limit counters for public account, draft, submission, and upload operations.
 - `0008_tenant_authority_readiness.sql`: fail-closed tenant activation readiness and versioned authority roster invalidation.
@@ -24,5 +27,18 @@ Forward-only D1 migrations live here. Schema tickets add numbered SQL files and 
 - `0022_review_operations.sql`: immutable rubric and reviewer-group snapshots, scoped assignments, and resumable review-operation receipts.
 - `0023_review_scoring.sql`: event review deadlines plus atomic draft, score, note, submit, and reopen projections.
 - `0024_review_decisions.sql`: authoritative decision snapshots for auditable organizer decisions and downstream orchestration.
+- `0025_task_reminder_workflows.sql`: durable task-reminder Workflow plans/results, eligibility snapshots, and stable delivery identities.
 
-The guarded Cloudflare deploy command applies pending remote migrations before the Worker version and Wrangler captures a D1 backup for each migration. A failed Worker deploy can therefore leave an additive migration in place; migrations must remain forward-compatible and rollback continues to mean Worker code/configuration only.
+The guarded Cloudflare deploy command applies every pending remote migration before the Worker version and Wrangler captures a D1 backup for each migration. A failed migration is rolled back while earlier successful migrations remain applied. A later Worker deploy or smoke failure can therefore leave additive schema in place; migrations must remain forward-compatible and rollback continues to mean Worker code/configuration only.
+
+Validate the complete chain against a disposable local database:
+
+```bash
+pnpm exec vitest run scripts/d1/schema.test.ts
+pnpm exec wrangler d1 migrations list DB \
+  --local --config workers/app/wrangler.jsonc
+pnpm exec wrangler d1 migrations apply DB \
+  --local --config workers/app/wrangler.jsonc
+```
+
+Before a remote change, record a D1 Time Travel bookmark in the private release system. Worker rollback never rolls back D1. Point-in-time restore is a separately approved destructive recovery operation; see [`docs/19-open-source-operator-guide.md`](../docs/19-open-source-operator-guide.md#rollback-and-disaster-recovery).

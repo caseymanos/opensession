@@ -10,10 +10,35 @@ pnpm exec vitest run workers/app/test/public-api-runtime.test.ts
 
 The fixture creates two organizations, three events, canonical submission,
 session, speaker, task and export-run projections, and event- and
-organization-scoped keys. It adds the `verifier_salt` shape only inside the
-disposable test database by applying numbered migration
-`0021_scoped_public_api_keys.sql`. The transcript does not apply a remote
-migration or make any preview or production request.
+organization-scoped keys after applying the complete migration chain through
+`0025_task_reminder_workflows.sql` to a disposable database. Migration
+`0021_scoped_public_api_keys.sql` introduces the per-key `verifier_salt` used by
+these keys. The transcript does not apply a remote migration or make any
+preview or production request.
+
+## Verify the served contract
+
+With `pnpm dev` running, these secret-free curls execute against the same
+generated document and registered handlers:
+
+```sh
+curl --fail --silent http://127.0.0.1:8787/openapi.json \
+  | jq -e '
+      .openapi == "3.1.0" and
+      .servers[0].url == "/api/v1" and
+      (.paths | length == 13)
+    '
+
+curl --fail --silent --output /dev/null \
+  http://127.0.0.1:8787/docs/api
+
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  http://127.0.0.1:8787/api/v1/events)" = 401
+```
+
+The scoped success exchanges below require one-time fixture keys, so the
+runtime test is their executable authority. The output is intentionally
+redacted and uses placeholders rather than reusable credentials.
 
 The commands below show the equivalent curl exchange. The shell variables stand
 in for one-time local secrets and should never be printed, committed, placed in

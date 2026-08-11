@@ -1,6 +1,8 @@
 # Sessionboard product research
 
-Last verified: 2026-08-08. Official product, help-center, API, supplied screenshot, and live-CFP evidence only.
+Research findings verified: 2026-08-08. Source availability and response digests recaptured: 2026-08-11T19:56:27Z. Official product, help-center, API, supplied screenshot, and live-CFP evidence only.
+
+This document is a competitive reference, not an implementation source. OpenSession code, interaction design, copy, and fixtures are original. Third-party HTML, screenshots, specifications, and proprietary assets are not redistributed in this repository.
 
 ## Product shape
 
@@ -132,13 +134,15 @@ Our bonus API should compete on clarity rather than breadth: stable v1 resources
 
 ## Primary sources
 
-Key official pages:
+The manifest records the exact requested URL, redirect-resolved URL, UTC capture time, HTTP status, and SHA-256 of the decompressed raw response bytes. Dynamic vendor pages may produce a different digest later; the digest identifies the private research snapshot used for this reference and is not a vendored-content integrity pin.
 
-- `https://www.sessionboard.com/pricing`
-- `https://www.sessionboard.com/explore-the-platform`
-- `https://learn.sessionboard.com/en/knowledge-base/6284018-create-a-session-submission-form`
-- `https://learn.sessionboard.com/en/knowledge-base/7102247-create-manage-evaluation-plans`
-- `https://learn.sessionboard.com/en/knowledge-base/6284026-build-and-manage-your-agenda`
-- `https://learn.sessionboard.com/en/knowledge-base/6284020-configure-customize-portals`
-- `https://learn.sessionboard.com/en/knowledge-base/6284057-assign-tasks`
-- `https://learn.sessionboard.com/en/knowledge-base/6949616-agenda-speaker-embeds`
+| Requested URL | Resolved URL | Captured (UTC) | Status | SHA-256 |
+|---|---|---|---:|---|
+| `https://www.sessionboard.com/pricing` | same | 2026-08-11T19:56:27Z | 200 | `da5cf412006744051bb35bc053a48653137748272798491649e491d10765a2c1` |
+| `https://www.sessionboard.com/explore-the-platform` | same | 2026-08-11T19:56:27Z | 200 | `01179bbffc313f3d426e01dfc0daa392fe261fcf02322c7085ca53fde583aa82` |
+| `https://learn.sessionboard.com/en/knowledge-base/6284018-create-a-session-submission-form` | `https://learn.sessionboard.com/sessions/submission-forms` | 2026-08-11T19:56:27Z | 200 | `44e0ac0684f008d0400f353e85de1bddf47d5a16ea348eeffd2d05b487877c75` |
+| `https://learn.sessionboard.com/en/knowledge-base/7102247-create-manage-evaluation-plans` | `https://learn.sessionboard.com/evaluations/evaluation-plans` | 2026-08-11T19:56:27Z | 200 | `8906a4e6e5408eb4375c96e3107c4f8ec98a44ed91385ff21cf7184d81d4ab52` |
+| `https://learn.sessionboard.com/en/knowledge-base/6284026-build-and-manage-your-agenda` | `https://learn.sessionboard.com/sessions/agenda` | 2026-08-11T19:56:27Z | 200 | `b2af3b445e0d60cc8fe8ca4a1ec12853cb1e95c3a421fd46f31082ef8893b2cf` |
+| `https://learn.sessionboard.com/en/knowledge-base/6284020-configure-customize-portals` | `https://learn.sessionboard.com/portals/portals-101` | 2026-08-11T19:56:27Z | 200 | `4a3840208a958542e972b8cb536025fc8a5e705f8f33e32447624344551e7983` |
+| `https://learn.sessionboard.com/en/knowledge-base/6284057-assign-tasks` | `https://learn.sessionboard.com/portals/assign-tasks` | 2026-08-11T19:56:27Z | 200 | `3c810f286edc516e09b3349fdbd1d894fd0ebed015f6b2c83fd292cb2ec15df0` |
+| `https://learn.sessionboard.com/en/knowledge-base/6949616-agenda-speaker-embeds` | `https://learn.sessionboard.com/sessions/embeds` | 2026-08-11T19:56:27Z | 200 | `b384d47578b306f86840c7e9c090a41068f83c5f2f8009cf08db58d8579c195a` |

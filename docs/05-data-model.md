@@ -187,9 +187,25 @@ Normalized tables mirror only query-critical fields:
 - `p_task_definitions`, `p_task_assignments`
 - `p_resources`
 
-Every projection row has `source_record_id`, `source_version`, `projected_at`.
+Every authoritative projection row carries `source_record_id`, `source_version`, `source_content_hash`, and `projected_at`; provider cursor/time fields are added where reconciliation requires them. Provider record IDs never become public resource identities.
 
 `cfp_submission_reservations` contains only organization/event/user IDs, the server-derived submission and plan IDs, and a semantic request hash. Its atomic insert is the per-account submission-limit gate; raw idempotency keys and proposal bodies are never stored there.
+
+## Dual-store command and repair state
+
+Airtable and D1 do not participate in one transaction. Every authority command therefore has a durable state machine instead of an implicit best-effort write:
+
+| State | Meaning | Safe next action |
+|---|---|---|
+| `pending` | intent/lease persisted; provider result not committed | authority resumes or expires the lease |
+| `committed` | Airtable result and atomic D1 projection/idempotency/audit/outbox batch are durable | replay stored response |
+| `committed_with_repair` | Airtable committed; D1 projection batch failed | recover D1 from stored provider result, never replay Airtable |
+| `unknown` | provider outcome was ambiguous | reconcile stable command markers/readback before another mutation |
+| `failed` | command rejected or failed before a committed business result | correct the cause and submit a new authorized command when appropriate |
+
+`projection_repairs` retains provider/base/table/record identity, source hash, reason, lease/attempt state, and safe error code. It does not make D1 authoritative. `BaseAuthority` SQLite retains the command, provider attempts, result, and original response across eviction; its alarm and the projection-repair queue converge the same operation. A direct Airtable edit advances the source version only through reconciliation after managed-content and protected-lifecycle validation.
+
+Recovery is complete when the repair row is complete, the response still replays, authority readiness is restored, and the D1 projection's source version/hash match Airtable. See [`docs/12-airtable-operations.md`](./12-airtable-operations.md#repair-operations) and [`docs/19-open-source-operator-guide.md`](./19-open-source-operator-guide.md#dual-store-repair).
 
 ## Required indexes
 
