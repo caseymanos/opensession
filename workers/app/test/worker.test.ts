@@ -54,13 +54,17 @@ describe("Worker health", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toContain(
+      "application/problem+json",
+    );
     expect(requestId).toBeTruthy();
     await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "not_found",
-        message: "The requested API route does not exist.",
-      },
+      code: "public_api_route_not_found",
+      detail: "The requested public API v1 route does not exist.",
       request_id: requestId,
+      status: 404,
+      title: "Public API route not found",
+      type: "https://opensessionboard.com/problems/public_api_route_not_found",
     });
   });
 });

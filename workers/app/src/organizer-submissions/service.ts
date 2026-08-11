@@ -24,6 +24,7 @@ import {
 interface OrganizerSubmissionServiceOptions {
   actorDisplayName: string;
   actorId: string;
+  actorType?: "api_key" | "user";
   authority: Pick<BaseAuthority, "execute">;
   database: D1Database;
   eventId: string;
@@ -141,6 +142,7 @@ function noteFromOperations(
 export class AirtableOrganizerSubmissionCommandService {
   readonly #actorDisplayName: string;
   readonly #actorId: string;
+  readonly #actorType: "api_key" | "user";
   readonly #authority: Pick<BaseAuthority, "execute">;
   readonly #database: D1Database;
   readonly #eventId: string;
@@ -150,6 +152,7 @@ export class AirtableOrganizerSubmissionCommandService {
   constructor(options: OrganizerSubmissionServiceOptions) {
     this.#actorDisplayName = options.actorDisplayName;
     this.#actorId = options.actorId;
+    this.#actorType = options.actorType ?? "user";
     this.#authority = options.authority;
     this.#database = options.database;
     this.#eventId = options.eventId;
@@ -389,7 +392,7 @@ export class AirtableOrganizerSubmissionCommandService {
       audit: {
         action: `organizer.submission.${command.type}`,
         actorId: this.#actorId,
-        actorType: "user",
+        actorType: this.#actorType,
         eventId: this.#eventId,
         requestId: this.#requestId,
         safeDiff,

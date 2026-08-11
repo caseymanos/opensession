@@ -1090,6 +1090,43 @@ describe("D1 operational foundation", () => {
     );
   });
 
+  it("stores only constrained per-key salts and supports scoped management reads", () => {
+    query(`
+      INSERT INTO api_keys
+        (id, organization_id, event_id, created_by_user_id, name, token_prefix,
+         token_hash, scopes_json, created_at, verifier_salt)
+      VALUES
+        ('api_key_schema', 'org_one', 'evt_one', 'usr_one', 'Schema key',
+         'osk_key_schema', '${"b".repeat(64)}', '["events:read"]',
+         '${timestamp}', '${"c".repeat(32)}');
+    `);
+
+    expect(
+      query<{ verifier_salt: string }>(
+        "SELECT verifier_salt FROM api_keys WHERE id = 'api_key_schema';",
+      ).results,
+    ).toEqual([{ verifier_salt: "c".repeat(32) }]);
+    expectSqlFailure(
+      "UPDATE api_keys SET verifier_salt = 'NOT-HEX' WHERE id = 'api_key_schema';",
+    );
+    expect(
+      query<{ name: string }>(
+        `SELECT name FROM pragma_index_list('api_keys')
+         WHERE name = 'idx_api_keys_management';`,
+      ).results,
+    ).toEqual([{ name: "idx_api_keys_management" }]);
+    expect(
+      query<{ detail: string }>(`
+        EXPLAIN QUERY PLAN
+        SELECT id FROM api_keys
+        WHERE organization_id = 'org_one' AND event_id = 'evt_one'
+        ORDER BY created_at DESC, id DESC LIMIT 25;
+      `)
+        .results.map(({ detail }) => detail)
+        .join("\n"),
+    ).toContain("idx_api_keys_management");
+  });
+
   it("keeps campaign confirmation and message preparation idempotent and event-scoped", () => {
     const providerColumns = query<{ name: string }>(
       "PRAGMA table_info(provider_messages);",
