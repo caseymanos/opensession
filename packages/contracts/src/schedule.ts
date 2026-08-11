@@ -23,6 +23,9 @@ import {
   type ScheduleFormat,
   type ScheduleParticipant,
   type ScheduleParticipantReadiness,
+  type SchedulePublicationPreview,
+  type SchedulePublicationSessionBlocker,
+  type SchedulePublicationWarning,
   type ScheduleRoom,
   type ScheduleSessionReference,
   type ScheduleSession,
@@ -33,9 +36,12 @@ import {
   type UnassignSessionCommand,
 } from "@sessionbox-killer/domain";
 export {
+  previewSchedulePublication,
+  scheduleSoftWarningKey,
   ScheduleAuthorityPendingError,
   ScheduleHardConflictError,
   ScheduleIdempotencyConflictError,
+  SchedulePublicationBlockedError,
   ScheduleValidationError,
   ScheduleVersionConflictError,
 } from "@sessionbox-killer/domain";
@@ -178,6 +184,7 @@ export const scheduleSessionSchema = z
     expectedAttendance: z.int().nonnegative().nullable().optional(),
     formatId: scheduleIdentifierSchema,
     id: scheduleIdentifierSchema,
+    isPublic: z.boolean().optional(),
     participants: z.array(scheduleParticipantSchema).max(32),
     slot: scheduleSlotSchema.nullable(),
     state: sessionLifecycleStateSchema,
@@ -258,7 +265,28 @@ export const cancelSessionCommandSchema = scheduleCommandBaseSchema
   .strict() satisfies z.ZodType<CancelSessionCommand>;
 
 export const publishScheduleCommandSchema = scheduleCommandBaseSchema
-  .extend({ type: z.literal("publish_schedule") })
+  .extend({
+    softWarningOverride: z
+      .object({
+        reason: z.string().trim().min(8).max(500),
+        warningKeys: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .max(600)
+              .regex(/^[A-Za-z0-9_:-]+$/),
+          )
+          .min(1)
+          .max(2_000)
+          .refine((keys) => new Set(keys).size === keys.length, {
+            message: "Soft warning keys must be unique.",
+          }),
+      })
+      .strict()
+      .optional(),
+    type: z.literal("publish_schedule"),
+  })
   .strict() satisfies z.ZodType<PublishScheduleCommand>;
 
 export const scheduleCommandSchema = z.discriminatedUnion("type", [
@@ -428,6 +456,66 @@ export const scheduleConflictReportSchema = z
   })
   .strict() satisfies z.ZodType<ScheduleConflictReport>;
 
+export const schedulePublicationWarningSchema = z
+  .object({
+    key: z
+      .string()
+      .min(1)
+      .max(600)
+      .regex(/^[A-Za-z0-9_:-]+$/),
+    warning: scheduleSoftWarningSchema,
+  })
+  .strict() satisfies z.ZodType<SchedulePublicationWarning>;
+
+export const schedulePublicationSessionBlockerSchema = z
+  .object({
+    resolutionHref: resolutionHrefSchema,
+    session: scheduleSessionReferenceSchema,
+  })
+  .strict() satisfies z.ZodType<SchedulePublicationSessionBlocker>;
+
+export const schedulePublicationPreviewSchema = z
+  .object({
+    acceptedPublicSessionCount: z.int().nonnegative(),
+    canPublish: z.boolean(),
+    counts: z
+      .object({
+        hardConflicts: z.int().nonnegative(),
+        missingRoomOrTime: z.int().nonnegative(),
+        softWarnings: z.int().nonnegative(),
+        unscheduled: z.int().nonnegative(),
+      })
+      .strict(),
+    currentPublicationVersion: z.int().nonnegative(),
+    eventId: scheduleIdentifierSchema,
+    hardConflicts: z.array(scheduleHardConflictSchema).max(10_000),
+    nextPublicationVersion: z.int().positive(),
+    scheduleVersion: z.int().nonnegative(),
+    softWarnings: z.array(schedulePublicationWarningSchema).max(10_000),
+    unscheduledSessions: z
+      .array(schedulePublicationSessionBlockerSchema)
+      .max(2_000),
+  })
+  .strict()
+  .superRefine((preview, context) => {
+    if (
+      preview.counts.hardConflicts !== preview.hardConflicts.length ||
+      preview.counts.softWarnings !== preview.softWarnings.length ||
+      preview.counts.unscheduled !== preview.unscheduledSessions.length ||
+      preview.counts.missingRoomOrTime !== preview.unscheduledSessions.length ||
+      preview.nextPublicationVersion !== preview.scheduleVersion + 1 ||
+      preview.canPublish !==
+        (preview.acceptedPublicSessionCount > 0 &&
+          preview.hardConflicts.length === 0 &&
+          preview.unscheduledSessions.length === 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Publication preview counts and readiness disagree.",
+      });
+    }
+  }) satisfies z.ZodType<SchedulePublicationPreview>;
+
 export const scheduleHardConflictErrorSchema = z
   .object({
     code: z.literal("schedule_hard_conflict"),
@@ -436,11 +524,20 @@ export const scheduleHardConflictErrorSchema = z
   })
   .strict();
 
+export const schedulePublicationBlockedErrorSchema = z
+  .object({
+    code: z.literal("schedule_publication_blocked"),
+    message: z.string().min(1).max(1_000),
+    preview: schedulePublicationPreviewSchema,
+  })
+  .strict();
+
 export const scheduleCommandErrorSchema = z.discriminatedUnion("code", [
   scheduleValidationErrorSchema,
   scheduleVersionConflictErrorSchema,
   scheduleIdempotencyConflictErrorSchema,
   scheduleHardConflictErrorSchema,
+  schedulePublicationBlockedErrorSchema,
   scheduleAuthorityPendingErrorSchema,
 ]);
 
@@ -487,6 +584,7 @@ export type {
   EventSchedulingConfig,
   ParticipantConflictRole,
   ParticipantReadinessState,
+  PublishScheduleCommand,
   ScheduleCommand,
   ScheduleCommandPort,
   ScheduleCommandResult,
@@ -498,6 +596,9 @@ export type {
   ScheduleHardConflict,
   ScheduleParticipant,
   ScheduleParticipantReadiness,
+  SchedulePublicationPreview,
+  SchedulePublicationSessionBlocker,
+  SchedulePublicationWarning,
   ScheduleRoom,
   ScheduleSession,
   ScheduleSessionReference,

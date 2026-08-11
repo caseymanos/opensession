@@ -1,4 +1,5 @@
 import {
+  calendarChangeIntentSchema,
   scheduleCommandResponseSchema,
   scheduleCommittedEventSchema,
   scheduleSnapshotSchema,
@@ -27,6 +28,8 @@ import type {
   FixtureAgendaCoordinator,
   FixtureBaseAuthority,
 } from "./fixtures/airtable-authority-runtime";
+import { D1PublicScheduleProjectionReader } from "../src/public-schedule/projection";
+import { D1ScheduleProjectionRepository } from "../src/schedule/d1-repository";
 
 const server = createTestHarness({
   workers: [
@@ -95,6 +98,7 @@ function readMigrationStatements(): string[] {
     "0014_schedule_domain.sql",
     "0015_demo_bootstrap_authorization.sql",
     "0016_organizer_submissions.sql",
+    "0018_schedule_publication.sql",
   ]) {
     const lines = readFileSync(
       resolve(process.cwd(), "migrations", filename),
@@ -464,7 +468,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     });
     await waitFor(() => messages.length === 1);
     expect(await providerMutationCount()).toBe(beforeMutations + 3);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     expect(scheduleCommittedEventSchema.parse(messages[0])).toMatchObject({
       commandId: command.commandId,
       eventId: demoEventId,
@@ -558,7 +562,7 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     await waitFor(() => messages.length === 1);
 
     expect(await providerMutationCount()).toBe(beforeMutations + 2);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     expect(scheduleCommittedEventSchema.parse(messages[0])).toMatchObject({
       commandId: command.commandId,
       scheduleVersion: snapshot.event.version + 1,
@@ -566,7 +570,528 @@ describe.sequential("RAL-63 AgendaCoordinator Workerd invariants", () => {
     const replay = await execute(command);
     expect(replay).toMatchObject({ ok: true, result: { replayed: true } });
     expect(await providerMutationCount()).toBe(beforeMutations + 2);
-    expect(await invalidationVersion()).toBe(beforeInvalidation + 1);
+    expect(await invalidationVersion()).toBe(beforeInvalidation);
     socket.close(1000, "Fixture complete");
+  }, 60_000);
+
+  it("rejects a revalidated hard conflict before any authority mutation", async () => {
+    const coordinator = environment.AGENDA_COORDINATOR.getByName(demoEventId);
+    const previewBefore = await coordinator.previewPublication(demoEventId);
+    expect(previewBefore.counts.hardConflicts).toBeGreaterThan(0);
+    const beforeMutations = await providerMutationCount();
+    const rejected = await execute({
+      commandId: "cmd_publish_hard_conflict",
+      eventId: demoEventId,
+      expectedVersion: previewBefore.scheduleVersion,
+      type: "publish_schedule",
+    });
+    expect(rejected).toMatchObject({
+      error: { code: "schedule_hard_conflict" },
+      ok: false,
+    });
+    expect(await providerMutationCount()).toBe(beforeMutations);
+
+    const conflict = previewBefore.hardConflicts[0];
+    if (!conflict) throw new Error("Fixture hard conflict disappeared.");
+    const snapshot = await new D1ScheduleProjectionRepository(
+      environment.DB,
+    ).read(demoEventId);
+    const session = snapshot?.sessions.find(
+      ({ id }) => id === conflict.sessionB.id,
+    );
+    if (!session?.slot) throw new Error("Conflict session has no placement.");
+    const startAt = "2026-10-14T22:00:00.000Z";
+    const endAt = new Date(
+      Date.parse(startAt) + session.durationMinutes * 60_000,
+    ).toISOString();
+    await environment.DB.prepare(
+      `UPDATE p_schedule_slots SET room_id = 'room_redwood',
+         starts_at = ?, ends_at = ?
+       WHERE organization_id = ? AND event_id = ? AND session_id = ?`,
+    )
+      .bind(
+        startAt,
+        endAt,
+        demoOrganizationId,
+        demoEventId,
+        conflict.sessionB.id,
+      )
+      .run();
+    const resolved = await coordinator.previewPublication(demoEventId);
+    expect(resolved.counts.hardConflicts).toBe(0);
+  });
+
+  it("commits one immutable public snapshot with warning audit and replay safety", async () => {
+    const coordinator = environment.AGENDA_COORDINATOR.getByName(demoEventId);
+    await environment.DB.prepare(
+      `UPDATE p_sessions SET expected_attendance = 10000
+       WHERE organization_id = ? AND event_id = ?
+         AND id = (
+           SELECT session_id FROM p_schedule_slots
+           WHERE organization_id = ? AND event_id = ?
+             AND source_deleted_at IS NULL
+           ORDER BY session_id LIMIT 1
+         )`,
+    )
+      .bind(demoOrganizationId, demoEventId, demoOrganizationId, demoEventId)
+      .run();
+    const preview = await coordinator.previewPublication(demoEventId);
+    expect(preview.canPublish).toBe(true);
+    expect(preview.softWarnings.length).toBeGreaterThan(0);
+    const command = {
+      commandId: "cmd_publication_snapshot",
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      ...(preview.softWarnings.length > 0
+        ? {
+            softWarningOverride: {
+              reason: "Organizer reviewed every named publication warning",
+              warningKeys: preview.softWarnings.map(({ key }) => key),
+            },
+          }
+        : {}),
+      type: "publish_schedule" as const,
+    };
+    if (preview.softWarnings.length > 0) {
+      const missingOverride = await execute({
+        commandId: "cmd_publication_missing_override",
+        eventId: demoEventId,
+        expectedVersion: preview.scheduleVersion,
+        type: "publish_schedule",
+      });
+      expect(missingOverride).toMatchObject({
+        error: {
+          code: "schedule_validation_error",
+          reason: "soft_warning_override_required",
+        },
+        ok: false,
+      });
+    }
+    const beforeMutations = await providerMutationCount();
+    const published = await execute(command);
+    if (!published.ok) throw new Error(JSON.stringify(published.error));
+    expect(published.result.snapshot.event.publicationVersion).toBe(
+      preview.nextPublicationVersion,
+    );
+    expect(await providerMutationCount()).toBeGreaterThan(beforeMutations);
+
+    const publication = await environment.DB.prepare(
+      `SELECT publication_version, schedule_version, snapshot_id,
+              snapshot_sha256, soft_warning_override_json
+       FROM schedule_publications
+       WHERE organization_id = ? AND event_id = ?
+       ORDER BY publication_version DESC LIMIT 1`,
+    )
+      .bind(demoOrganizationId, demoEventId)
+      .first<{
+        publication_version: number;
+        schedule_version: number;
+        snapshot_id: string;
+        snapshot_sha256: string;
+        soft_warning_override_json: string | null;
+      }>();
+    expect(publication).toMatchObject({
+      publication_version: preview.nextPublicationVersion,
+      schedule_version: preview.scheduleVersion + 1,
+    });
+    expect(publication?.snapshot_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(Boolean(publication?.soft_warning_override_json)).toBe(
+      preview.softWarnings.length > 0,
+    );
+
+    const audit = await environment.DB.prepare(
+      `SELECT action, safe_diff_json, metadata_json FROM audit_events
+       WHERE organization_id = ? AND command_id = ?`,
+    )
+      .bind(demoOrganizationId, command.commandId)
+      .first<{
+        action: string;
+        metadata_json: string;
+        safe_diff_json: string;
+      }>();
+    expect(audit?.action).toBe("schedule.publication.committed");
+    expect(JSON.parse(audit?.safe_diff_json ?? "{}")).toMatchObject({
+      from_publication_version: preview.currentPublicationVersion,
+      to_publication_version: preview.nextPublicationVersion,
+    });
+
+    const invalidation = await environment.DB.prepare(
+      `SELECT invalidation_version, publication_version, surfaces_json, status
+       FROM authority_cache_invalidations
+       WHERE organization_id = ? AND event_id = ?`,
+    )
+      .bind(demoOrganizationId, demoEventId)
+      .first<{
+        invalidation_version: number;
+        publication_version: number;
+        status: string;
+        surfaces_json: string;
+      }>();
+    if (!invalidation)
+      throw new Error("Publication invalidation was not saved.");
+    expect(invalidation.publication_version).toBe(
+      preview.nextPublicationVersion,
+    );
+    expect(JSON.parse(invalidation.surfaces_json)).toEqual([
+      "schedule",
+      "gallery",
+      "feed",
+    ]);
+    expect(invalidation.status).toBe("enqueued");
+    const invalidationMessage = {
+      event_id: demoEventId,
+      invalidation_version: invalidation.invalidation_version,
+      kind: "public_schedule.cache.invalidate",
+      organization_id: demoOrganizationId,
+      publication_version: preview.nextPublicationVersion,
+      surfaces: ["schedule", "gallery", "feed"],
+      version: 3,
+    };
+    expect(
+      (
+        await post("/process-cache-invalidation", {
+          ...invalidationMessage,
+          publication_version: preview.nextPublicationVersion + 1,
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      await environment.DB.prepare(
+        `SELECT status FROM authority_cache_invalidations
+         WHERE organization_id = ? AND event_id = ?`,
+      )
+        .bind(demoOrganizationId, demoEventId)
+        .first<{ status: string }>(),
+    ).toEqual({ status: "enqueued" });
+    expect(
+      (await post("/process-cache-invalidation", invalidationMessage)).status,
+    ).toBe(204);
+    expect(
+      await environment.DB.prepare(
+        `SELECT status FROM authority_cache_invalidations
+         WHERE organization_id = ? AND event_id = ?`,
+      )
+        .bind(demoOrganizationId, demoEventId)
+        .first<{ status: string }>(),
+    ).toEqual({ status: "processed" });
+
+    const publicRead = await new D1PublicScheduleProjectionReader(
+      environment.DB,
+    ).readBySlug(published.result.snapshot.event.slug);
+    expect(publicRead?.projection.version).toBe(preview.nextPublicationVersion);
+
+    const mutationCount = await providerMutationCount();
+    const replay = await execute(command);
+    expect(replay).toMatchObject({ ok: true, result: { replayed: true } });
+    expect(await providerMutationCount()).toBe(mutationCount);
+    const publicationCount = await environment.DB.prepare(
+      `SELECT COUNT(*) AS count FROM schedule_publications
+       WHERE organization_id = ? AND event_id = ? AND command_id = ?`,
+    )
+      .bind(demoOrganizationId, demoEventId, command.commandId)
+      .first<{ count: number }>();
+    expect(publicationCount?.count).toBe(1);
+  }, 60_000);
+
+  it("keeps the last public version through change facts and failed finalization", async () => {
+    const coordinator = environment.AGENDA_COORDINATOR.getByName(demoEventId);
+    const published = await new D1ScheduleProjectionRepository(
+      environment.DB,
+    ).read(demoEventId);
+    const publishedSessions =
+      published?.sessions.filter(
+        (session) => session.state === "published" && session.slot,
+      ) ?? [];
+    const rescheduledSession = publishedSessions[0];
+    const canceledSession = publishedSessions[1];
+    if (!published || !rescheduledSession?.slot || !canceledSession?.slot) {
+      throw new Error("Fixture has fewer than two published sessions.");
+    }
+    const oldPublicVersion = published.event.publicationVersion;
+
+    const rescheduleCommand = {
+      commandId: "cmd_public_change_reschedule",
+      durationMinutes: rescheduledSession.durationMinutes,
+      eventId: demoEventId,
+      expectedVersion: published.event.version,
+      roomId: rescheduledSession.slot.roomId,
+      sessionId: rescheduledSession.id,
+      startAt: rescheduledSession.slot.startAt,
+      type: "reschedule_session" as const,
+    };
+    await environment.DB.prepare(
+      `CREATE TRIGGER fail_calendar_change_handoff
+       BEFORE INSERT ON outbox_events
+       WHEN NEW.event_type = 'calendar.change.requested'
+       BEGIN SELECT RAISE(ABORT, 'injected calendar handoff failure'); END`,
+    ).run();
+    const calendarPending = await execute(rescheduleCommand);
+    expect(calendarPending).toMatchObject({
+      error: {
+        code: "schedule_authority_pending",
+        state: "projection_pending",
+      },
+      ok: false,
+    });
+    await environment.DB.prepare(
+      "DROP TRIGGER fail_calendar_change_handoff",
+    ).run();
+    const rescheduled = await execute(rescheduleCommand);
+    if (!rescheduled.ok) throw new Error(JSON.stringify(rescheduled.error));
+    expect(rescheduled.result.replayed).toBe(true);
+    const canceled = await execute({
+      commandId: "cmd_public_change_cancel",
+      eventId: demoEventId,
+      expectedVersion: rescheduled.result.snapshot.event.version,
+      sessionId: canceledSession.id,
+      type: "cancel_session",
+    });
+    if (!canceled.ok) throw new Error(JSON.stringify(canceled.error));
+
+    const facts = await environment.DB.prepare(
+      `SELECT command_id, change_type, source_publication_version,
+              request_id, actor_type, actor_id,
+              calendar_intent_enqueued_at, calendar_outbox_id
+       FROM schedule_public_changes
+       WHERE organization_id = ? AND event_id = ?
+         AND command_id IN (?, ?) ORDER BY command_id`,
+    )
+      .bind(
+        demoOrganizationId,
+        demoEventId,
+        "cmd_public_change_reschedule",
+        "cmd_public_change_cancel",
+      )
+      .all<{
+        change_type: string;
+        actor_id: string;
+        actor_type: string;
+        calendar_intent_enqueued_at: string;
+        calendar_outbox_id: string;
+        command_id: string;
+        request_id: string;
+        source_publication_version: number;
+      }>();
+    expect(facts.results).toMatchObject([
+      expect.objectContaining({
+        actor_id: "usr_demo_owner",
+        actor_type: "user",
+        change_type: "canceled",
+        command_id: "cmd_public_change_cancel",
+        request_id: "req_cmd_public_change_cancel",
+        source_publication_version: oldPublicVersion,
+      }),
+      expect.objectContaining({
+        actor_id: "usr_demo_owner",
+        actor_type: "user",
+        change_type: "rescheduled",
+        command_id: "cmd_public_change_reschedule",
+        request_id: "req_cmd_public_change_reschedule",
+        source_publication_version: oldPublicVersion,
+      }),
+    ]);
+    for (const fact of facts.results) {
+      expect(fact.calendar_intent_enqueued_at).toMatch(/Z$/);
+      expect(fact.calendar_outbox_id).toMatch(/^out_[0-9a-f]{26}$/);
+    }
+    const calendarChanges = await environment.DB.prepare(
+      `SELECT payload_json FROM outbox_events
+       WHERE organization_id = ? AND event_id = ?
+         AND event_type = 'calendar.change.requested'
+       ORDER BY idempotency_key`,
+    )
+      .bind(demoOrganizationId, demoEventId)
+      .all<{ payload_json: string }>();
+    expect(
+      calendarChanges.results
+        .map(({ payload_json }) =>
+          calendarChangeIntentSchema.parse(JSON.parse(payload_json)),
+        )
+        .sort((left, right) => left.commandId.localeCompare(right.commandId)),
+    ).toEqual([
+      expect.objectContaining({
+        changeType: "canceled",
+        commandId: "cmd_public_change_cancel",
+        previousPlacement: {
+          endAt: canceledSession.slot.endAt,
+          roomId: canceledSession.slot.roomId,
+          startAt: canceledSession.slot.startAt,
+        },
+        requestId: "req_cmd_public_change_cancel",
+        sourcePublicationVersion: oldPublicVersion,
+      }),
+      expect.objectContaining({
+        changeType: "rescheduled",
+        commandId: "cmd_public_change_reschedule",
+        previousPlacement: {
+          endAt: rescheduledSession.slot.endAt,
+          roomId: rescheduledSession.slot.roomId,
+          startAt: rescheduledSession.slot.startAt,
+        },
+        requestId: "req_cmd_public_change_reschedule",
+        sourcePublicationVersion: oldPublicVersion,
+      }),
+    ]);
+    const publicBeforeRetry = await new D1PublicScheduleProjectionReader(
+      environment.DB,
+    ).readBySlug(published.event.slug);
+    expect(publicBeforeRetry?.projection.version).toBe(oldPublicVersion);
+
+    const preview = await coordinator.previewPublication(demoEventId);
+    expect(preview.canPublish).toBe(true);
+    const publishCommand = {
+      commandId: "cmd_publication_retry_finalization",
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      ...(preview.softWarnings.length > 0
+        ? {
+            softWarningOverride: {
+              reason: "Organizer reviewed every named publication warning",
+              warningKeys: preview.softWarnings.map(({ key }) => key),
+            },
+          }
+        : {}),
+      type: "publish_schedule" as const,
+    };
+    const invalidationBefore = await invalidationVersion();
+    await environment.DB.prepare(
+      `CREATE TRIGGER fail_publication_finalization
+       BEFORE INSERT ON schedule_publications
+       WHEN NEW.command_id = 'cmd_publication_retry_finalization'
+       BEGIN SELECT RAISE(ABORT, 'injected publication commit failure'); END`,
+    ).run();
+    const pending = await execute(publishCommand);
+    expect(pending).toMatchObject({
+      error: {
+        code: "schedule_authority_pending",
+        state: "projection_pending",
+      },
+      ok: false,
+    });
+    expect(await invalidationVersion()).toBe(invalidationBefore);
+    const publicWhileFailed = await new D1PublicScheduleProjectionReader(
+      environment.DB,
+    ).readBySlug(published.event.slug);
+    expect(publicWhileFailed?.projection.version).toBe(oldPublicVersion);
+
+    await environment.DB.prepare(
+      "DROP TRIGGER fail_publication_finalization",
+    ).run();
+    await waitFor(async () => {
+      const receipt = await environment.DB.prepare(
+        `SELECT state FROM schedule_command_receipts
+         WHERE event_id = ? AND command_id = ?`,
+      )
+        .bind(demoEventId, publishCommand.commandId)
+        .first<{ state: string }>();
+      return receipt?.state === "complete";
+    });
+    const repaired = await execute(publishCommand);
+    if (!repaired.ok) throw new Error(JSON.stringify(repaired.error));
+    expect(repaired.result.replayed).toBe(true);
+    expect(repaired.result.snapshot.event.publicationVersion).toBe(
+      preview.nextPublicationVersion,
+    );
+    const repairedAudit = await environment.DB.prepare(
+      `SELECT actor_id, request_id FROM audit_events
+       WHERE organization_id = ? AND command_id = ?
+         AND action = 'schedule.publication.committed'`,
+    )
+      .bind(demoOrganizationId, publishCommand.commandId)
+      .first<{ actor_id: string; request_id: string }>();
+    expect(repairedAudit).toEqual({
+      actor_id: "usr_demo_owner",
+      request_id: `req_${publishCommand.commandId}`,
+    });
+    const completedReceipt = await environment.DB.prepare(
+      `SELECT result_json FROM schedule_command_receipts
+       WHERE event_id = ? AND command_id = ? AND state = 'complete'`,
+    )
+      .bind(demoEventId, publishCommand.commandId)
+      .first<{ result_json: string }>();
+    expect(JSON.parse(completedReceipt?.result_json ?? "{}")).toMatchObject({
+      actorId: "usr_demo_owner",
+      command: { commandId: publishCommand.commandId },
+      requestId: `req_${publishCommand.commandId}`,
+      version: 3,
+    });
+    const publicAfterRepair = await new D1PublicScheduleProjectionReader(
+      environment.DB,
+    ).readBySlug(published.event.slug);
+    expect(publicAfterRepair?.projection.version).toBe(
+      preview.nextPublicationVersion,
+    );
+    expect(await invalidationVersion()).toBe(invalidationBefore + 1);
+
+    const immutable = await environment.DB.prepare(
+      `UPDATE schedule_publications SET published_at = published_at
+       WHERE organization_id = ? AND event_id = ? AND publication_version = ?`,
+    )
+      .bind(demoOrganizationId, demoEventId, preview.nextPublicationVersion)
+      .run()
+      .then(
+        () => false,
+        () => true,
+      );
+    expect(immutable).toBe(true);
+  }, 60_000);
+
+  it("serializes a concurrent publication and move to exactly one winner", async () => {
+    const coordinator = environment.AGENDA_COORDINATOR.getByName(demoEventId);
+    const preview = await coordinator.previewPublication(demoEventId);
+    expect(preview.canPublish).toBe(true);
+    const snapshot = await new D1ScheduleProjectionRepository(
+      environment.DB,
+    ).read(demoEventId);
+    const session = snapshot?.sessions.find(
+      (candidate) => candidate.state === "published" && candidate.slot,
+    );
+    if (!snapshot || !session?.slot) {
+      throw new Error("Fixture has no published session to race.");
+    }
+    const publication = {
+      commandId: "cmd_concurrent_publication",
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      ...(preview.softWarnings.length > 0
+        ? {
+            softWarningOverride: {
+              reason: "Organizer reviewed every named publication warning",
+              warningKeys: preview.softWarnings.map(({ key }) => key),
+            },
+          }
+        : {}),
+      type: "publish_schedule" as const,
+    };
+    const move = {
+      commandId: "cmd_concurrent_public_move",
+      durationMinutes: session.durationMinutes,
+      eventId: demoEventId,
+      expectedVersion: preview.scheduleVersion,
+      roomId: session.slot.roomId,
+      sessionId: session.id,
+      startAt: session.slot.startAt,
+      type: "reschedule_session" as const,
+    };
+
+    const responses = await Promise.all([execute(publication), execute(move)]);
+    expect(responses.filter((response) => response.ok)).toHaveLength(1);
+    expect(responses.filter((response) => !response.ok)).toHaveLength(1);
+    expect(responses.find((response) => !response.ok)).toMatchObject({
+      error: {
+        actualVersion: preview.scheduleVersion + 1,
+        code: "schedule_version_conflict",
+        expectedVersion: preview.scheduleVersion,
+      },
+      ok: false,
+    });
+    const receipts = await environment.DB.prepare(
+      `SELECT command_id, state FROM schedule_command_receipts
+       WHERE event_id = ? AND command_id IN (?, ?) ORDER BY command_id`,
+    )
+      .bind(demoEventId, publication.commandId, move.commandId)
+      .all<{ command_id: string; state: string }>();
+    expect(receipts.results).toHaveLength(1);
+    expect(receipts.results[0]?.state).toBe("complete");
   }, 60_000);
 });

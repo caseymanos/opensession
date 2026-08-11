@@ -1,9 +1,12 @@
 import {
   defaultScheduleConflictPolicy,
   evaluateScheduleConflicts,
+  scheduleSoftWarningKey,
   ScheduleHardConflictError,
+  type ScheduleHardConflict,
   type ScheduleConflictPolicy,
   type ScheduleConflictReport,
+  type ScheduleSessionReference,
   type ScheduleSoftWarning,
 } from "./conflicts.js";
 
@@ -96,6 +99,7 @@ export interface ScheduleSession {
   expectedAttendance?: number | null | undefined;
   formatId: string;
   id: string;
+  isPublic?: boolean | undefined;
   participants: readonly ScheduleParticipant[];
   slot: ScheduleSlot | null;
   state: SessionLifecycleState;
@@ -146,6 +150,12 @@ export interface CancelSessionCommand extends ScheduleCommandBase {
 }
 
 export interface PublishScheduleCommand extends ScheduleCommandBase {
+  softWarningOverride?:
+    | {
+        reason: string;
+        warningKeys: readonly string[];
+      }
+    | undefined;
   type: "publish_schedule";
 }
 
@@ -164,8 +174,37 @@ export interface ScheduleCommandResult {
   snapshot: ScheduleSnapshot;
 }
 
+export interface SchedulePublicationWarning {
+  key: string;
+  warning: ScheduleSoftWarning;
+}
+
+export interface SchedulePublicationSessionBlocker {
+  resolutionHref: string;
+  session: ScheduleSessionReference;
+}
+
+export interface SchedulePublicationPreview {
+  acceptedPublicSessionCount: number;
+  canPublish: boolean;
+  counts: {
+    hardConflicts: number;
+    missingRoomOrTime: number;
+    softWarnings: number;
+    unscheduled: number;
+  };
+  currentPublicationVersion: number;
+  eventId: string;
+  hardConflicts: readonly ScheduleHardConflict[];
+  nextPublicationVersion: number;
+  scheduleVersion: number;
+  softWarnings: readonly SchedulePublicationWarning[];
+  unscheduledSessions: readonly SchedulePublicationSessionBlocker[];
+}
+
 export interface ScheduleCommandPort {
   execute(command: ScheduleCommand): Promise<ScheduleCommandResult>;
+  previewPublication(eventId: string): Promise<SchedulePublicationPreview>;
   read(eventId: string): Promise<ScheduleSnapshot | null>;
 }
 
@@ -185,7 +224,9 @@ export const scheduleValidationReasons = [
   "invalid_track",
   "invalid_version",
   "override_not_allowed",
+  "publication_blocked",
   "session_not_found",
+  "soft_warning_override_required",
 ] as const;
 
 export type ScheduleValidationReason =
@@ -220,6 +261,21 @@ export class ScheduleVersionConflictError extends Error {
     this.name = "ScheduleVersionConflictError";
     this.actualVersion = actualVersion;
     this.expectedVersion = expectedVersion;
+  }
+}
+
+export class SchedulePublicationBlockedError extends Error {
+  readonly code = "schedule_publication_blocked";
+  readonly preview: SchedulePublicationPreview;
+
+  constructor(preview: SchedulePublicationPreview) {
+    super(
+      preview.acceptedPublicSessionCount === 0
+        ? "The schedule has no accepted public sessions to publish."
+        : "Every accepted public session needs a room and time before publication.",
+    );
+    this.name = "SchedulePublicationBlockedError";
+    this.preview = preview;
   }
 }
 
@@ -754,6 +810,107 @@ function warningInvolvesSession(
     : warning.session.id === sessionId;
 }
 
+function publicScheduleCandidate(session: ScheduleSession): boolean {
+  return session.isPublic !== false && session.state !== "canceled";
+}
+
+function publicationResolutionHref(
+  snapshot: ScheduleSnapshot,
+  sessionId: string,
+): string {
+  const parameters = new URLSearchParams({ session: sessionId });
+  return `/app/${encodeURIComponent(snapshot.event.slug)}/agenda?${parameters.toString()}`;
+}
+
+export function previewSchedulePublication(
+  snapshot: ScheduleSnapshot,
+  conflictPolicy: ScheduleConflictPolicy = defaultScheduleConflictPolicy,
+): SchedulePublicationPreview {
+  assertValidScheduleSnapshot(snapshot);
+  const acceptedPublicSessions = snapshot.sessions.filter(
+    publicScheduleCandidate,
+  );
+  const publicSessionIds = new Set(
+    acceptedPublicSessions.map((session) => session.id),
+  );
+  const unscheduledSessions = acceptedPublicSessions
+    .filter(
+      (session) =>
+        session.state === "accepted_unscheduled" || session.slot === null,
+    )
+    .map((session) => ({
+      resolutionHref: publicationResolutionHref(snapshot, session.id),
+      session: { id: session.id, title: session.title },
+    }));
+  const analysis = evaluateScheduleConflicts(snapshot, conflictPolicy);
+  const hardConflicts = analysis.hardConflicts.filter(
+    (conflict) =>
+      publicSessionIds.has(conflict.sessionA.id) ||
+      publicSessionIds.has(conflict.sessionB.id),
+  );
+  const softWarnings = analysis.softWarnings
+    .filter((warning) =>
+      [...publicSessionIds].some((sessionId) =>
+        warningInvolvesSession(warning, sessionId),
+      ),
+    )
+    .map((warning) => ({ key: scheduleSoftWarningKey(warning), warning }));
+
+  return {
+    acceptedPublicSessionCount: acceptedPublicSessions.length,
+    canPublish:
+      acceptedPublicSessions.length > 0 &&
+      unscheduledSessions.length === 0 &&
+      hardConflicts.length === 0,
+    counts: {
+      hardConflicts: hardConflicts.length,
+      missingRoomOrTime: unscheduledSessions.length,
+      softWarnings: softWarnings.length,
+      unscheduled: unscheduledSessions.length,
+    },
+    currentPublicationVersion: snapshot.event.publicationVersion,
+    eventId: snapshot.event.eventId,
+    hardConflicts,
+    nextPublicationVersion: snapshot.event.version + 1,
+    scheduleVersion: snapshot.event.version,
+    softWarnings,
+    unscheduledSessions,
+  };
+}
+
+function assertSoftWarningOverride(
+  command: PublishScheduleCommand,
+  preview: SchedulePublicationPreview,
+): void {
+  const expectedKeys = preview.softWarnings.map(({ key }) => key).sort();
+  const providedKeys = [
+    ...(command.softWarningOverride?.warningKeys ?? []),
+  ].sort();
+  const reason = command.softWarningOverride?.reason.trim() ?? "";
+
+  if (expectedKeys.length === 0) {
+    if (command.softWarningOverride !== undefined) {
+      validationError(
+        "override_not_allowed",
+        "command.softWarningOverride",
+        "A publication override is allowed only when soft warnings exist.",
+      );
+    }
+    return;
+  }
+  if (
+    reason.length < 8 ||
+    expectedKeys.length !== providedKeys.length ||
+    expectedKeys.some((key, index) => key !== providedKeys[index])
+  ) {
+    validationError(
+      "soft_warning_override_required",
+      "command.softWarningOverride",
+      "Publication requires an exact acknowledgement and reason for every current soft warning.",
+    );
+  }
+}
+
 function replaceSession(
   snapshot: ScheduleSnapshot,
   sessionId: string,
@@ -818,12 +975,29 @@ export function applyScheduleCommand(
     );
   }
 
+  const publicationPreview =
+    command.type === "publish_schedule"
+      ? previewSchedulePublication(snapshot, conflictPolicy)
+      : null;
+  if (publicationPreview && command.type === "publish_schedule") {
+    if (publicationPreview.hardConflicts.length > 0) {
+      throw new ScheduleHardConflictError(publicationPreview.hardConflicts);
+    }
+    if (!publicationPreview.canPublish) {
+      throw new SchedulePublicationBlockedError(publicationPreview);
+    }
+    assertSoftWarningOverride(command, publicationPreview);
+  }
+
   const nextVersion = snapshot.event.version + 1;
   let sessions: readonly ScheduleSession[];
   let changedSessionIds: readonly string[];
 
   if (command.type === "publish_schedule") {
     sessions = snapshot.sessions.map((session) => {
+      if (!publicScheduleCandidate(session)) {
+        return session;
+      }
       if (session.state !== "scheduled" && session.state !== "published") {
         return session;
       }
@@ -933,7 +1107,7 @@ export function applyScheduleCommand(
   const analysis = evaluateScheduleConflicts(nextSnapshot, conflictPolicy);
   const blockingConflicts =
     command.type === "publish_schedule"
-      ? analysis.hardConflicts
+      ? (publicationPreview?.hardConflicts ?? analysis.hardConflicts)
       : command.type === "place_session" ||
           command.type === "reschedule_session"
         ? analysis.hardConflicts.filter(

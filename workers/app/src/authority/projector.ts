@@ -10,6 +10,7 @@ import type { ProjectionFieldSpec } from "./projection-spec.js";
 import type {
   PublicScheduleCacheInvalidationMessageV1,
   PublicScheduleCacheInvalidationMessageV2,
+  PublicScheduleCacheInvalidationMessageV3,
 } from "../public-schedule/cache.js";
 import {
   durableOperationalEventStatement,
@@ -94,9 +95,7 @@ const updatedAtTables = new Set<AirtableTableKey>([
 export function shouldInvalidatePublicSchedule(
   command: Pick<BaseAuthorityCommand, "operation" | "table">,
 ): boolean {
-  return (
-    !command.operation.startsWith("schedule.") || command.table === "events"
-  );
+  return !command.operation.startsWith("schedule.");
 }
 
 function isoTimestamp(milliseconds = Date.now()): string {
@@ -275,19 +274,40 @@ export class D1AuthorityProjector {
     eventId: string;
     invalidationVersion: number;
     organizationId: string;
+    publicationVersion: number | null;
+    surfaces: readonly string[];
   }): Promise<void> {
+    if (options.surfaces.join(",") !== "schedule,gallery,feed") {
+      throw new Error("Publication cache invalidation surfaces are invalid.");
+    }
     const legacyMessage: PublicScheduleCacheInvalidationMessageV1 = {
       event_id: options.eventId,
       kind: "public_schedule.cache.invalidate",
       version: 1,
     };
-    const message: PublicScheduleCacheInvalidationMessageV2 = {
-      event_id: options.eventId,
-      invalidation_version: options.invalidationVersion,
-      kind: "public_schedule.cache.invalidate",
-      organization_id: options.organizationId,
-      version: 2,
-    };
+    const message:
+      | PublicScheduleCacheInvalidationMessageV2
+      | PublicScheduleCacheInvalidationMessageV3 = options.publicationVersion
+      ? {
+          event_id: options.eventId,
+          invalidation_version: options.invalidationVersion,
+          kind: "public_schedule.cache.invalidate",
+          organization_id: options.organizationId,
+          publication_version: options.publicationVersion,
+          surfaces: ["schedule", "gallery", "feed"],
+          version: 3,
+        }
+      : {
+          event_id: options.eventId,
+          invalidation_version: options.invalidationVersion,
+          kind: "public_schedule.cache.invalidate",
+          organization_id: options.organizationId,
+          version: 2,
+        };
+    if (message.version === 3) {
+      await this.#env.PROJECTION_REPAIR_QUEUE.send(message);
+      return;
+    }
     await this.#env.PROJECTION_REPAIR_QUEUE.send(legacyMessage);
     await this.#env.PROJECTION_REPAIR_QUEUE.send(message);
   }
@@ -328,6 +348,8 @@ export class D1AuthorityProjector {
        ON CONFLICT (organization_id, event_id) DO UPDATE SET
          status = 'pending',
          invalidation_version = authority_cache_invalidations.invalidation_version + 1,
+         publication_version = NULL,
+         surfaces_json = excluded.surfaces_json,
          attempt_count = 0, updated_at = excluded.updated_at, enqueued_at = NULL,
          processed_at = NULL, last_error_code = NULL`,
     ).bind(organizationId, now, now, JSON.stringify(eventIds));
@@ -335,7 +357,8 @@ export class D1AuthorityProjector {
 
   async drainCacheInvalidations(limit = 50): Promise<number> {
     const pending = await this.#env.DB.prepare(
-      `SELECT organization_id, event_id, invalidation_version, status
+      `SELECT organization_id, event_id, invalidation_version,
+              publication_version, surfaces_json, status
        FROM authority_cache_invalidations
        WHERE status IN ('pending', 'published')
           OR (status = 'enqueued' AND updated_at <= ?)
@@ -351,6 +374,8 @@ export class D1AuthorityProjector {
         event_id: string;
         invalidation_version: number;
         organization_id: string;
+        publication_version: number | null;
+        surfaces_json: string;
         status: "enqueued" | "pending" | "published";
       }>();
     let published = 0;
@@ -360,6 +385,8 @@ export class D1AuthorityProjector {
           eventId: row.event_id,
           invalidationVersion: row.invalidation_version,
           organizationId: row.organization_id,
+          publicationVersion: row.publication_version,
+          surfaces: JSON.parse(row.surfaces_json) as string[],
         });
       } catch (error) {
         await this.#env.DB.prepare(

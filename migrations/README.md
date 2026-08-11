@@ -16,5 +16,6 @@ Forward-only D1 migrations live here. Schema tickets add numbered SQL files and 
 - `0014_schedule_domain.sql`: event schedule configuration and resumable, idempotent schedule-command receipts for authoritative placement writes.
 - `0015_demo_bootstrap_authorization.sql`: one-time environment/base/seed-scoped operator authorization, renewable execution leases, and durable replayable bootstrap results.
 - `0016_organizer_submissions.sql`: organizer submission activity, authoritative internal notes, indexed queue reads, and resumable command receipts.
+- `0018_schedule_publication.sql`: immutable operator/public publication snapshots, version-linked public cache purge metadata, and durable post-public session-change facts.
 
 The guarded Cloudflare deploy command applies pending remote migrations before the Worker version and Wrangler captures a D1 backup for each migration. A failed Worker deploy can therefore leave an additive migration in place; migrations must remain forward-compatible and rollback continues to mean Worker code/configuration only.

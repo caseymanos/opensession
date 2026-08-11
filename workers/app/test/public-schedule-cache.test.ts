@@ -46,7 +46,7 @@ describe("public schedule cache contract", () => {
         operation: "schedule.place_session.events",
         table: "events",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldInvalidatePublicSchedule({
         operation: "rooms.update",
@@ -79,6 +79,28 @@ describe("public schedule cache contract", () => {
         kind: "public_schedule.cache.invalidate",
         organization_id: "org_public",
         version: 2,
+      }),
+    ).toBe(false);
+    expect(
+      isPublicScheduleCacheInvalidationMessage({
+        event_id: "event_ai_summit",
+        invalidation_version: 3,
+        kind: "public_schedule.cache.invalidate",
+        organization_id: "org_public",
+        publication_version: 4,
+        surfaces: ["schedule", "gallery", "feed"],
+        version: 3,
+      }),
+    ).toBe(true);
+    expect(
+      isPublicScheduleCacheInvalidationMessage({
+        event_id: "event_ai_summit",
+        invalidation_version: 3,
+        kind: "public_schedule.cache.invalidate",
+        organization_id: "org_public",
+        publication_version: 4,
+        surfaces: ["schedule", "feed", "gallery"],
+        version: 3,
       }),
     ).toBe(false);
     expect(
@@ -118,6 +140,50 @@ describe("public schedule cache contract", () => {
         version: 2,
       }),
     ).toBe(false);
+  });
+
+  it("purges v3 only for the exact committed publication generation", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const message = {
+      event_id: "event_ai_summit",
+      invalidation_version: 3,
+      kind: "public_schedule.cache.invalidate" as const,
+      organization_id: "org_public",
+      publication_version: 4,
+      surfaces: ["schedule", "gallery", "feed"] as const,
+      version: 3 as const,
+    };
+    const missingDatabase = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({ first: vi.fn(async () => null) })),
+      })),
+    } as unknown as D1Database;
+    await processPublicScheduleCacheInvalidation(
+      { cache: { purge } } as unknown as ExecutionContext,
+      { APP_ENV: "production", DB: missingDatabase },
+      message,
+    );
+    expect(purge).not.toHaveBeenCalled();
+
+    const prepare = vi
+      .fn()
+      .mockReturnValueOnce({
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => ({ valid: 1 })),
+        })),
+      })
+      .mockReturnValueOnce({
+        bind: vi.fn(() => ({
+          run: vi.fn(async () => ({ meta: { changes: 1 } })),
+        })),
+      });
+    await processPublicScheduleCacheInvalidation(
+      { cache: { purge } } as unknown as ExecutionContext,
+      { APP_ENV: "production", DB: { prepare } as unknown as D1Database },
+      message,
+    );
+    expect(purge).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(2);
   });
 
   it("purges both protocol versions and completes only an exact v2 generation", async () => {

@@ -4,11 +4,35 @@ import {
   scheduleCommandSchema,
   scheduleSnapshotSchema,
 } from "../../packages/contracts/src/index";
-import { evaluateScheduleConflicts } from "../../packages/domain/src/index";
-import { agendaScheduleSnapshotFixture } from "../../apps/web/src/agenda/agendaModel";
+import {
+  applyScheduleCommand,
+  evaluateScheduleConflicts,
+  previewSchedulePublication,
+} from "../../packages/domain/src/index";
+import {
+  agendaScheduleSnapshotFixture,
+  readyAgendaScheduleSnapshotFixture,
+} from "../../apps/web/src/agenda/agendaModel";
+import { publicScheduleProjectionFixture } from "../../apps/web/src/public/publicScheduleModel";
 
-export async function mockAgendaApi(page: Page) {
-  let snapshot = structuredClone(agendaScheduleSnapshotFixture);
+export async function mockAgendaApi(
+  page: Page,
+  options: { ready?: boolean; stalePublishOnce?: boolean } = {},
+) {
+  let snapshot = structuredClone(
+    options.ready
+      ? readyAgendaScheduleSnapshotFixture
+      : agendaScheduleSnapshotFixture,
+  );
+  let stalePublishOnce = options.stalePublishOnce ?? false;
+  let publicProjection = {
+    ...structuredClone(publicScheduleProjectionFixture),
+    event: {
+      ...structuredClone(publicScheduleProjectionFixture.event),
+      slug: snapshot.event.slug,
+    },
+    version: snapshot.event.publicationVersion,
+  };
   await page.context().addCookies([
     {
       httpOnly: false,
@@ -19,6 +43,10 @@ export async function mockAgendaApi(page: Page) {
       value: "agenda-e2e-csrf-token-that-is-at-least-forty-characters",
     },
   ]);
+
+  await page.route("**/api/v1/public/events/**/schedule", async (route) => {
+    await route.fulfill({ json: publicProjection, status: 200 });
+  });
 
   await page.route("**/api/events/**", async (route) => {
     const request = route.request();
@@ -49,6 +77,17 @@ export async function mockAgendaApi(page: Page) {
       return;
     }
 
+    if (
+      request.method() === "GET" &&
+      path.endsWith("/schedule/publication-preview")
+    ) {
+      await route.fulfill({
+        json: previewSchedulePublication(snapshot),
+        status: 200,
+      });
+      return;
+    }
+
     if (request.method() !== "POST" || !path.endsWith("/schedule/commands")) {
       await route.fulfill({ status: 405 });
       return;
@@ -70,6 +109,37 @@ export async function mockAgendaApi(page: Page) {
       });
       return;
     }
+    if (command.type === "publish_schedule" && stalePublishOnce) {
+      stalePublishOnce = false;
+      snapshot = scheduleSnapshotSchema.parse({
+        ...snapshot,
+        event: { ...snapshot.event, version: snapshot.event.version + 1 },
+        sessions: snapshot.sessions.map((session) =>
+          session.slot
+            ? {
+                ...session,
+                slot: {
+                  ...session.slot,
+                  version: snapshot.event.version + 1,
+                },
+              }
+            : session,
+        ),
+      });
+      await route.fulfill({
+        json: {
+          error: {
+            actualVersion: snapshot.event.version,
+            code: "schedule_version_conflict",
+            expectedVersion: command.expectedVersion,
+            message: "The schedule changed before this command was saved.",
+          },
+          ok: false,
+        },
+        status: 412,
+      });
+      return;
+    }
     if (command.expectedVersion !== snapshot.event.version) {
       await route.fulfill({
         json: {
@@ -88,6 +158,22 @@ export async function mockAgendaApi(page: Page) {
 
     const nextVersion = snapshot.event.version + 1;
     const changedSessionIds: string[] = [];
+    if (command.type === "publish_schedule") {
+      const result = applyScheduleCommand(snapshot, command);
+      snapshot = scheduleSnapshotSchema.parse(result.snapshot);
+      publicProjection = {
+        ...publicProjection,
+        generatedAt: new Date().toISOString(),
+        sessions: publicProjection.sessions.map((session) => ({
+          ...session,
+          publicationVersion: snapshot.event.publicationVersion,
+        })),
+        version: snapshot.event.publicationVersion,
+      };
+      await route.fulfill({ json: { ok: true, result }, status: 200 });
+      return;
+    }
+
     if (
       command.type === "place_session" ||
       command.type === "reschedule_session"

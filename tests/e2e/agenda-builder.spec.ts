@@ -199,22 +199,18 @@ test("conflict and publish previews explain blockers", async ({ page }) => {
   ).toBeDisabled();
 });
 
-test("production agenda keeps publication as an honest preview", async ({
+test("production agenda loads authoritative publication blockers", async ({
   page,
 }) => {
   await page.goto(agendaPath);
   await page.getByRole("button", { name: "Preview publish" }).click();
 
   const publish = page.getByRole("dialog", { name: "Publish agenda preview" });
-  await expect(publish).toContainText(
-    "This preview does not create a public schedule snapshot.",
-  );
-  await expect(
-    publish.getByRole("button", { name: "Close preview" }),
-  ).toBeVisible();
+  await expect(publish).toContainText("Your Eval Suite Is Lying to You");
+  await expect(publish).toContainText("Public version 2 → 8");
   await expect(
     publish.getByRole("button", { name: /^Publish version/ }),
-  ).toHaveCount(0);
+  ).toBeDisabled();
 });
 
 test("narrow agenda freezes page width while grid scrolls independently", async ({

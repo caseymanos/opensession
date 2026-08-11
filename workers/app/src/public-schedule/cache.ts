@@ -24,9 +24,20 @@ export interface PublicScheduleCacheInvalidationMessageV2 {
   version: 2;
 }
 
+export interface PublicScheduleCacheInvalidationMessageV3 {
+  event_id: string;
+  invalidation_version: number;
+  kind: "public_schedule.cache.invalidate";
+  organization_id: string;
+  publication_version: number;
+  surfaces: readonly ["schedule", "gallery", "feed"];
+  version: 3;
+}
+
 export type PublicScheduleCacheInvalidationMessage =
   | PublicScheduleCacheInvalidationMessageV1
-  | PublicScheduleCacheInvalidationMessageV2;
+  | PublicScheduleCacheInvalidationMessageV2
+  | PublicScheduleCacheInvalidationMessageV3;
 
 export function isPublicScheduleCacheInvalidationMessage(
   value: unknown,
@@ -41,22 +52,57 @@ export function isPublicScheduleCacheInvalidationMessage(
     /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.event_id) &&
     "version" in value &&
     (value.version === 1 ||
-      (value.version === 2 &&
+      ((value.version === 2 || value.version === 3) &&
         "organization_id" in value &&
         typeof value.organization_id === "string" &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.organization_id) &&
         "invalidation_version" in value &&
         typeof value.invalidation_version === "number" &&
         Number.isSafeInteger(value.invalidation_version) &&
-        value.invalidation_version > 0))
+        value.invalidation_version > 0 &&
+        (value.version === 2 ||
+          ("publication_version" in value &&
+            typeof value.publication_version === "number" &&
+            Number.isSafeInteger(value.publication_version) &&
+            value.publication_version > 0 &&
+            "surfaces" in value &&
+            Array.isArray(value.surfaces) &&
+            value.surfaces.length === 3 &&
+            value.surfaces[0] === "schedule" &&
+            value.surfaces[1] === "gallery" &&
+            value.surfaces[2] === "feed"))))
   );
 }
 
 export async function markPublicScheduleInvalidationProcessed(
   database: D1Database,
-  message: PublicScheduleCacheInvalidationMessageV2,
+  message:
+    | PublicScheduleCacheInvalidationMessageV2
+    | PublicScheduleCacheInvalidationMessageV3,
 ): Promise<boolean> {
   const now = new Date().toISOString();
+  if (message.version === 3) {
+    const completed = await database
+      .prepare(
+        `UPDATE authority_cache_invalidations
+         SET status = 'processed', processed_at = ?, updated_at = ?,
+             last_error_code = NULL
+         WHERE organization_id = ? AND event_id = ?
+           AND invalidation_version = ? AND publication_version = ?
+           AND surfaces_json = '["schedule","gallery","feed"]'
+           AND status IN ('pending', 'published', 'enqueued')`,
+      )
+      .bind(
+        now,
+        now,
+        message.organization_id,
+        message.event_id,
+        message.invalidation_version,
+        message.publication_version,
+      )
+      .run();
+    return completed.meta.changes === 1;
+  }
   const completed = await database
     .prepare(
       `UPDATE authority_cache_invalidations
@@ -77,11 +123,47 @@ export async function markPublicScheduleInvalidationProcessed(
   return completed.meta.changes === 1;
 }
 
+async function isCommittedPublicationInvalidation(
+  database: D1Database,
+  message: PublicScheduleCacheInvalidationMessageV3,
+): Promise<boolean> {
+  const committed = await database
+    .prepare(
+      `SELECT 1 AS valid
+       FROM authority_cache_invalidations AS invalidation
+       JOIN schedule_publications AS publication
+         ON publication.organization_id = invalidation.organization_id
+        AND publication.event_id = invalidation.event_id
+        AND publication.publication_version = invalidation.publication_version
+       WHERE invalidation.organization_id = ?
+         AND invalidation.event_id = ?
+         AND invalidation.invalidation_version = ?
+         AND invalidation.publication_version = ?
+         AND invalidation.surfaces_json = '["schedule","gallery","feed"]'
+         AND invalidation.status IN ('pending', 'published', 'enqueued')
+       LIMIT 1`,
+    )
+    .bind(
+      message.organization_id,
+      message.event_id,
+      message.invalidation_version,
+      message.publication_version,
+    )
+    .first<{ valid: number }>();
+  return committed?.valid === 1;
+}
+
 export async function processPublicScheduleCacheInvalidation(
   executionContext: ExecutionContext,
   environment: Pick<Env, "APP_ENV" | "DB">,
   message: PublicScheduleCacheInvalidationMessage,
 ): Promise<void> {
+  if (
+    message.version === 3 &&
+    !(await isCommittedPublicationInvalidation(environment.DB, message))
+  ) {
+    return;
+  }
   const purged = await purgePublicScheduleCache(
     executionContext,
     message.event_id,
@@ -89,7 +171,7 @@ export async function processPublicScheduleCacheInvalidation(
   if (!purged && environment.APP_ENV !== "local") {
     throw new Error("Worker cache invalidation is unavailable.");
   }
-  if (message.version === 2) {
+  if (message.version === 2 || message.version === 3) {
     await markPublicScheduleInvalidationProcessed(environment.DB, message);
   }
 }

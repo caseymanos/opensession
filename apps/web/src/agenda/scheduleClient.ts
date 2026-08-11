@@ -2,6 +2,7 @@ import {
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
   scheduleEntityTag,
+  schedulePublicationPreviewSchema,
   scheduleSnapshotSchema,
   type ScheduleCommand,
   type ScheduleCommandError,
@@ -155,6 +156,28 @@ export function createScheduleCommandPort(
       if (
         entityTag !== null &&
         entityTag !== scheduleEntityTag(parsed.data.event.version)
+      ) {
+        throw responseError(response, body);
+      }
+      return parsed.data;
+    },
+
+    async previewPublication(eventId) {
+      const response = await fetcher(
+        `${scheduleUrl(eventId)}/publication-preview`,
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        },
+      );
+      const body = await json(response);
+      if (!response.ok) throw responseError(response, body);
+      const parsed = schedulePublicationPreviewSchema.safeParse(body);
+      if (!parsed.success) throw responseError(response, body);
+      const entityTag = response.headers.get("ETag");
+      if (
+        entityTag !== null &&
+        entityTag !== scheduleEntityTag(parsed.data.scheduleVersion)
       ) {
         throw responseError(response, body);
       }

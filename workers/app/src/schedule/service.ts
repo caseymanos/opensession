@@ -1,4 +1,6 @@
 import {
+  previewSchedulePublication,
+  scheduleCommandSchema,
   scheduleCommandResultSchema,
   scheduleSnapshotSchema,
   ScheduleAuthorityPendingError,
@@ -6,6 +8,7 @@ import {
   type ScheduleCommand,
   type ScheduleCommandPort,
   type ScheduleCommandResult,
+  type SchedulePublicationPreview,
   type ScheduleSession,
   type ScheduleSlot,
   type ScheduleSnapshot,
@@ -23,6 +26,7 @@ import {
   type BaseAuthorityCommand,
 } from "../authority/types.js";
 import { D1ScheduleProjectionRepository } from "./d1-repository.js";
+import { D1SchedulePublicationRepository } from "./publication-repository.js";
 
 interface ScheduleServiceOptions {
   actorId: string;
@@ -42,6 +46,7 @@ interface ScheduleAuthority {
     | AuthorityCommandInspection
     | null
     | Promise<AuthorityCommandInspection | null>;
+  recoverPending(): Promise<number>;
 }
 
 interface EventPersistenceRow {
@@ -75,6 +80,14 @@ interface CommandReceiptRow {
   operations_json: string;
   result_json: string;
   state: "applying" | "complete";
+}
+
+interface StoredReceipt {
+  actorId: string | null;
+  command: ScheduleCommand | null;
+  previousSnapshot: ScheduleSnapshot | null;
+  requestId: string | null;
+  result: ScheduleCommandResult;
 }
 
 function canonicalJson(value: unknown): string {
@@ -131,7 +144,47 @@ function rowsById<T extends EntityPersistenceRow>(
   return new Map(rows.map((row) => [row.id, row]));
 }
 
-function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
+function parseStoredReceipt(value: unknown): StoredReceipt {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "version" in value &&
+    value.version === 3 &&
+    "actorId" in value &&
+    typeof value.actorId === "string" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "command" in value &&
+    "previousSnapshot" in value &&
+    "result" in value
+  ) {
+    return {
+      actorId: value.actorId,
+      command: scheduleCommandSchema.parse(value.command),
+      previousSnapshot: scheduleSnapshotSchema.parse(value.previousSnapshot),
+      requestId: value.requestId,
+      result: scheduleCommandResultSchema.parse(value.result),
+    };
+  }
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "version" in value &&
+    value.version === 2 &&
+    "command" in value &&
+    "previousSnapshot" in value &&
+    "result" in value
+  ) {
+    return {
+      actorId: null,
+      command: scheduleCommandSchema.parse(value.command),
+      previousSnapshot: scheduleSnapshotSchema.parse(value.previousSnapshot),
+      requestId: null,
+      result: scheduleCommandResultSchema.parse(value.result),
+    };
+  }
   if (
     value !== null &&
     typeof value === "object" &&
@@ -140,10 +193,27 @@ function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
     value.version === 1 &&
     "result" in value
   ) {
-    return scheduleCommandResultSchema.parse(value.result);
+    return {
+      actorId: null,
+      command: null,
+      previousSnapshot:
+        "previousSnapshot" in value
+          ? scheduleSnapshotSchema.parse(value.previousSnapshot)
+          : null,
+      requestId: null,
+      result: scheduleCommandResultSchema.parse(value.result),
+    };
   }
   const current = scheduleCommandResultSchema.safeParse(value);
-  if (current.success) return current.data;
+  if (current.success) {
+    return {
+      actorId: null,
+      command: null,
+      previousSnapshot: null,
+      requestId: null,
+      result: current.data,
+    };
+  }
   if (
     value !== null &&
     typeof value === "object" &&
@@ -152,13 +222,25 @@ function parseStoredCommandResult(value: unknown): ScheduleCommandResult {
     "snapshot" in value
   ) {
     const snapshot = scheduleSnapshotSchema.parse(value.snapshot);
-    return scheduleCommandResultSchema.parse({
-      ...value,
-      analysis: evaluateScheduleConflicts(snapshot),
-      snapshot,
-    });
+    return {
+      actorId: null,
+      command: null,
+      previousSnapshot: null,
+      requestId: null,
+      result: scheduleCommandResultSchema.parse({
+        ...value,
+        analysis: evaluateScheduleConflicts(snapshot),
+        snapshot,
+      }),
+    };
   }
-  return scheduleCommandResultSchema.parse(value);
+  return {
+    actorId: null,
+    command: null,
+    previousSnapshot: null,
+    requestId: null,
+    result: scheduleCommandResultSchema.parse(value),
+  };
 }
 
 export class AirtableScheduleCommandService implements ScheduleCommandPort {
@@ -182,6 +264,14 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     return this.#projection.read(eventId);
   }
 
+  async previewPublication(
+    eventId: string,
+  ): Promise<SchedulePublicationPreview> {
+    const snapshot = await this.read(eventId);
+    if (!snapshot) throw new ScheduleNotFoundError(eventId);
+    return previewSchedulePublication(snapshot);
+  }
+
   async execute(command: ScheduleCommand): Promise<ScheduleCommandResult> {
     const commandHash = await sha256Hex(canonicalJson(command));
     const existing = await this.#readReceipt(
@@ -199,6 +289,12 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     if (applying) {
       await this.#resumeReceipt(applying, false);
     }
+    const calendarRepair = await this.#readCalendarRepairReceipt(
+      command.eventId,
+    );
+    if (calendarRepair) {
+      await this.#resumeReceipt(calendarRepair, true);
+    }
 
     const snapshot = await this.read(command.eventId);
     if (!snapshot) {
@@ -213,6 +309,12 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       result.changedSessionIds,
       persistence,
     );
+    if (command.type === "publish_schedule") {
+      await this.#publication(
+        this.#actorId,
+        this.#requestId,
+      ).ensureLegacyBaseline(persistence.event.organization_id, snapshot);
+    }
     const now = new Date().toISOString();
     await this.#database
       .prepare(
@@ -226,7 +328,14 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
         command.commandId,
         commandHash,
         JSON.stringify(operations),
-        JSON.stringify({ previousSnapshot: snapshot, result, version: 1 }),
+        JSON.stringify({
+          actorId: this.#actorId,
+          command,
+          previousSnapshot: snapshot,
+          requestId: this.#requestId,
+          result,
+          version: 3,
+        }),
         now,
       )
       .run();
@@ -235,8 +344,15 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       command.eventId,
       command.commandId,
       operations,
-      result,
+      {
+        actorId: this.#actorId,
+        command,
+        previousSnapshot: snapshot,
+        requestId: this.#requestId,
+        result,
+      },
       false,
+      persistence.event.organization_id,
     );
   }
 
@@ -271,28 +387,78 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
       .first<CommandReceiptRow>();
   }
 
+  async #readCalendarRepairReceipt(
+    eventId: string,
+  ): Promise<CommandReceiptRow | null> {
+    return this.#database
+      .prepare(
+        `SELECT receipt.event_id, receipt.command_id, receipt.command_hash,
+                receipt.state, receipt.operations_json, receipt.result_json
+         FROM schedule_command_receipts AS receipt
+         JOIN schedule_public_changes AS public_change
+           ON public_change.event_id = receipt.event_id
+          AND public_change.command_id = receipt.command_id
+         WHERE receipt.event_id = ?1 AND receipt.state = 'complete'
+           AND public_change.calendar_intent_enqueued_at IS NULL
+         ORDER BY public_change.created_at, public_change.id
+         LIMIT 1`,
+      )
+      .bind(eventId)
+      .first<CommandReceiptRow>();
+  }
+
   async resumePending(eventId: string): Promise<ScheduleCommandResult | null> {
     const receipt = await this.#readApplyingReceipt(eventId);
-    return receipt ? this.#resumeReceipt(receipt, false) : null;
+    if (receipt) return this.#resumeReceipt(receipt, false);
+    const calendarRepair = await this.#readCalendarRepairReceipt(eventId);
+    return calendarRepair ? this.#resumeReceipt(calendarRepair, true) : null;
   }
 
   async #resumeReceipt(
     receipt: CommandReceiptRow,
     complete: boolean,
   ): Promise<ScheduleCommandResult> {
-    const result = parseStoredCommandResult(
+    const stored = parseStoredReceipt(
       JSON.parse(receipt.result_json) as unknown,
     );
-    if (complete) return { ...result, replayed: true };
+    if (complete) {
+      let repaired = false;
+      try {
+        if (stored.command) {
+          repaired = Boolean(
+            await this.#publication(
+              stored.actorId ?? this.#actorId,
+              stored.requestId ?? this.#requestId,
+            ).repairCalendarChange(
+              stored.command.eventId,
+              stored.command.commandId,
+            ),
+          );
+        }
+      } catch {
+        throw new ScheduleAuthorityPendingError(
+          stored.result.commandId,
+          "projection_pending",
+        );
+      }
+      const result = { ...stored.result, replayed: true };
+      if (repaired) this.#onCommitted?.(result);
+      return result;
+    }
     const operations = (JSON.parse(receipt.operations_json) as unknown[]).map(
       parseBaseAuthorityCommand,
     );
+    const organizationId = operations[0]?.organizationId;
+    if (!organizationId) {
+      throw new Error("Applying schedule receipt has no authority operations.");
+    }
     return this.#applyReceipt(
-      result.snapshot.event.eventId,
-      result.commandId,
+      stored.result.snapshot.event.eventId,
+      stored.result.commandId,
       operations,
-      result,
+      stored,
       true,
+      organizationId,
     );
   }
 
@@ -300,28 +466,57 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
     eventId: string,
     commandId: string,
     operations: readonly BaseAuthorityCommand[],
-    result: ScheduleCommandResult,
+    stored: StoredReceipt,
     replayed: boolean,
+    organizationId: string,
   ): Promise<ScheduleCommandResult> {
     for (const operation of operations) {
-      await this.#executeOperation(operation, result.commandId);
+      await this.#executeOperation(operation, stored.result.commandId);
     }
-    await this.#database
-      .prepare(
-        `UPDATE schedule_command_receipts
-         SET state = 'complete', result_json = ?4, updated_at = ?3
-         WHERE event_id = ?1 AND command_id = ?2`,
-      )
-      .bind(
-        eventId,
-        commandId,
-        new Date().toISOString(),
-        JSON.stringify(result),
-      )
-      .run();
-    const committed = { ...result, replayed };
+    try {
+      if (stored.command && stored.previousSnapshot) {
+        await this.#publication(
+          stored.actorId ?? this.#actorId,
+          stored.requestId ?? this.#requestId,
+        ).commit({
+          command: stored.command,
+          organizationId,
+          previousSnapshot: stored.previousSnapshot,
+          result: stored.result,
+        });
+      } else {
+        await this.#database
+          .prepare(
+            `UPDATE schedule_command_receipts
+             SET state = 'complete', result_json = ?4, updated_at = ?3
+             WHERE event_id = ?1 AND command_id = ?2`,
+          )
+          .bind(
+            eventId,
+            commandId,
+            new Date().toISOString(),
+            JSON.stringify(stored.result),
+          )
+          .run();
+      }
+    } catch {
+      throw new ScheduleAuthorityPendingError(commandId, "projection_pending");
+    }
+    const committed = { ...stored.result, replayed };
     this.#onCommitted?.(committed);
+    await this.#authority.recoverPending();
     return committed;
+  }
+
+  #publication(
+    actorId: string,
+    requestId: string,
+  ): D1SchedulePublicationRepository {
+    return new D1SchedulePublicationRepository({
+      actorId,
+      database: this.#database,
+      requestId,
+    });
   }
 
   async #executeOperation(
@@ -485,7 +680,9 @@ export class AirtableScheduleCommandService implements ScheduleCommandPort {
             sessionRecord.source_version,
             {
               "Duration minutes": nextSession.durationMinutes,
-              Public: nextSession.state === "published",
+              Public:
+                nextSession.isPublic !== false &&
+                nextSession.state === "published",
               Status: sessionProviderState(nextSession.state),
             },
           ),
