@@ -5,6 +5,14 @@
   "compatibility_date": "2026-08-08",
   "compatibility_flags": ["nodejs_compat"],
   "exports": {
+    "AgendaCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "FixtureAgendaCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
     "FixtureBaseAuthority": {
       "type": "durable-object",
       "storage": "sqlite",
@@ -12,6 +20,14 @@
   },
   "durable_objects": {
     "bindings": [
+      {
+        "name": "AGENDA_COORDINATOR",
+        "class_name": "AgendaCoordinator",
+      },
+      {
+        "name": "FIXTURE_AGENDA_COORDINATOR",
+        "class_name": "FixtureAgendaCoordinator",
+      },
       {
         "name": "BASE_AUTHORITY",
         "class_name": "FixtureBaseAuthority",

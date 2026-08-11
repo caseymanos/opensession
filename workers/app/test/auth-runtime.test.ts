@@ -516,6 +516,8 @@ describe("passwordless authentication runtime", () => {
       headers: { Cookie: owner.cookie },
     });
     expect(bySlug.status, await bySlug.clone().text()).toBe(200);
+    expect(bySlug.headers.get("ETag")).toBe('"schedule-v0"');
+    expect(bySlug.headers.get("Schedule-Version")).toBe("0");
     const slugSnapshot = scheduleSnapshotSchema.parse(await bySlug.json());
     expect(slugSnapshot.event).toMatchObject({
       eventId: "evt_one",
@@ -552,7 +554,10 @@ describe("passwordless authentication runtime", () => {
           startAt: "2026-10-13T09:00:00.000Z",
           type: "place_session",
         }),
-        headers: authHeaders(owner.cookie),
+        headers: {
+          ...authHeaders(owner.cookie),
+          "If-Match": '"schedule-v0"',
+        },
         method: "POST",
       },
     );
@@ -570,7 +575,10 @@ describe("passwordless authentication runtime", () => {
           expectedVersion: 0,
           type: "publish_schedule",
         }),
-        headers: authHeaders(owner.cookie, owner.csrf),
+        headers: {
+          ...authHeaders(owner.cookie, owner.csrf),
+          "If-Match": '"schedule-v0"',
+        },
         method: "POST",
       },
     );
@@ -580,6 +588,81 @@ describe("passwordless authentication runtime", () => {
         code: "schedule_validation_error",
         field: "eventId",
         reason: "invalid_command",
+      },
+      ok: false,
+    });
+
+    const missingIfMatch = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_schedule_route_no_etag",
+          eventId: "evt_one",
+          expectedVersion: 0,
+          type: "publish_schedule",
+        }),
+        headers: authHeaders(owner.cookie, owner.csrf),
+        method: "POST",
+      },
+    );
+    expect(missingIfMatch.status).toBe(428);
+    await expect(missingIfMatch.json()).resolves.toMatchObject({
+      error: {
+        code: "schedule_validation_error",
+        field: "If-Match",
+        reason: "invalid_version",
+      },
+      ok: false,
+    });
+
+    const mismatchedIfMatch = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_schedule_route_wrong_etag",
+          eventId: "evt_one",
+          expectedVersion: 0,
+          type: "publish_schedule",
+        }),
+        headers: {
+          ...authHeaders(owner.cookie, owner.csrf),
+          "If-Match": '"schedule-v1"',
+        },
+        method: "POST",
+      },
+    );
+    expect(mismatchedIfMatch.status).toBe(400);
+    await expect(mismatchedIfMatch.json()).resolves.toMatchObject({
+      error: {
+        code: "schedule_validation_error",
+        field: "If-Match",
+        reason: "invalid_version",
+      },
+      ok: false,
+    });
+
+    const staleIfMatch = await server.fetch(
+      "/api/events/event-one/schedule/commands",
+      {
+        body: JSON.stringify({
+          commandId: "cmd_schedule_route_stale_etag",
+          eventId: "evt_one",
+          expectedVersion: 1,
+          type: "publish_schedule",
+        }),
+        headers: {
+          ...authHeaders(owner.cookie, owner.csrf),
+          "If-Match": '"schedule-v1"',
+        },
+        method: "POST",
+      },
+    );
+    expect(staleIfMatch.status).toBe(412);
+    await expect(staleIfMatch.json()).resolves.toMatchObject({
+      error: {
+        actualVersion: 0,
+        code: "schedule_version_conflict",
+        expectedVersion: 1,
       },
       ok: false,
     });
@@ -658,7 +741,10 @@ describe("passwordless authentication runtime", () => {
       "/api/events/event-one/schedule/commands",
       {
         body: JSON.stringify(collisionCommand),
-        headers: authHeaders(owner.cookie, owner.csrf),
+        headers: {
+          ...authHeaders(owner.cookie, owner.csrf),
+          "If-Match": '"schedule-v1"',
+        },
         method: "POST",
       },
     );
@@ -743,7 +829,10 @@ describe("passwordless authentication runtime", () => {
           expectedVersion: 1,
           type: "publish_schedule",
         }),
-        headers: authHeaders(owner.cookie, owner.csrf),
+        headers: {
+          ...authHeaders(owner.cookie, owner.csrf),
+          "If-Match": '"schedule-v1"',
+        },
         method: "POST",
       },
     );

@@ -21,13 +21,23 @@
     "binding": "WORKER_VERSION",
   },
   "exports": {
+    "AgendaCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
     "BaseAuthority": {
       "type": "durable-object",
       "storage": "sqlite",
     },
   },
   "durable_objects": {
-    "bindings": [{ "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" }],
+    "bindings": [
+      {
+        "name": "AGENDA_COORDINATOR",
+        "class_name": "AgendaCoordinator",
+      },
+      { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
+    ],
   },
   "secrets": {
     "required": [
@@ -136,6 +146,10 @@
       "triggers": { "crons": ["17 3 * * *", "17 * * * *"] },
       "durable_objects": {
         "bindings": [
+          {
+            "name": "AGENDA_COORDINATOR",
+            "class_name": "AgendaCoordinator",
+          },
           { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
         ],
       },
@@ -249,6 +263,10 @@
       "triggers": { "crons": ["17 3 * * *", "17 * * * *"] },
       "durable_objects": {
         "bindings": [
+          {
+            "name": "AGENDA_COORDINATOR",
+            "class_name": "AgendaCoordinator",
+          },
           { "name": "BASE_AUTHORITY", "class_name": "BaseAuthority" },
         ],
       },

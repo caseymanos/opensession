@@ -11,6 +11,7 @@ import {
   publicScheduleResponse,
   purgePublicScheduleCache,
 } from "../src/public-schedule/cache.js";
+import { shouldInvalidatePublicSchedule } from "../src/authority/projector.js";
 
 const projection: PublicScheduleProjection = {
   event: {
@@ -27,6 +28,33 @@ const projection: PublicScheduleProjection = {
 };
 
 describe("public schedule cache contract", () => {
+  it("invalidates coordinated schedules only at the event version commit", () => {
+    expect(
+      shouldInvalidatePublicSchedule({
+        operation: "schedule.place_session.schedule_slots",
+        table: "schedule_slots",
+      }),
+    ).toBe(false);
+    expect(
+      shouldInvalidatePublicSchedule({
+        operation: "schedule.place_session.sessions",
+        table: "sessions",
+      }),
+    ).toBe(false);
+    expect(
+      shouldInvalidatePublicSchedule({
+        operation: "schedule.place_session.events",
+        table: "events",
+      }),
+    ).toBe(true);
+    expect(
+      shouldInvalidatePublicSchedule({
+        operation: "rooms.update",
+        table: "rooms",
+      }),
+    ).toBe(true);
+  });
+
   it("accepts only bounded versioned invalidation messages", () => {
     expect(
       isPublicScheduleCacheInvalidationMessage({

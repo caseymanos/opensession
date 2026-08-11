@@ -1,6 +1,7 @@
 import {
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
+  scheduleEntityTag,
   scheduleSnapshotSchema,
   type ScheduleCommand,
   type ScheduleCommandError,
@@ -110,6 +111,7 @@ export function createScheduleCommandPort(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "If-Match": scheduleEntityTag(command.expectedVersion),
         "X-CSRF-Token": token,
       },
       method: "POST",
@@ -149,6 +151,13 @@ export function createScheduleCommandPort(
       if (!response.ok) throw responseError(response, body);
       const parsed = scheduleSnapshotSchema.safeParse(body);
       if (!parsed.success) throw responseError(response, body);
+      const entityTag = response.headers.get("ETag");
+      if (
+        entityTag !== null &&
+        entityTag !== scheduleEntityTag(parsed.data.event.version)
+      ) {
+        throw responseError(response, body);
+      }
       return parsed.data;
     },
   };

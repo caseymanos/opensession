@@ -72,7 +72,10 @@ describe("schedule HTTP command port", () => {
       expect.objectContaining({
         body: expect.any(String),
         credentials: "same-origin",
-        headers: expect.objectContaining({ "X-CSRF-Token": token }),
+        headers: expect.objectContaining({
+          "If-Match": `"schedule-v${command.expectedVersion}"`,
+          "X-CSRF-Token": token,
+        }),
         method: "POST",
       }),
     );
@@ -92,7 +95,7 @@ describe("schedule HTTP command port", () => {
           },
           ok: false,
         },
-        409,
+        412,
       ),
     );
     const port = createScheduleCommandPort(fetcher, () => "b".repeat(40));
@@ -105,7 +108,61 @@ describe("schedule HTTP command port", () => {
         actualVersion: command.expectedVersion + 1,
         expectedVersion: command.expectedVersion,
       },
-      status: 409,
+      status: 412,
+    });
+  });
+
+  it("preserves a retryable pending authority result for UI recovery", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      response(
+        {
+          error: {
+            code: "schedule_authority_pending",
+            commandId: command.commandId,
+            message:
+              "The authoritative write committed and is still being reconciled.",
+            retryable: true,
+            state: "projection_pending",
+          },
+          ok: false,
+        },
+        202,
+      ),
+    );
+    const port = createScheduleCommandPort(fetcher, () => "f".repeat(40));
+
+    const error = await port.execute(command).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ScheduleApiError);
+    expect(error).toMatchObject({
+      code: "schedule_authority_pending",
+      domainError: {
+        commandId: command.commandId,
+        retryable: true,
+        state: "projection_pending",
+      },
+      status: 202,
+    });
+  });
+
+  it("rejects a schedule body that disagrees with its ETag", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify(scheduleSnapshotFixture), {
+          headers: {
+            "Content-Type": "application/json",
+            ETag: `"schedule-v${scheduleSnapshotFixture.event.version + 1}"`,
+          },
+        }),
+    );
+    const port = createScheduleCommandPort(fetcher);
+
+    const error = await port
+      .read(command.eventId)
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ScheduleApiError);
+    expect(error).toMatchObject({
+      code: "invalid_schedule_response",
+      status: 200,
     });
   });
 

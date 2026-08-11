@@ -60,6 +60,30 @@ interface ParticipantRow {
   session_id: string;
 }
 
+interface ApplyingReceiptRow {
+  result_json: string;
+}
+
+function previousCommittedSnapshot(value: string): ScheduleSnapshot | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new Error("D1 schedule receipt contains invalid JSON.");
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !("version" in parsed) ||
+    parsed.version !== 1 ||
+    !("previousSnapshot" in parsed)
+  ) {
+    return null;
+  }
+  return scheduleSnapshotSchema.parse(parsed.previousSnapshot);
+}
+
 function parseScheduleDays(value: string): unknown {
   try {
     return JSON.parse(value) as unknown;
@@ -101,6 +125,21 @@ export class D1ScheduleProjectionRepository {
   }
 
   async read(eventId: string): Promise<ScheduleSnapshot | null> {
+    const applyingReceipt = await this.#database
+      .prepare(
+        `SELECT result_json
+         FROM schedule_command_receipts
+         WHERE event_id = ? AND state = 'applying'
+         ORDER BY created_at, command_id
+         LIMIT 1`,
+      )
+      .bind(eventId)
+      .first<ApplyingReceiptRow>();
+    if (applyingReceipt) {
+      const previous = previousCommittedSnapshot(applyingReceipt.result_json);
+      if (previous) return previous;
+    }
+
     const event = await this.#database
       .prepare(
         `SELECT id, organization_id, slug, timezone, schedule_days_json,

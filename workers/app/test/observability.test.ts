@@ -33,6 +33,7 @@ function createReadinessEnvironment(schemaVersion: number) {
 
   return {
     environment: {
+      AGENDA_COORDINATOR: {},
       AIRTABLE_BASE_ID: "app12345678",
       AIRTABLE_PAT: "configured",
       APP_ENV: "local",

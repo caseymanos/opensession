@@ -45,6 +45,7 @@ const airtableBasePattern = /^app[A-Za-z0-9]{8,}$/;
 const publicSlugPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export { BaseAuthority } from "./authority/base-authority.js";
+export { AgendaCoordinator } from "./schedule/coordinator.js";
 
 function operationalRoute(context: Context<AppContext>): string {
   const matchedRoute = routePath(context, -1);
@@ -110,6 +111,7 @@ app.get("/health/ready", async (context) => {
     context.env.WEBHOOK_DELIVERY_QUEUE,
     context.env.INTEGRATION_EXPORT_QUEUE,
     context.env.BASE_AUTHORITY,
+    context.env.AGENDA_COORDINATOR,
     context.env.AIRTABLE_PAT,
     context.env.AUTH_HASH_PEPPER,
     context.env.OBSERVABILITY,

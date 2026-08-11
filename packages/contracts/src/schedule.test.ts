@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,7 +8,9 @@ import {
 import {
   placeSessionCommandSchema,
   scheduleCommandResponseSchema,
+  scheduleEntityTag,
   scheduleSnapshotSchema,
+  scheduleVersionFromEntityTag,
 } from "./schedule";
 
 describe("schedule contracts", () => {
@@ -86,6 +89,26 @@ describe("schedule contracts", () => {
     expect(
       scheduleCommandResponseSchema.parse({
         error: {
+          code: "schedule_authority_pending",
+          commandId: "command_repair_pending",
+          message: "Projection repair is pending.",
+          retryable: true,
+          state: "projection_pending",
+        },
+        ok: false,
+      }),
+    ).toMatchObject({
+      error: {
+        code: "schedule_authority_pending",
+        retryable: true,
+        state: "projection_pending",
+      },
+      ok: false,
+    });
+
+    expect(
+      scheduleCommandResponseSchema.parse({
+        error: {
           actualVersion: 9,
           code: "schedule_version_conflict",
           expectedVersion: 8,
@@ -134,5 +157,20 @@ describe("schedule contracts", () => {
       },
       ok: false,
     });
+  });
+
+  it("round-trips arbitrary safe schedule versions through strong ETags", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }),
+        (version) => {
+          const tag = scheduleEntityTag(version);
+          expect(scheduleVersionFromEntityTag(tag)).toBe(version);
+          expect(scheduleVersionFromEntityTag(`W/${tag}`)).toBeNull();
+          expect(scheduleVersionFromEntityTag(`${tag}, ${tag}`)).toBeNull();
+        },
+      ),
+      { numRuns: 250, seed: 63_063 },
+    );
   });
 });

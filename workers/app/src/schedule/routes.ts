@@ -2,10 +2,14 @@ import {
   scheduleConflictReportSchema,
   scheduleCommandResponseSchema,
   scheduleCommandSchema,
+  scheduleEntityTag,
   scheduleSnapshotSchema,
+  scheduleVersionFromEntityTag,
+  ScheduleAuthorityPendingError,
   ScheduleIdempotencyConflictError,
   ScheduleValidationError,
   ScheduleVersionConflictError,
+  type ScheduleCommandResponse,
 } from "@sessionbox-killer/contracts";
 import {
   evaluateScheduleConflicts,
@@ -26,13 +30,10 @@ import {
   requireSameOrigin,
   sessionToken,
 } from "../auth/http";
-import { getBaseAuthority } from "../authority/binding.js";
 import { isFeatureEnabled } from "../features";
+import { getAgendaCoordinator } from "./binding.js";
 import { D1ScheduleProjectionRepository } from "./d1-repository.js";
-import {
-  AirtableScheduleCommandService,
-  ScheduleNotFoundError,
-} from "./service.js";
+import { ScheduleNotFoundError } from "./service.js";
 
 const scheduleCommandBodyLimitBytes = 8 * 1024;
 
@@ -129,7 +130,7 @@ function validationResponse(
   context: Context<AppContext>,
   field: string,
   message: string,
-  status: 400 | 422,
+  status: 400 | 412 | 422 | 428,
   reason: ScheduleValidationError["reason"] = "invalid_command",
 ) {
   return context.json(
@@ -147,6 +148,21 @@ function validationResponse(
 }
 
 function commandFailure(context: Context<AppContext>, error: unknown) {
+  if (error instanceof ScheduleAuthorityPendingError) {
+    return context.json(
+      scheduleCommandResponseSchema.parse({
+        error: {
+          code: error.code,
+          commandId: error.commandId,
+          message: error.message,
+          retryable: error.retryable,
+          state: error.state,
+        },
+        ok: false,
+      }),
+      202,
+    );
+  }
   if (error instanceof ScheduleHardConflictError) {
     return context.json(
       scheduleCommandResponseSchema.parse({
@@ -180,7 +196,7 @@ function commandFailure(context: Context<AppContext>, error: unknown) {
         },
         ok: false,
       }),
-      409,
+      412,
     );
   }
   if (error instanceof ScheduleIdempotencyConflictError) {
@@ -214,6 +230,41 @@ function commandFailure(context: Context<AppContext>, error: unknown) {
       "The authoritative schedule is temporarily unavailable.",
     );
   }
+}
+
+function coordinatorResponse(
+  context: Context<AppContext>,
+  response: ScheduleCommandResponse,
+) {
+  if (response.ok) {
+    context.header(
+      "ETag",
+      scheduleEntityTag(response.result.snapshot.event.version),
+    );
+    context.header(
+      "Schedule-Version",
+      String(response.result.snapshot.event.version),
+    );
+    return context.json(response);
+  }
+  const status =
+    response.error.code === "schedule_authority_pending"
+      ? 202
+      : response.error.code === "schedule_version_conflict"
+        ? 412
+        : response.error.code === "schedule_validation_error"
+          ? 422
+          : 409;
+  return context.json(response, status);
+}
+
+function scheduleSnapshotResponse(
+  context: Context<AppContext>,
+  snapshot: ReturnType<typeof scheduleSnapshotSchema.parse>,
+) {
+  context.header("ETag", scheduleEntityTag(snapshot.event.version));
+  context.header("Schedule-Version", String(snapshot.event.version));
+  return context.json(snapshot);
 }
 
 function eventResolutionFailure(
@@ -330,7 +381,10 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
           "The requested event schedule does not exist.",
         );
       }
-      return context.json(scheduleSnapshotSchema.parse(snapshot));
+      return scheduleSnapshotResponse(
+        context,
+        scheduleSnapshotSchema.parse(snapshot),
+      );
     } catch (error) {
       try {
         return authFailure(context, error);
@@ -340,6 +394,41 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
           503,
           "schedule_projection_unavailable",
           "The event schedule is temporarily unavailable.",
+        );
+      }
+    }
+  });
+
+  app.get("/api/events/:eventKey/schedule/stream", async (context) => {
+    const eventKey = context.req.param("eventKey");
+    try {
+      const authentication = authService(context);
+      const session = await authentication.authenticate(sessionToken(context));
+      const resolution = await resolveAuthorizedEvent(
+        context,
+        eventKey,
+        session.user,
+        "session:read:any",
+      );
+      if (resolution.kind !== "resolved") {
+        return eventResolutionFailure(context, resolution);
+      }
+      const target = new URL("https://agenda-coordinator.invalid/stream");
+      target.searchParams.set("eventId", resolution.eventId);
+      return getAgendaCoordinator(context.env, resolution.eventId).fetch(
+        new Request(target, {
+          headers: { Upgrade: context.req.header("Upgrade") ?? "" },
+        }),
+      );
+    } catch (error) {
+      try {
+        return authFailure(context, error);
+      } catch {
+        return standardError(
+          context,
+          503,
+          "schedule_coordinator_unavailable",
+          "Live schedule updates are temporarily unavailable.",
         );
       }
     }
@@ -373,6 +462,35 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
         400,
       );
     }
+    const ifMatch = context.req.header("If-Match");
+    if (ifMatch === undefined) {
+      return validationResponse(
+        context,
+        "If-Match",
+        "Schedule commands require the ETag returned by the latest schedule read.",
+        428,
+        "invalid_version",
+      );
+    }
+    const matchedVersion = scheduleVersionFromEntityTag(ifMatch);
+    if (matchedVersion === null) {
+      return validationResponse(
+        context,
+        "If-Match",
+        "If-Match must contain one strong OpenSession schedule ETag.",
+        400,
+        "invalid_version",
+      );
+    }
+    if (matchedVersion !== input.data.expectedVersion) {
+      return validationResponse(
+        context,
+        "If-Match",
+        "If-Match and expectedVersion must identify the same schedule version.",
+        400,
+        "invalid_version",
+      );
+    }
     const eventKey = context.req.param("eventKey");
 
     try {
@@ -399,14 +517,17 @@ export function registerScheduleRoutes(app: Hono<AppContext>): void {
           422,
         );
       }
-      const result = await new AirtableScheduleCommandService({
+      const response = await getAgendaCoordinator(
+        context.env,
+        resolution.eventId,
+      ).execute({
         actorId: session.user.id,
-        authority: getBaseAuthority(context.env),
-        database: context.env.DB,
+        command: input.data,
         requestId: context.get("requestId"),
-      }).execute(input.data);
-      return context.json(
-        scheduleCommandResponseSchema.parse({ ok: true, result }),
+      });
+      return coordinatorResponse(
+        context,
+        scheduleCommandResponseSchema.parse(response),
       );
     } catch (error) {
       return commandFailure(context, error);
