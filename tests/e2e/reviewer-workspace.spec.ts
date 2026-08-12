@@ -20,7 +20,10 @@ function productionResponse(): ReviewerAssignmentListResponse {
           audit: [],
           conflictNote: null,
           id: "assignment_production",
-          reviewer: { displayName: "Morgan Lee", id: "reviewer_morgan" },
+          reviewer: {
+            displayName: "Riley Reviewer",
+            id: "reviewer_riley",
+          },
           reviewerGroupId: "group_engineering",
           rubric: {
             criteria: [
@@ -70,7 +73,7 @@ function productionResponse(): ReviewerAssignmentListResponse {
       slug: "ai-engineer-summit",
       timezone: "America/Los_Angeles",
     },
-    reviewer: { displayName: "Morgan Lee", id: "reviewer_morgan" },
+    reviewer: { displayName: "Riley Reviewer", id: "reviewer_riley" },
   };
 }
 
@@ -402,6 +405,40 @@ test("production reviewer loads scoped context and submits one final snapshot", 
     expectedVersion: 1,
     type: "submit_review",
   });
+});
+
+test("authenticated reviewer direct navigation and refresh stay in the reviewer workflow", async ({
+  page,
+}) => {
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => requestedPaths.push(request.url()));
+  await page.route(
+    "**/api/events/ai-engineer-summit/review-workspace",
+    async (route) => route.fulfill({ json: { surface: "reviewer" } }),
+  );
+  await installProductionReview(page, async () => 2);
+
+  await page.goto("/app/ai-engineer-summit/reviews");
+  await expect(
+    page.getByRole("heading", { name: "Reliable Agents in Practice" }),
+  ).toBeVisible();
+  await expect(page.locator(".reviewer-profile")).toContainText(
+    "Riley Reviewer",
+  );
+  await expect(page.locator(".reviewer-profile")).toContainText("Reviewer");
+  await expect(page.getByText("Casey Manos")).toHaveCount(0);
+  await expect(page.getByText("Organizer", { exact: true })).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.locator(".reviewer-profile")).toContainText(
+    "Riley Reviewer",
+  );
+  expect(
+    requestedPaths.filter((path) => path.includes("/review-operations")),
+  ).toEqual([]);
+  expect(
+    requestedPaths.filter((path) => path.endsWith("/reviewer-assignments")),
+  ).toHaveLength(2);
 });
 
 test("failed production autosave retries the exact frozen command", async ({

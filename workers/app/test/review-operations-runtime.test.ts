@@ -335,6 +335,31 @@ beforeAll(async () => {
 afterAll(async () => server.close());
 
 describe.sequential("review operations runtime", () => {
+  it("selects reviewer and organizer workspaces from existing access without weakening either surface", async () => {
+    const reviewer = await request(
+      "/api/events/event_alpha/review-workspace",
+      reviewerOneAuth,
+    );
+    expect(reviewer.status).toBe(200);
+    expect(await reviewer.json()).toEqual({ surface: "reviewer" });
+
+    const organizer = await request(
+      "/api/events/event_alpha/review-workspace",
+      organizerAuth,
+    );
+    expect(organizer.status).toBe(200);
+    expect(await organizer.json()).toEqual({ surface: "organizer" });
+
+    const organizerOnly = await request(
+      "/api/events/event_alpha/review-operations",
+      reviewerOneAuth,
+    );
+    expect(organizerOnly.status).toBe(403);
+    expect(await organizerOnly.json()).toMatchObject({
+      error: { code: "review_operations_forbidden" },
+    });
+  });
+
   it("returns unassigned routable proposals to organizers while scoping reviewer reads", async () => {
     const organizerResponse = await request(
       "/api/events/event_alpha/review-operations",

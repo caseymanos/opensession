@@ -22,6 +22,34 @@ const command = {
 } satisfies ReviewOperationsCommand;
 
 describe("review operations client", () => {
+  it("loads the authenticated review workspace without touching either data surface", async () => {
+    const fetcher = vi.fn().mockResolvedValue(json({ surface: "reviewer" }));
+    const port = createReviewOperationsPort(fetcher);
+
+    await expect(port.workspaceAccess("event one")).resolves.toEqual({
+      surface: "reviewer",
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/events/event%20one/review-workspace",
+      expect.objectContaining({
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }),
+    );
+  });
+
+  it("rejects a malformed review workspace decision", async () => {
+    const port = createReviewOperationsPort(
+      vi.fn().mockResolvedValue(json({ surface: "viewer" })),
+    );
+
+    await expect(port.workspaceAccess("event_one")).rejects.toMatchObject({
+      code: "invalid_review_operations_response",
+    });
+  });
+
   it("retries a rotated CSRF token once with the exact command body", async () => {
     const fetcher = vi
       .fn()

@@ -2,6 +2,7 @@ import {
   reviewOperationsCommandResponseSchema,
   reviewOperationsCommandSchema,
   reviewOperationsResponseSchema,
+  reviewWorkspaceAccessResponseSchema,
   reviewerAssignmentListResponseSchema,
   reviewScoringCommandSchema,
   type ReviewOperationsCommand,
@@ -9,6 +10,7 @@ import {
   type ReviewOperationsResponse,
   type ReviewerAssignmentListResponse,
   type ReviewScoringCommand,
+  type ReviewWorkspaceAccessResponse,
 } from "@sessionbox-killer/contracts";
 
 import { readCsrfToken } from "../auth/authClient";
@@ -31,6 +33,10 @@ export interface ReviewOperationsPort {
     eventKey: string,
     signal?: AbortSignal,
   ): Promise<ReviewerAssignmentListResponse>;
+  workspaceAccess(
+    eventKey: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewWorkspaceAccessResponse>;
   executeReview(
     eventKey: string,
     command: ReviewScoringCommand,
@@ -223,6 +229,22 @@ export function createReviewOperationsPort(
       const value = await responseJson(response);
       if (!response.ok) throw genericError(response, value);
       const parsed = reviewerAssignmentListResponseSchema.safeParse(value);
+      if (!parsed.success) throw genericError(response, value);
+      return parsed.data;
+    },
+    async workspaceAccess(eventKey, signal) {
+      const response = await fetcher(
+        `/api/events/${encodeURIComponent(eventKey)}/review-workspace`,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+          ...(signal ? { signal } : {}),
+        },
+      );
+      const value = await responseJson(response);
+      if (!response.ok) throw genericError(response, value);
+      const parsed = reviewWorkspaceAccessResponseSchema.safeParse(value);
       if (!parsed.success) throw genericError(response, value);
       return parsed.data;
     },

@@ -1,5 +1,7 @@
 import { lazy, Suspense } from "react";
 
+import { reviewWorkspaceEventKey } from "./reviews/reviewRoute";
+
 const WorkspaceApp = lazy(() =>
   import("./WorkspaceApp").then((module) => ({
     default: module.WorkspaceApp,
@@ -11,6 +13,11 @@ const UiFixtures = lazy(() =>
 const ReviewerWorkspace = lazy(() =>
   import("./reviews/ReviewerWorkspace").then((module) => ({
     default: module.ReviewerWorkspace,
+  })),
+);
+const ReviewWorkspaceRoute = lazy(() =>
+  import("./reviews/ReviewWorkspaceRoute").then((module) => ({
+    default: module.ReviewWorkspaceRoute,
   })),
 );
 const SpeakerPortal = lazy(() =>
@@ -55,6 +62,9 @@ export function App() {
     /^\/app\/([^/]+)\/people\/[^/]+\/tasks\/([^/]+)\/?$/.exec(
       window.location.pathname,
     );
+  const reviewWorkspaceEvent = reviewWorkspaceEventKey(
+    window.location.pathname,
+  );
 
   if (window.location.pathname.startsWith("/auth/")) {
     route = <AuthScreen />;
@@ -164,6 +174,8 @@ export function App() {
       );
   } else if (window.location.pathname.startsWith("/review/")) {
     route = <ReviewerWorkspace />;
+  } else if (reviewWorkspaceEvent) {
+    route = <ReviewWorkspaceRoute eventKey={reviewWorkspaceEvent} />;
   } else if (organizerTaskRoute?.[1] && organizerTaskRoute[2]) {
     route = (
       <ProductionOrganizerTaskPage

@@ -1,7 +1,60 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import type { ReviewOperationsResponse } from "@sessionbox-killer/contracts";
+
 const reviewOperationsPath = "/fixtures/reviews/ai-engineer-summit";
+
+const productionOperations = {
+  activeRubric: {
+    criteria: [
+      {
+        guidance: "Assess audience value.",
+        id: "criterion_value",
+        label: "Audience value",
+        weight: 100,
+      },
+    ],
+    id: "rubric_active",
+    name: "Program quality",
+    sourceVersion: 2,
+    version: 2,
+  },
+  assignments: [],
+  eventId: "event_engineering",
+  groups: [],
+  proposals: [],
+  reviewers: [],
+} satisfies ReviewOperationsResponse;
+
+test("authenticated organizer direct navigation preserves review operations", async ({
+  page,
+}) => {
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => requestedPaths.push(request.url()));
+  await page.route(
+    "**/api/events/ai-engineer-summit/review-workspace",
+    async (route) => route.fulfill({ json: { surface: "organizer" } }),
+  );
+  await page.route(
+    "**/api/events/ai-engineer-summit/review-operations",
+    async (route) => route.fulfill({ json: productionOperations }),
+  );
+
+  await page.goto("/app/ai-engineer-summit/reviews");
+
+  await expect(
+    page.getByRole("heading", { name: "A fair process people can inspect." }),
+  ).toBeVisible();
+  await expect(page.locator(".profile-chip")).toContainText("Casey Manos");
+  await expect(page.locator(".profile-chip")).toContainText("Organizer");
+  expect(
+    requestedPaths.filter((path) => path.endsWith("/review-operations")),
+  ).toHaveLength(1);
+  expect(
+    requestedPaths.filter((path) => path.includes("/reviewer-assignments")),
+  ).toEqual([]);
+});
 
 test("review operations exposes the active weighted rubric and immutable snapshots", async ({
   page,
