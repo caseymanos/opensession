@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { mockAccountLogout } from "./account-auth";
+
 test("organizer shell exposes the five-part information architecture", async ({
   page,
 }, testInfo) => {
@@ -63,6 +65,73 @@ test("mobile navigation traps focus, closes with Escape, and restores focus", as
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(trigger).toBeFocused();
+});
+
+test("organizer account menu signs out with pointer input", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const logout = await mockAccountLogout(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Casey Manos account" }).click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+
+  await page
+    .getByRole("button", { name: "Search people, sessions, and submissions" })
+    .click();
+  await expect(menu).toBeHidden();
+  await page.getByRole("button", { name: "Casey Manos account" }).click();
+
+  const accessibility = await new AxeBuilder({ page })
+    .include(".account-menu__popover")
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await menu.getByRole("menuitem", { name: "Sign out" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Sign in to your program" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL("/auth/sign-in");
+  expect(logout.attempts()).toBe(1);
+});
+
+test("mobile account menu restores focus and recovers from logout failure", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  const logout = await mockAccountLogout(page, { failures: 1 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open navigation" }).click();
+
+  const account = page.getByRole("button", { name: "Casey Manos account" });
+  await account.focus();
+  await page.keyboard.press("ArrowDown");
+  const signOut = page.getByRole("menuitem", { name: "Sign out" });
+  await expect(signOut).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toBeHidden();
+  await expect(account).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(signOut).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("alert")).toHaveText(
+    "Sign out could not finish.",
+  );
+  await expect(signOut).toBeEnabled();
+  const accessibility = await new AxeBuilder({ page })
+    .include(".account-menu__popover")
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await signOut.press("Enter");
+
+  await expect(
+    page.getByRole("heading", { name: "Sign in to your program" }),
+  ).toBeVisible();
+  expect(logout.attempts()).toBe(2);
 });
 
 test("fixture route covers explicit states and guarded production data", async ({

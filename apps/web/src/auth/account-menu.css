@@ -1,0 +1,114 @@
+.account-menu {
+  position: relative;
+}
+
+.account-menu__trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: inherit;
+  text-align: left;
+  border: 0;
+  border-radius: 0.65rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.account-menu__avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: var(--ink-950);
+  background: var(--clay-500);
+  font-size: 0.66rem;
+  font-weight: 850;
+}
+
+.account-menu__identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.account-menu__identity strong,
+.account-menu__identity small {
+  display: block;
+}
+
+.account-menu__identity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu__chevron {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.account-menu__trigger[aria-expanded="true"] .account-menu__chevron {
+  transform: rotate(180deg);
+}
+
+.account-menu__popover {
+  position: absolute;
+  z-index: 30;
+  min-width: 13rem;
+  padding: 0.4rem;
+  color: var(--ink-950);
+  border: 1px solid var(--ink-200);
+  border-radius: 0.7rem;
+  background: var(--paper-50);
+  box-shadow: var(--shadow-lg);
+}
+
+.account-menu--sidebar .account-menu__popover {
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+}
+
+.account-menu--topbar .account-menu__popover {
+  top: calc(100% + 0.5rem);
+  right: 0;
+}
+
+.account-menu__items > button {
+  width: 100%;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  color: var(--danger-700);
+  text-align: left;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.account-menu__items > button:hover:not(:disabled),
+.account-menu__items > button:focus-visible {
+  background: var(--danger-100);
+}
+
+.account-menu__items > button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.account-menu__error {
+  margin: 0.35rem 0 0;
+  padding: 0.55rem 0.65rem;
+  color: var(--danger-700);
+  border-top: 1px solid var(--ink-100);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .account-menu__chevron {
+    transition: none;
+  }
+}
