@@ -8,6 +8,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
+import { requestDatabase } from "../database.js";
 import {
   AcceptanceOrchestrationPendingError,
   AcceptanceOrchestrationService,
@@ -96,8 +97,10 @@ async function resolveReviewAccess(
 ): Promise<ReviewAccessResolution> {
   const eventKey = context.req.param("eventKey") ?? "";
   if (!eventKeyPattern.test(eventKey)) return { kind: "not_found" };
-  const candidates = await context.env.DB.prepare(
-    `SELECT event.id, event.name, event.organization_id, tenant.authority_ready_at
+  const database = requestDatabase(context);
+  const candidates = await database
+    .prepare(
+      `SELECT event.id, event.name, event.organization_id, tenant.authority_ready_at
      FROM p_events AS event
      JOIN tenant_registry AS tenant
        ON tenant.organization_id = event.organization_id
@@ -106,14 +109,14 @@ async function resolveReviewAccess(
        AND event.source_deleted_at IS NULL
      ORDER BY CASE WHEN event.id = ?1 THEN 0 ELSE 1 END,
               event.organization_id LIMIT 33`,
-  )
+    )
     .bind(eventKey)
     .all<EventCandidate>();
   if (candidates.results.length === 0) return { kind: "not_found" };
   const permitted: { access: EventAccess; event: EventCandidate }[] = [];
   for (const event of candidates.results) {
     const access = await loadEventAccess(
-      context.env.DB,
+      database,
       user,
       event.organization_id,
       event.id,
@@ -238,7 +241,9 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
         );
       }
       return context.json(
-        await new D1ReviewOperationsRepository(context.env.DB).operations({
+        await new D1ReviewOperationsRepository(
+          requestDatabase(context),
+        ).operations({
           eventId: resolution.eventId,
           organizationId: resolution.organizationId,
         }),
@@ -298,7 +303,9 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
           "Reviewer access is required to view review assignments.",
         );
       }
-      const repository = new D1ReviewOperationsRepository(context.env.DB);
+      const repository = new D1ReviewOperationsRepository(
+        requestDatabase(context),
+      );
       const reviewerId = await repository.reviewerIdForIdentity(
         {
           eventId: resolution.eventId,
@@ -392,7 +399,7 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
           );
         }
         const reviewerId = await new D1ReviewOperationsRepository(
-          context.env.DB,
+          requestDatabase(context),
         ).reviewerIdForIdentity(
           {
             eventId: resolution.eventId,
@@ -788,7 +795,7 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
             );
           }
           const reviewerId = await new D1ReviewOperationsRepository(
-            context.env.DB,
+            requestDatabase(context),
           ).reviewerIdForIdentity(
             {
               eventId: resolution.eventId,

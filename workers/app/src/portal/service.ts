@@ -5,6 +5,8 @@ import {
   type SpeakerPortalSession,
   type SpeakerPortalTask,
 } from "@sessionbox-killer/contracts/portal";
+
+import type { D1QueryExecutor } from "../database.js";
 import {
   taskAssignmentResponseEnvelopeSchema,
   type TaskAssignmentState,
@@ -225,9 +227,9 @@ function taskView(row: TaskRow, now: Date): SpeakerPortalTask {
 }
 
 export class D1SpeakerPortalEventResolver {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 
@@ -274,12 +276,12 @@ export class D1SpeakerPortalEventResolver {
 }
 
 export interface SpeakerPortalServiceOptions {
-  readonly database: D1Database;
+  readonly database: D1QueryExecutor;
   readonly now?: () => Date;
 }
 
 export class D1SpeakerPortalService {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
   readonly #now: () => Date;
   readonly #resolver: D1SpeakerPortalEventResolver;
 

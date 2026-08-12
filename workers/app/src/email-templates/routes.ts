@@ -14,6 +14,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import { hasEventPermission, loadEventAccess } from "../auth/authorization";
 import {
   authFailure,
@@ -82,7 +83,7 @@ async function resolveAuthorizedEvent(
   const permitted: EmailTemplateEventProjection[] = [];
   for (const candidate of candidates) {
     const access = await loadEventAccess(
-      context.env.DB,
+      requestDatabase(context),
       user,
       candidate.organizationId,
       candidate.id,
@@ -284,7 +285,9 @@ export function registerEmailTemplateRoutes(app: Hono<AppContext>): void {
   }
 
   app.get("/api/events/:eventKey/email-templates", async (context) => {
-    const repository = new D1EmailTemplateProjectionRepository(context.env.DB);
+    const repository = new D1EmailTemplateProjectionRepository(
+      requestDatabase(context),
+    );
     try {
       const session = await authService(context).authenticate(
         sessionToken(context),
@@ -320,7 +323,9 @@ export function registerEmailTemplateRoutes(app: Hono<AppContext>): void {
         input.error.issues[0]?.message ?? "The preview request is invalid.",
       );
     }
-    const repository = new D1EmailTemplateProjectionRepository(context.env.DB);
+    const repository = new D1EmailTemplateProjectionRepository(
+      requestDatabase(context),
+    );
     try {
       const session = await authService(context).authenticate(
         sessionToken(context),
@@ -424,7 +429,7 @@ export function registerEmailTemplateRoutes(app: Hono<AppContext>): void {
         );
       }
       const repository = new D1EmailTemplateProjectionRepository(
-        context.env.DB,
+        requestDatabase(context),
       );
       try {
         const authentication = authService(context);

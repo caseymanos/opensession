@@ -11,6 +11,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import { getBaseAuthority } from "../authority/binding.js";
 import {
   authFailure,
@@ -493,7 +494,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         context.req.header("X-CSRF-Token") ?? null,
       );
       const policy = await new D1PublicCfpPolicyReader(
-        context.env.DB,
+        requestDatabase(context),
       ).readBySlug(slug);
       if (!policy) {
         return context.json(
@@ -545,12 +546,9 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
       if (limited) return limited;
       await verifyCfpSubmissionChallenge(context, request.data);
 
-      const plan = await new D1CfpSubmissionCompiler(context.env.DB).compile(
-        policy,
-        session,
-        request.data,
-        coordinates,
-      );
+      const plan = await new D1CfpSubmissionCompiler(
+        requestDatabase(context),
+      ).compile(policy, session, request.data, coordinates);
       const receipt = await authority.executeCfpSubmissionPlan(plan);
       await ensureSubmissionReceipt(context, policy, request.data, coordinates);
       emitOperationalLog("info", context.env, {
@@ -605,7 +603,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         sessionToken(context),
       );
       const policy = await new D1PublicCfpPolicyReader(
-        context.env.DB,
+        requestDatabase(context),
       ).readBySlug(slug);
       if (!policy) {
         return context.json(
@@ -619,10 +617,9 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
           404,
         );
       }
-      const submissions = await new D1OwnedCfpDraftReader(context.env.DB).list(
-        policy,
-        session,
-      );
+      const submissions = await new D1OwnedCfpDraftReader(
+        requestDatabase(context),
+      ).list(policy, session);
       return context.json(
         publicCfpOwnedSubmissionsResponseSchema.parse({ submissions }),
       );
@@ -712,7 +709,9 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
           session,
           context.req.header("X-CSRF-Token") ?? null,
         );
-        const policyReader = new D1PublicCfpPolicyReader(context.env.DB);
+        const policyReader = new D1PublicCfpPolicyReader(
+          requestDatabase(context),
+        );
         const currentPolicy = await policyReader.readBySlug(slug);
         if (!currentPolicy) {
           return context.json(
@@ -727,7 +726,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
           );
         }
         const owned = await new D1OwnedCfpDraftReader(
-          context.env.DB,
+          requestDatabase(context),
         ).readForWrite(currentPolicy, session, submissionId);
         if (!owned) {
           return context.json(
@@ -799,7 +798,7 @@ export function registerPublicCfpRoutes(app: Hono<AppContext>): void {
         await verifyCfpSubmissionChallenge(context, request.data);
 
         const plan = await new D1CfpSubmissionCompiler(
-          context.env.DB,
+          requestDatabase(context),
         ).compileUpdate(
           policy,
           session,

@@ -1,3 +1,5 @@
+import type { D1QueryExecutor } from "./database.js";
+
 export type OperationalLogLevel = "error" | "info" | "warn";
 export type OperationalOutcome =
   "accepted" | "client_error" | "failure" | "server_error" | "success";
@@ -121,7 +123,7 @@ function assertDurableEvent(fields: DurableOperationalEventFields): void {
 }
 
 export function durableOperationalEventStatement(
-  database: D1Database,
+  database: D1QueryExecutor,
   fields: DurableOperationalEventFields,
   now = new Date(),
 ): D1PreparedStatement {
@@ -180,7 +182,7 @@ export function durableOperationalEventStatement(
 }
 
 export function expiredOperationalEventsStatement(
-  database: D1Database,
+  database: D1QueryExecutor,
   now = new Date(),
 ): D1PreparedStatement {
   return database
@@ -197,7 +199,7 @@ export function expiredOperationalEventsStatement(
 }
 
 export async function pruneExpiredOperationalEvents(
-  database: D1Database,
+  database: D1QueryExecutor,
   now = new Date(),
   maxBatches = 10,
 ): Promise<number> {

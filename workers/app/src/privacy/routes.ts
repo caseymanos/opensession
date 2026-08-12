@@ -7,6 +7,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import {
   authFailure,
   authService,
@@ -47,8 +48,9 @@ async function requireOwner(
   organizationId: string,
   userId: string,
 ): Promise<Response | null> {
-  const membership = await context.env.DB.prepare(
-    `SELECT membership.role
+  const membership = await requestDatabase(context)
+    .prepare(
+      `SELECT membership.role
      FROM organization_memberships membership
      JOIN tenant_registry tenant
        ON tenant.organization_id = membership.organization_id
@@ -57,7 +59,7 @@ async function requireOwner(
        AND membership.user_id = ?2
        AND membership.revoked_at IS NULL
      LIMIT 1`,
-  )
+    )
     .bind(organizationId, userId)
     .first<MembershipRow>();
   if (!membership) {

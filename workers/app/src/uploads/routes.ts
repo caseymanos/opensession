@@ -7,6 +7,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import {
   authFailure,
   authService,
@@ -25,7 +26,7 @@ const fileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 function service(context: Context<AppContext>): UploadService {
   return new UploadService({
     bucket: context.env.UPLOADS,
-    database: context.env.DB,
+    database: requestDatabase(context),
   });
 }
 

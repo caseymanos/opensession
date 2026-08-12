@@ -8,6 +8,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
+import { requestDatabase } from "../database.js";
 import {
   authFailure,
   authService,
@@ -24,6 +25,16 @@ function service(context: Context<AppContext>): SpeakerProfileService {
   return new SpeakerProfileService({
     bucket: context.env.UPLOADS,
     database: context.env.DB,
+    environment: context.env,
+  });
+}
+
+function authorizedService(
+  context: Context<AppContext>,
+): SpeakerProfileService {
+  return new SpeakerProfileService({
+    bucket: context.env.UPLOADS,
+    database: requestDatabase(context),
     environment: context.env,
   });
 }
@@ -161,7 +172,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
       const session = await authService(context).authenticate(
         sessionToken(context),
       );
-      const event = await service(context).resolveEvent(slug.data);
+      const event = await authorizedService(context).resolveEvent(slug.data);
       if (!event)
         return context.json(
           {
@@ -174,7 +185,9 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
           404,
         );
       context.header("Cache-Control", "private, no-store");
-      return context.json(await service(context).readForPortal(session, event));
+      return context.json(
+        await authorizedService(context).readForPortal(session, event),
+      );
     } catch (error) {
       return profileFailure(context, error);
     }
@@ -189,9 +202,12 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
       const session = await authService(context).authenticate(
         sessionToken(context),
       );
-      const event = await service(context).resolveEvent(slug.data);
+      const event = await authorizedService(context).resolveEvent(slug.data);
       if (!event) return context.notFound();
-      const headshot = await service(context).portalHeadshot(session, event);
+      const headshot = await authorizedService(context).portalHeadshot(
+        session,
+        event,
+      );
       if (!headshot) return context.notFound();
       const headers = new Headers({
         "Cache-Control": "private, no-store",
@@ -245,7 +261,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
       const slug = speakerPortalSlugSchema.parse(
         context.req.param("eventSlug"),
       );
-      const event = await service(context).resolveEvent(slug);
+      const event = await authorizedService(context).resolveEvent(slug);
       if (!event)
         return context.json(
           {
@@ -264,7 +280,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
           : { headshot_file_id: input.data.headshot_file_id }),
       };
       return context.json(
-        await service(context).saveForPortal(
+        await authorizedService(context).saveForPortal(
           session,
           event,
           command,
@@ -285,7 +301,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
         const session = await authService(context).authenticate(
           sessionToken(context),
         );
-        const event = await service(context).resolveEventKey(
+        const event = await authorizedService(context).resolveEventKey(
           context.req.param("eventKey"),
         );
         if (!event)
@@ -301,7 +317,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
           );
         context.header("Cache-Control", "private, no-store");
         return context.json(
-          await service(context).readForOrganizer(
+          await authorizedService(context).readForOrganizer(
             session,
             event,
             context.req.param("profileId"),
@@ -352,7 +368,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
           session,
           context.req.header("X-CSRF-Token") ?? null,
         );
-        const event = await service(context).resolveEventKey(
+        const event = await authorizedService(context).resolveEventKey(
           context.req.param("eventKey"),
         );
         if (!event)
@@ -367,7 +383,7 @@ export function registerSpeakerProfileRoutes(app: Hono<AppContext>): void {
             404,
           );
         return context.json(
-          await service(context).publishForOrganizer(
+          await authorizedService(context).publishForOrganizer(
             session,
             event,
             context.req.param("profileId"),

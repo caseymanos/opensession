@@ -1,3 +1,5 @@
+import type { D1QueryExecutor } from "../database.js";
+
 export const eventPermissions = [
   "organization:manage",
   "event:read",
@@ -103,7 +105,7 @@ export function hasEventPermission(
 }
 
 export async function loadEventAccess(
-  database: D1Database,
+  database: D1QueryExecutor,
   user: { email: string; id: string },
   organizationId: string,
   eventId: string,
@@ -203,7 +205,7 @@ export async function loadEventAccess(
 }
 
 export async function canReadSession(
-  database: D1Database,
+  database: D1QueryExecutor,
   access: EventAccess,
   organizationId: string,
   eventId: string,

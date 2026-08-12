@@ -23,6 +23,7 @@ import {
   serializeMagicLinkDeliveryBinding,
   type MagicLinkEmailQueueMessage,
 } from "../email/messages";
+import type { D1QueryExecutor } from "../database.js";
 import { safeSpeakerPortalBrand } from "../portal/brand";
 
 const magicLinkLifetimeMs = 15 * 60 * 1000;
@@ -197,9 +198,9 @@ interface PortalInvitationEventRow {
 }
 
 export interface AuthServiceOptions {
-  readonly database: D1Database;
+  readonly database: D1QueryExecutor;
   readonly emailEnabled: boolean;
-  readonly emailQueue: Queue<MagicLinkEmailQueueMessage>;
+  readonly emailQueue: Pick<Queue<MagicLinkEmailQueueMessage>, "send">;
   readonly hashPepper: string;
   readonly now?: () => Date;
   readonly tokenFactory?: () => string;
@@ -218,9 +219,9 @@ function maskedEmail(email: string): string {
 }
 
 export class AuthService {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
   readonly #emailEnabled: boolean;
-  readonly #emailQueue: Queue<MagicLinkEmailQueueMessage>;
+  readonly #emailQueue: Pick<Queue<MagicLinkEmailQueueMessage>, "send">;
   readonly #hashPepper: string;
   readonly #now: () => Date;
   readonly #tokenFactory: () => string;

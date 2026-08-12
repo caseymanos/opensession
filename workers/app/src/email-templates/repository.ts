@@ -16,6 +16,8 @@ import {
   type EmailTemplateWorkspace,
 } from "@sessionbox-killer/email";
 
+import type { D1QueryExecutor } from "../database.js";
+
 export interface EmailTemplateEventProjection {
   readonly id: string;
   readonly name: string;
@@ -195,9 +197,9 @@ function parseRoles(value: string): readonly string[] {
 }
 
 export class D1EmailTemplateProjectionRepository {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 

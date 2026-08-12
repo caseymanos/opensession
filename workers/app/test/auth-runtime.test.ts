@@ -408,15 +408,16 @@ describe("passwordless authentication runtime", () => {
       exchange(replayToken),
       exchange(replayToken),
     ]);
-    const expired = await exchange(expiredToken);
 
     expect(concurrent.map(({ status }) => status).sort()).toEqual([200, 400]);
-    expect(expired.status).toBe(400);
     const replay = concurrent.find(({ status }) => status === 400);
-    expect(replay).toBeDefined();
-    await expect(replay?.json()).resolves.toMatchObject({
+    if (!replay) throw new Error("Expected one rejected replay response.");
+    await expect(replay.json()).resolves.toMatchObject({
       error: { code: "invalid_magic_link" },
     });
+
+    const expired = await exchange(expiredToken);
+    expect(expired.status).toBe(400);
     await expect(expired.json()).resolves.toMatchObject({
       error: { code: "invalid_magic_link" },
     });

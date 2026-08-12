@@ -13,6 +13,8 @@ import {
   type EmailTemplate,
 } from "@sessionbox-killer/email";
 
+import type { D1QueryExecutor } from "../database.js";
+
 import { sha256Hex } from "../auth/crypto.js";
 import {
   D1EmailTemplateProjectionRepository,
@@ -160,10 +162,10 @@ function campaignSummary(
 }
 
 export class D1CampaignRepository {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
   readonly #templates: D1EmailTemplateProjectionRepository;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
     this.#templates = new D1EmailTemplateProjectionRepository(database);
   }
