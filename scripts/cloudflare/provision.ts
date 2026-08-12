@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readSync } from "node:fs";
-import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { readFile, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -9,10 +9,18 @@ import { parse, type ParseError } from "jsonc-parser";
 import {
   extractDeploymentVersionId,
   getActiveVersionId,
-  getRollbackVersionId,
   parseDeploymentList,
   type WorkerDeployment,
 } from "./release.js";
+import {
+  assertLockedLkgCandidate,
+  assertQueueReleaseGate,
+  parseLockedLkgReceipt,
+  parseQueueBaselineReceipt,
+  parseWorkerVersionSafety,
+  type LockedLkgReceipt,
+  type QueueMeasurement,
+} from "./release-safety.js";
 
 type EnvironmentName = "preview" | "production";
 type ResourceKind = "D1" | "Queue" | "R2";
@@ -122,11 +130,21 @@ interface Inventory {
 }
 
 interface CliOptions {
-  command: "apply" | "deploy" | "plan" | "rollback" | "smoke" | "status";
+  command:
+    | "apply"
+    | "deploy"
+    | "plan"
+    | "rollback"
+    | "smoke"
+    | "status"
+    | "verify-lkg"
+    | "verify-queues";
   confirmProduction: boolean;
+  dlqBaselinePath: string | null;
   environment: EnvironmentName;
+  lkgReceiptPath: string | null;
   location: ResourceLocation;
-  versionId: string | null;
+  queueObservationSeconds: number;
 }
 
 interface WranglerResult {
@@ -675,6 +693,17 @@ function runWrangler(
   return { stderr, stdout };
 }
 
+function runGit(arguments_: string[]): string {
+  const result = spawnSync("git", arguments_, {
+    cwd: rootDirectory,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`Git ${arguments_.join(" ")} failed.`);
+  }
+  return (result.stdout ?? "").trim();
+}
+
 export function applyAirtableBaseOverride(
   config: WranglerConfig,
   environment: EnvironmentName,
@@ -956,6 +985,215 @@ function readDeployments(
   }
 }
 
+function readWorkerVersion(plan: ResourcePlan, versionId: string) {
+  return parseWorkerVersionSafety(
+    JSON.parse(
+      stripAnsi(
+        runWrangler([
+          "versions",
+          "view",
+          versionId,
+          "--name",
+          plan.workerName,
+          "--json",
+        ]).stdout,
+      ),
+    ),
+  );
+}
+
+async function readOwnerReceipt(path: string): Promise<unknown> {
+  const resolvedPath = resolve(rootDirectory, path);
+  const details = await stat(resolvedPath);
+  if (!details.isFile() || (details.mode & 0o077) !== 0) {
+    throw new Error(
+      `Operator receipt must be a mode-0600 regular file: ${resolvedPath}.`,
+    );
+  }
+  return JSON.parse(await readFile(resolvedPath, "utf8"));
+}
+
+function assertReceiptGitSource(receipt: LockedLkgReceipt): void {
+  const result = spawnSync(
+    "git",
+    ["rev-parse", `${receipt.sourceCommit}^{tree}`],
+    {
+      cwd: rootDirectory,
+      encoding: "utf8",
+    },
+  );
+  const tree = (result.stdout ?? "").trim();
+  if (result.status !== 0 || tree !== receipt.sourceTree) {
+    throw new Error(
+      "Locked LKG receipt source commit/tree is unavailable or inconsistent.",
+    );
+  }
+}
+
+interface CloudflareQueue {
+  consumers?: unknown[];
+  producers?: unknown[];
+  queue_id?: string;
+  queue_name?: string;
+}
+
+interface CloudflareApiEnvelope {
+  errors?: { code?: number; message?: string }[];
+  result?: unknown;
+  result_info?: { page?: number; total_pages?: number };
+  success?: boolean;
+}
+
+async function cloudflareApiCredentials(): Promise<{
+  accountId: string;
+  token: string;
+}> {
+  const identity: unknown = JSON.parse(
+    runWrangler(["whoami", "--json"]).stdout,
+  );
+  const tokenResult: unknown = JSON.parse(
+    runWrangler(["auth", "token", "--json"]).stdout,
+  );
+  if (
+    !isRecord(identity) ||
+    identity.loggedIn !== true ||
+    !Array.isArray(identity.accounts) ||
+    identity.accounts.length !== 1 ||
+    !isRecord(identity.accounts[0]) ||
+    typeof identity.accounts[0].id !== "string" ||
+    !isRecord(tokenResult) ||
+    typeof tokenResult.token !== "string"
+  ) {
+    throw new Error(
+      "Release Queue gate requires exactly one authenticated Cloudflare account.",
+    );
+  }
+  return { accountId: identity.accounts[0].id, token: tokenResult.token };
+}
+
+async function cloudflareApiGet(
+  credentials: { accountId: string; token: string },
+  path: string,
+): Promise<CloudflareApiEnvelope> {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${credentials.accountId}${path}`,
+    {
+      headers: { Authorization: `Bearer ${credentials.token}` },
+      signal: AbortSignal.timeout(10_000),
+    },
+  );
+  const body: unknown = await response.json();
+  if (!response.ok || !isRecord(body) || body.success !== true) {
+    const errors =
+      isRecord(body) && Array.isArray(body.errors) ? body.errors : [];
+    throw new Error(
+      `Cloudflare read failed (${response.status}): ${JSON.stringify(errors)}.`,
+    );
+  }
+  return body as CloudflareApiEnvelope;
+}
+
+async function readQueueMeasurements(
+  plan: ResourcePlan,
+): Promise<QueueMeasurement[]> {
+  const credentials = await cloudflareApiCredentials();
+  const queues: CloudflareQueue[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await cloudflareApiGet(
+      credentials,
+      `/queues?page=${page}&per_page=100`,
+    );
+    if (!Array.isArray(response.result)) {
+      throw new Error("Cloudflare returned an invalid Queue list.");
+    }
+    queues.push(...(response.result as CloudflareQueue[]));
+    if (page >= (response.result_info?.total_pages ?? 1)) break;
+    if (page === 100) throw new Error("Queue inventory exceeded 100 pages.");
+  }
+
+  const observedAt = new Date().toISOString();
+  return Promise.all(
+    plan.queues.map(async ({ name }) => {
+      const matches = queues.filter((queue) => queue.queue_name === name);
+      const queue = matches[0];
+      if (
+        matches.length !== 1 ||
+        !queue ||
+        typeof queue.queue_id !== "string"
+      ) {
+        throw new Error(`Expected exactly one Cloudflare Queue named ${name}.`);
+      }
+      const response = await cloudflareApiGet(
+        credentials,
+        `/queues/${queue.queue_id}/metrics`,
+      );
+      if (
+        !isRecord(response.result) ||
+        !isNonNegativeInteger(response.result.backlog_count) ||
+        !isNonNegativeInteger(response.result.backlog_bytes) ||
+        !isNonNegativeInteger(response.result.oldest_message_timestamp_ms)
+      ) {
+        throw new Error(
+          `Cloudflare returned invalid Queue metrics for ${name}.`,
+        );
+      }
+      return {
+        backlogBytes: response.result.backlog_bytes,
+        backlogCount: response.result.backlog_count,
+        observedAt,
+        oldestMessageTimestampMs: response.result.oldest_message_timestamp_ms,
+        queueId: queue.queue_id,
+        queueName: name,
+      };
+    }),
+  );
+}
+
+async function runProductionQueueGate(
+  plan: ResourcePlan,
+  options: CliOptions,
+): Promise<void> {
+  if (!options.dlqBaselinePath) {
+    throw new Error(
+      "Production deploy requires --dlq-baseline with an accepted operator receipt.",
+    );
+  }
+  const baseline = parseQueueBaselineReceipt(
+    await readOwnerReceipt(options.dlqBaselinePath),
+  );
+  const first = await readQueueMeasurements(plan);
+  await new Promise((resolveDelay) =>
+    setTimeout(resolveDelay, options.queueObservationSeconds * 1_000),
+  );
+  const second = await readQueueMeasurements(plan);
+  assertQueueReleaseGate({
+    baseline,
+    expectedEnvironment: plan.environment,
+    expectedQueueNames: plan.queues.map(({ name }) => name),
+    first,
+    maxBaselineAgeMs: 6 * 60 * 60 * 1_000,
+    second,
+  });
+  const receiptPath = join(
+    generatedDirectory,
+    `release-queue-gate.${plan.environment}.${Date.now()}.json`,
+  );
+  await writeJsonAtomic(receiptPath, {
+    baseline,
+    environment: plan.environment,
+    first,
+    observationSeconds: options.queueObservationSeconds,
+    schemaVersion: 1,
+    second,
+    workerName: plan.workerName,
+  });
+  console.log(`queue-gate ${receiptPath}`);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 async function waitForActiveVersion(
   plan: ResourcePlan,
   expectedVersionId: string,
@@ -974,6 +1212,15 @@ async function waitForActiveVersion(
 
   throw new Error(
     `Cloudflare did not activate expected version ${expectedVersionId}; current version is ${lastVersionId ?? "unavailable"}.`,
+  );
+}
+
+function latestDeployment(deployments: WorkerDeployment[]): WorkerDeployment {
+  if (deployments.length === 0) {
+    throw new Error("No Worker deployment is available.");
+  }
+  return deployments.reduce((latest, deployment) =>
+    deployment.createdOn > latest.createdOn ? deployment : latest,
   );
 }
 
@@ -1264,10 +1511,6 @@ async function deploy(
     );
   }
 
-  const previousActiveVersionId = previousInventory.worker.url
-    ? getActiveVersionId(readDeployments(plan))
-    : null;
-
   const resources = assessResources(plan, await readRemoteState());
   const missing = resources.filter((resource) => resource.status !== "ready");
 
@@ -1275,6 +1518,10 @@ async function deploy(
     throw new Error(
       `Remote resources are missing; rerun apply: ${missing.map((resource) => resource.name).join(", ")}`,
     );
+  }
+
+  if (plan.environment === "production") {
+    await runProductionQueueGate(plan, options);
   }
 
   const inventory = await writeInventory(plan, resources, previousInventory);
@@ -1317,15 +1564,42 @@ async function deploy(
     worker: {
       ...inventory.worker,
       activeVersionId,
-      rollbackVersionId:
-        previousActiveVersionId === activeVersionId
-          ? inventory.worker.rollbackVersionId
-          : previousActiveVersionId,
+      rollbackVersionId: null,
       url: urls[0] ?? null,
       urls,
     },
   };
   await writeJsonAtomic(inventoryPath(plan.environment), updatedInventory);
+  const deployments = readDeployments(plan);
+  const activated = latestDeployment(deployments);
+  if (
+    activated.versions.length !== 1 ||
+    activated.versions[0]?.percentage !== 100 ||
+    activated.versions[0].versionId !== activeVersionId
+  ) {
+    throw new Error(
+      "The release receipt cannot identify the active deployment.",
+    );
+  }
+  const sourceCommit = runGit(["rev-parse", "HEAD"]);
+  const sourceTree = runGit(["rev-parse", "HEAD^{tree}"]);
+  await writeJsonAtomic(
+    join(
+      generatedDirectory,
+      `release.${plan.environment}.${activeVersionId}.json`,
+    ),
+    {
+      activeVersionId,
+      deploymentId: activated.id,
+      environment: plan.environment,
+      previousActiveVersionId: previousInventory.worker.activeVersionId,
+      schemaVersion: 1,
+      smoke: smokeResults,
+      sourceCommit,
+      sourceTree,
+      workerName: plan.workerName,
+    },
+  );
   console.log(`version ${activeVersionId}`);
   printSmokeResults(smokeResults);
 }
@@ -1336,9 +1610,10 @@ async function rollback(
 ): Promise<void> {
   assertProductionConfirmation(plan.environment, options);
 
-  if (!options.versionId) {
-    throw new Error("Rollback requires an explicit --version-id.");
+  if (!options.lkgReceiptPath) {
+    throw new Error("Rollback requires an explicit --lkg-receipt.");
   }
+  const receipt = await verifyLockedLkg(plan, options);
 
   const inventory = await readInventory(plan.environment);
 
@@ -1364,29 +1639,16 @@ async function rollback(
     throw new Error(`No active ${plan.environment} Worker version exists.`);
   }
 
-  if (activeVersionId === options.versionId) {
-    throw new Error(`Version ${options.versionId} is already active.`);
+  if (activeVersionId === receipt.versionId) {
+    throw new Error(`Version ${receipt.versionId} is already active.`);
   }
-
-  if (
-    !deployments.some((deployment) =>
-      deployment.versions.some(
-        (version) => version.versionId === options.versionId,
-      ),
-    )
-  ) {
-    throw new Error(
-      `Version ${options.versionId} is not present in recent deployment history.`,
-    );
-  }
-
   console.log(
     "rollback affects Worker code and configuration only; storage data and migrations are unchanged",
   );
   runWrangler(
     [
       "rollback",
-      options.versionId,
+      receipt.versionId,
       "--name",
       plan.workerName,
       "--message",
@@ -1395,7 +1657,7 @@ async function rollback(
     { print: true },
   );
 
-  await waitForActiveVersion(plan, options.versionId);
+  await waitForActiveVersion(plan, receipt.versionId);
   const smokeResults = await smokeDeployments(
     getConfiguredSmokeUrls(plan, inventory.worker.urls),
     plan.environment,
@@ -1406,13 +1668,79 @@ async function rollback(
     generatedAt: new Date().toISOString(),
     worker: {
       ...inventory.worker,
-      activeVersionId: options.versionId,
-      rollbackVersionId: activeVersionId,
+      activeVersionId: receipt.versionId,
+      rollbackVersionId: null,
     },
   };
   await writeJsonAtomic(inventoryPath(plan.environment), updatedInventory);
-  console.log(`version ${options.versionId}`);
+  const rollbackDeployments = readDeployments(plan);
+  const rollbackDeployment = latestDeployment(rollbackDeployments);
+  if (
+    rollbackDeployment.versions.length !== 1 ||
+    rollbackDeployment.versions[0]?.percentage !== 100 ||
+    rollbackDeployment.versions[0].versionId !== receipt.versionId
+  ) {
+    throw new Error(
+      "The rollback receipt cannot identify the active deployment.",
+    );
+  }
+  await writeJsonAtomic(
+    join(generatedDirectory, `rollback.${plan.environment}.${Date.now()}.json`),
+    {
+      activatedDeploymentId: rollbackDeployment.id,
+      environment: plan.environment,
+      fromVersionId: activeVersionId,
+      lockedLkgReceipt: receipt,
+      rollForwardVersionId: activeVersionId,
+      schemaVersion: 1,
+      smoke: smokeResults,
+      toVersionId: receipt.versionId,
+      workerName: plan.workerName,
+    },
+  );
+  console.log(`version ${receipt.versionId}`);
   printSmokeResults(smokeResults);
+}
+
+async function verifyLockedLkg(
+  plan: ResourcePlan,
+  options: Pick<CliOptions, "lkgReceiptPath">,
+): Promise<LockedLkgReceipt> {
+  if (!options.lkgReceiptPath) {
+    throw new Error("LKG verification requires an explicit --lkg-receipt.");
+  }
+  const receipt = parseLockedLkgReceipt(
+    await readOwnerReceipt(options.lkgReceiptPath),
+  );
+  assertReceiptGitSource(receipt);
+  const unavailable = assessResources(plan, await readRemoteState()).filter(
+    (resource) => resource.status !== "ready",
+  );
+  if (unavailable.length > 0) {
+    throw new Error(
+      `Locked LKG resources are unavailable: ${unavailable.map(({ name }) => name).join(", ")}.`,
+    );
+  }
+  const deployments = readDeployments(plan);
+  const activeVersionId = getActiveVersionId(deployments);
+  if (!activeVersionId) {
+    throw new Error(`No active ${plan.environment} Worker version exists.`);
+  }
+  assertLockedLkgCandidate({
+    active: readWorkerVersion(plan, activeVersionId),
+    deployments,
+    expectedEnvironment: plan.environment,
+    expectedResourceNames: [
+      plan.r2.name,
+      ...plan.queues
+        .map(({ name }) => name)
+        .filter((name) => !name.endsWith("-dlq")),
+    ],
+    expectedWorkerName: plan.workerName,
+    receipt,
+    target: readWorkerVersion(plan, receipt.versionId),
+  });
+  return receipt;
 }
 
 export function parseArguments(argv: string[]): CliOptions {
@@ -1420,15 +1748,19 @@ export function parseArguments(argv: string[]): CliOptions {
   const options: {
     command: string | undefined;
     confirmProduction: boolean;
+    dlqBaselinePath: string | null;
     environment: string | null;
+    lkgReceiptPath: string | null;
     location: string;
-    versionId: string | null;
+    queueObservationSeconds: number;
   } = {
     command,
     confirmProduction: false,
+    dlqBaselinePath: null,
     environment: null,
+    lkgReceiptPath: null,
     location: "wnam",
-    versionId: null,
+    queueObservationSeconds: 30,
   };
 
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -1440,8 +1772,14 @@ export function parseArguments(argv: string[]): CliOptions {
     } else if (argument === "--location") {
       options.location = arguments_[index + 1] ?? "";
       index += 1;
-    } else if (argument === "--version-id") {
-      options.versionId = arguments_[index + 1] ?? null;
+    } else if (argument === "--lkg-receipt") {
+      options.lkgReceiptPath = arguments_[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--dlq-baseline") {
+      options.dlqBaselinePath = arguments_[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--queue-observation-seconds") {
+      options.queueObservationSeconds = Number(arguments_[index + 1]);
       index += 1;
     } else if (argument === "--confirm-production") {
       options.confirmProduction = true;
@@ -1452,7 +1790,7 @@ export function parseArguments(argv: string[]): CliOptions {
 
   if (!isCommand(command)) {
     throw new Error(
-      "Command must be plan, status, apply, deploy, rollback, or smoke.",
+      "Command must be plan, status, apply, deploy, rollback, smoke, verify-lkg, or verify-queues.",
     );
   }
 
@@ -1464,20 +1802,51 @@ export function parseArguments(argv: string[]): CliOptions {
     throw new Error(`Unsupported location: ${options.location}`);
   }
 
-  if (command === "rollback" && !isVersionId(options.versionId)) {
-    throw new Error("Rollback requires a valid --version-id UUID.");
+  if (
+    (command === "rollback" || command === "verify-lkg") &&
+    !options.lkgReceiptPath
+  ) {
+    throw new Error(`${command} requires --lkg-receipt.`);
   }
-
-  if (command !== "rollback" && options.versionId) {
-    throw new Error("--version-id is only valid with rollback.");
+  if (
+    command !== "rollback" &&
+    command !== "verify-lkg" &&
+    options.lkgReceiptPath
+  ) {
+    throw new Error("--lkg-receipt is only valid with rollback or verify-lkg.");
+  }
+  if (
+    options.dlqBaselinePath &&
+    !(
+      (command === "deploy" || command === "verify-queues") &&
+      options.environment === "production"
+    )
+  ) {
+    throw new Error(
+      "--dlq-baseline is only valid with production deploy or verify-queues.",
+    );
+  }
+  if (command === "verify-queues" && !options.dlqBaselinePath) {
+    throw new Error("verify-queues requires --dlq-baseline.");
+  }
+  if (
+    !Number.isInteger(options.queueObservationSeconds) ||
+    options.queueObservationSeconds < 10 ||
+    options.queueObservationSeconds > 60
+  ) {
+    throw new Error(
+      "--queue-observation-seconds must be an integer from 10 to 60.",
+    );
   }
 
   return {
     command,
     confirmProduction: options.confirmProduction,
+    dlqBaselinePath: options.dlqBaselinePath,
     environment: options.environment,
+    lkgReceiptPath: options.lkgReceiptPath,
     location: options.location,
-    versionId: options.versionId,
+    queueObservationSeconds: options.queueObservationSeconds,
   };
 }
 
@@ -1503,6 +1872,8 @@ function isCommand(value: unknown): value is CliOptions["command"] {
     "rollback",
     "smoke",
     "status",
+    "verify-lkg",
+    "verify-queues",
   ]).has(String(value));
 }
 
@@ -1617,6 +1988,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === "verify-lkg") {
+    const receipt = await verifyLockedLkg(plan, options);
+    console.log(`locked-lkg ${receipt.versionId} ${receipt.deploymentId}`);
+    return;
+  }
+
+  if (options.command === "verify-queues") {
+    await runProductionQueueGate(plan, options);
+    return;
+  }
+
   if (options.command === "smoke") {
     const inventory = await readInventory(plan.environment);
     const urls = getConfiguredSmokeUrls(plan, inventory?.worker.urls ?? []);
@@ -1643,13 +2025,8 @@ async function main(): Promise<void> {
     if (inventory?.worker.url ?? plan.smokeUrls[0]) {
       const deployments = readDeployments(plan, { allowMissingWorker: true });
       const activeVersionId = getActiveVersionId(deployments);
-      const remoteRollbackVersionId = getRollbackVersionId(deployments);
-      const rollbackVersionId =
-        inventory && inventory.worker.activeVersionId === activeVersionId
-          ? (inventory.worker.rollbackVersionId ?? remoteRollbackVersionId)
-          : remoteRollbackVersionId;
       console.log(`active   ${activeVersionId ?? "missing"}`);
-      console.log(`rollback ${rollbackVersionId ?? "unavailable"}`);
+      console.log("rollback explicit locked-LKG receipt required");
     }
   }
 }

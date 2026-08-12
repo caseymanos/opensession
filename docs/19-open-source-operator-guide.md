@@ -208,7 +208,7 @@ pnpm cloudflare:smoke:preview
 pnpm cloudflare:status
 ```
 
-The guarded deploy revalidates inventory and Airtable readiness, applies pending migrations, builds the web assets, deploys the ID-complete configuration, records active/last-known-good Worker versions privately, and checks shell/liveness/readiness.
+The guarded deploy revalidates inventory and Airtable readiness, applies pending migrations, builds the web assets, deploys the ID-complete configuration, records exact source/version/deployment receipts privately, and checks shell/liveness/readiness. It never labels an adjacent deployment as last-known-good.
 
 Production intentionally has no convenience package shortcut. It requires both confirmation mechanisms and an explicit environment:
 
@@ -318,8 +318,11 @@ Preview rollback requires an explicit recent version from status/history:
 
 ```bash
 pnpm cloudflare:status
-pnpm cloudflare:rollback:preview -- --version-id <VERSION_ID>
+chmod 600 .cloudflare/lkg.preview.json
+pnpm cloudflare:rollback:preview -- --lkg-receipt .cloudflare/lkg.preview.json
 ```
+
+The receipt must explicitly name the independently verified version and deployment plus its source commit/tree, script ETag, full non-secret resource fingerprint, verifier, and timestamp. The command rereads every safety binding and resource before activation; any true or missing dangerous flag, nonempty email allowlist, wrong source/resource, split/ambiguous deployment, or unavailable target is a hard stop. Do not substitute “previous” or list position for this receipt.
 
 Production rollback adds the two production confirmations. The guard rejects split deployments, missing resources, and invalid version IDs, verifies the requested version is active, then repeats release smoke. Cloudflare may reject a rollback when a bound resource was deleted/changed or a Durable Object lifecycle changed; do not delete release resources during the rollback window.
 

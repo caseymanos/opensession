@@ -73,34 +73,6 @@ export function getActiveVersionId(
   return latest.versions[0].versionId;
 }
 
-export function getRollbackVersionId(
-  deployments: WorkerDeployment[],
-): string | null {
-  const activeVersionId = getActiveVersionId(deployments);
-
-  if (!activeVersionId) {
-    return null;
-  }
-
-  const newestFirst = [...deployments].sort((left, right) =>
-    right.createdOn.localeCompare(left.createdOn),
-  );
-
-  for (const deployment of newestFirst.slice(1)) {
-    const [version] = deployment.versions;
-
-    if (
-      deployment.versions.length === 1 &&
-      version?.percentage === 100 &&
-      version.versionId !== activeVersionId
-    ) {
-      return version.versionId;
-    }
-  }
-
-  return null;
-}
-
 export function extractDeploymentVersionId(value: string): string | null {
   return (
     value

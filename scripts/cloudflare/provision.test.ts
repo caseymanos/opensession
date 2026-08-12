@@ -36,7 +36,6 @@ import {
 import {
   extractDeploymentVersionId,
   getActiveVersionId,
-  getRollbackVersionId,
   parseDeploymentList,
 } from "./release";
 
@@ -989,9 +988,6 @@ describe("Cloudflare provisioner", () => {
     expect(getActiveVersionId(deployments)).toBe(
       "86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
     );
-    expect(getRollbackVersionId(deployments)).toBe(
-      "29ab69e2-24dd-49d4-8a43-d0b71c3a1676",
-    );
     expect(
       extractDeploymentVersionId(
         "Current Version ID: 86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
@@ -1020,41 +1016,69 @@ describe("Cloudflare provisioner", () => {
     ).toThrow("split deployment");
   });
 
-  it("requires an explicit valid rollback version", () => {
+  it("requires an explicit locked-LKG receipt for rollback", () => {
     expect(
       parseArguments([
         "rollback",
         "--environment",
         "preview",
-        "--version-id",
-        "86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
+        "--lkg-receipt",
+        ".cloudflare/lkg.preview.json",
       ]),
     ).toMatchObject({
       command: "rollback",
       environment: "preview",
-      versionId: "86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
+      lkgReceiptPath: ".cloudflare/lkg.preview.json",
     });
     expect(() =>
       parseArguments(["rollback", "--environment", "preview"]),
-    ).toThrow("valid --version-id");
+    ).toThrow("--lkg-receipt");
     expect(() =>
       parseArguments([
         "status",
         "--environment",
         "preview",
-        "--version-id",
-        "86cf8c18-2fe6-4fc0-bacd-b84b59d0096e",
+        "--lkg-receipt",
+        ".cloudflare/lkg.preview.json",
       ]),
     ).toThrow("only valid with rollback");
+  });
+
+  it("scopes the retained DLQ baseline to production deploy", () => {
+    expect(
+      parseArguments([
+        "deploy",
+        "--environment",
+        "production",
+        "--dlq-baseline",
+        ".cloudflare/dlq.production.json",
+        "--queue-observation-seconds",
+        "45",
+      ]),
+    ).toMatchObject({
+      dlqBaselinePath: ".cloudflare/dlq.production.json",
+      queueObservationSeconds: 45,
+    });
+    expect(() =>
+      parseArguments([
+        "status",
+        "--environment",
+        "production",
+        "--dlq-baseline",
+        ".cloudflare/dlq.production.json",
+      ]),
+    ).toThrow("only valid with production deploy");
   });
 
   it("accepts a read-only smoke command", () => {
     expect(parseArguments(["smoke", "--environment", "preview"])).toEqual({
       command: "smoke",
       confirmProduction: false,
+      dlqBaselinePath: null,
       environment: "preview",
+      lkgReceiptPath: null,
       location: "wnam",
-      versionId: null,
+      queueObservationSeconds: 30,
     });
   });
 
