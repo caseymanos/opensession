@@ -6,6 +6,7 @@ import {
   type AirtableTableKey,
 } from "@sessionbox-killer/data/airtable/internal";
 import { scheduleSnapshotSchema } from "@sessionbox-killer/contracts";
+import { demoEventSlug } from "@sessionbox-killer/domain";
 import { createTestHarness } from "wrangler";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -18,6 +19,7 @@ import {
   demoSeedSource,
 } from "../src/demo/fixture";
 import type { CompiledDemoSeed } from "../src/demo/types";
+import { SpeakerProfileService } from "../src/speaker-profile/service";
 import type FixtureAuthorityRuntime from "./fixtures/airtable-authority-runtime";
 import type { FixtureBaseAuthority } from "./fixtures/airtable-authority-runtime";
 import type { FixtureAirtableState } from "./fixtures/airtable-authority-mock";
@@ -35,9 +37,8 @@ const server = createTestHarness({
   ],
 });
 const runtimeWorker = server.getWorker<
-  {
+  Env & {
     BASE_AUTHORITY: DurableObjectNamespace<FixtureBaseAuthority>;
-    DB: D1Database;
   },
   { default: typeof FixtureAuthorityRuntime }
 >("opensession-airtable-authority-completion-runtime");
@@ -1079,6 +1080,44 @@ describe.sequential("RAL-34 completed authority data plane", () => {
       )
     ).json()) as { authority_ready_at: string | null };
     expect(readinessAfterReset.authority_ready_at).not.toBeNull();
+    const publicSpeakers = await new SpeakerProfileService({
+      bucket: runtimeEnvironment.UPLOADS,
+      database: runtimeEnvironment.DB,
+      environment: runtimeEnvironment,
+    }).publicProjection(demoEventSlug);
+    expect(publicSpeakers).not.toBeNull();
+    expect(publicSpeakers?.speakers).toEqual([
+      expect.objectContaining({
+        headshot: expect.objectContaining({ alt: "Portrait of Ada Chen" }),
+        name: "Ada Chen",
+        sessionIds: ["SES-01", "SES-02"],
+      }),
+      expect.objectContaining({
+        headshot: expect.objectContaining({ alt: "Portrait of Mateo Rivera" }),
+        name: "Mateo Rivera",
+        sessionIds: ["SES-02"],
+      }),
+      expect.objectContaining({
+        headshot: expect.objectContaining({ alt: "Portrait of Priya Nair" }),
+        name: "Priya Nair",
+        sessionIds: ["SES-03"],
+      }),
+    ]);
+    const scheduledNames = new Set(
+      publicSpeakers?.sessions.flatMap(({ speakers }) =>
+        speakers.map(({ name }) => name),
+      ),
+    );
+    expect(
+      publicSpeakers?.speakers.every(({ name }) => scheduledNames.has(name)),
+    ).toBe(true);
+    expect(scheduledNames.has("Jordan Bell")).toBe(false);
+    expect(
+      publicSpeakers?.speakers.some(({ name }) => name === "Jordan Bell"),
+    ).toBe(false);
+    expect(
+      publicSpeakers?.sessions.find(({ id }) => id === "SES-04")?.speakers,
+    ).toEqual([]);
     expect(await providerMutationCount()).toBe(
       preSnapshotMutations + plan.operations.length + 1,
     );
