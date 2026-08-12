@@ -28,8 +28,7 @@
 }
 
 .reviewer-brand,
-.reviewer-event-chip,
-.reviewer-profile {
+.reviewer-event-chip {
   display: flex;
   align-items: center;
   gap: 0.65rem;
@@ -42,9 +41,7 @@
 .reviewer-brand strong,
 .reviewer-brand small,
 .reviewer-event-chip strong,
-.reviewer-event-chip small,
-.reviewer-profile strong,
-.reviewer-profile small {
+.reviewer-event-chip small {
   display: block;
 }
 
@@ -54,8 +51,7 @@
 }
 
 .reviewer-brand small,
-.reviewer-event-chip small,
-.reviewer-profile small {
+.reviewer-event-chip small {
   margin-top: 0.12rem;
   color: var(--ink-400);
   font-size: 0.65rem;
@@ -65,8 +61,7 @@
   justify-self: center;
 }
 
-.reviewer-event-chip > span,
-.reviewer-profile > span {
+.reviewer-event-chip > span {
   width: 2rem;
   height: 2rem;
   display: grid;
@@ -78,8 +73,7 @@
   font-weight: 850;
 }
 
-.reviewer-event-chip strong,
-.reviewer-profile strong {
+.reviewer-event-chip strong {
   font-size: 0.76rem;
 }
 
@@ -87,22 +81,32 @@
   justify-self: end;
 }
 
-.reviewer-profile > span {
-  border-radius: 50%;
-  background: var(--clay-500);
+.reviewer-profile .account-menu__trigger {
+  padding: 0.2rem 0.3rem;
 }
 
-.reviewer-profile button {
-  width: 2.2rem;
-  height: 2.2rem;
-  display: grid;
-  place-items: center;
-  margin-left: 0.35rem;
-  color: var(--ink-300);
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 0.55rem;
-  background: transparent;
-  cursor: pointer;
+.reviewer-profile .account-menu__trigger:hover,
+.reviewer-profile .account-menu__trigger[aria-expanded="true"] {
+  background: rgb(255 255 255 / 7%);
+}
+
+.reviewer-profile .account-menu__avatar {
+  width: 2rem;
+  height: 2rem;
+}
+
+.reviewer-profile .account-menu__identity strong {
+  font-size: 0.76rem;
+}
+
+.reviewer-profile .account-menu__identity small {
+  margin-top: 0.12rem;
+  color: var(--ink-400);
+  font-size: 0.65rem;
+}
+
+.reviewer-profile .account-menu__chevron {
+  color: var(--ink-400);
 }
 
 .review-offline {
@@ -691,7 +695,7 @@
     display: none;
   }
 
-  .reviewer-profile div {
+  .reviewer-profile .account-menu__identity {
     display: none;
   }
 

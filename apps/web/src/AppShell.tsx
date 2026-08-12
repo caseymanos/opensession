@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import type { DemoResetResponse } from "@sessionbox-killer/contracts";
 
+import { AccountMenu } from "./auth/AccountMenu";
 import { DemoResetApiError } from "./demo/demoClient";
 import {
   Button,
@@ -142,13 +143,12 @@ function EventSwitcher() {
 
 function Profile() {
   return (
-    <div className="profile-chip">
-      <span className="profile-avatar">CM</span>
-      <span>
-        <strong>Casey Manos</strong>
-        <small>Organizer</small>
-      </span>
-    </div>
+    <AccountMenu
+      className="profile-chip"
+      displayName="Casey Manos"
+      placement="sidebar"
+      roleLabel="Organizer"
+    />
   );
 }
 

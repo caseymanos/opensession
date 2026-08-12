@@ -5,6 +5,7 @@ import type {
   ReviewerAssignmentListResponse,
   ReviewScoringCommand,
 } from "@sessionbox-killer/contracts";
+import { mockAccountLogout } from "./account-auth";
 
 const reviewPath = "/fixtures/reviewer/interactive";
 const storageKey = "opensession.reviewer.visual-draft";
@@ -166,6 +167,24 @@ test("reviewer workspace exposes queue, proposal, and persistent guidance", asyn
     .include(".reviewer-workspace")
     .analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("reviewer account menu ends the authenticated session", async ({
+  page,
+}) => {
+  const logout = await mockAccountLogout(page);
+  await page.goto(reviewPath);
+
+  const account = page.getByRole("button", { name: "Morgan Lee account" });
+  await account.press("Enter");
+  const signOut = page.getByRole("menuitem", { name: "Sign out" });
+  await expect(signOut).toBeFocused();
+  await signOut.press("Enter");
+
+  await expect(
+    page.getByRole("heading", { name: "Sign in to your program" }),
+  ).toBeVisible();
+  expect(logout.attempts()).toBe(1);
 });
 
 test("review validation names missing criteria before final submit", async ({

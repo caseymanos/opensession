@@ -12,7 +12,6 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
-  LogOut,
   MessageSquareText,
   ShieldAlert,
   Sparkles,
@@ -47,6 +46,7 @@ import type {
   ReviewScoringCommand,
   ReviewerAssignmentListResponse,
 } from "@sessionbox-killer/contracts";
+import { AccountMenu } from "../auth/AccountMenu";
 
 import "./reviewer-workspace.css";
 
@@ -580,16 +580,12 @@ function ReviewerWorkspaceSurface({
             <small>Program review · 2026</small>
           </div>
         </div>
-        <div className="reviewer-profile">
-          <span>ML</span>
-          <div>
-            <strong>{workspace.reviewerName}</strong>
-            <small>Reviewer</small>
-          </div>
-          <button aria-label="Sign out" type="button">
-            <LogOut aria-hidden="true" size={17} />
-          </button>
-        </div>
+        <AccountMenu
+          className="reviewer-profile"
+          displayName={workspace.reviewerName}
+          placement="topbar"
+          roleLabel="Reviewer"
+        />
       </header>
 
       {isOffline ? (

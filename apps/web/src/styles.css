@@ -130,8 +130,7 @@ a:focus-visible {
   cursor: pointer;
 }
 
-.event-avatar,
-.profile-avatar {
+.event-avatar {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -229,18 +228,26 @@ a:focus-visible {
 }
 
 .profile-chip {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
   margin-top: 0.7rem;
-  padding: 0.6rem 0.7rem 0;
   font-size: 0.78rem;
 }
 
-.profile-avatar {
-  border-radius: 50%;
-  color: var(--ink-950);
-  background: var(--clay-500);
+.profile-chip .account-menu__trigger {
+  padding: 0.6rem 0.7rem;
+}
+
+.profile-chip .account-menu__trigger:hover,
+.profile-chip .account-menu__trigger[aria-expanded="true"] {
+  background: rgb(255 255 255 / 7%);
+}
+
+.profile-chip .account-menu__avatar {
+  width: 2rem;
+  height: 2rem;
+}
+
+.profile-chip .account-menu__chevron {
+  color: var(--ink-400);
 }
 
 main {
@@ -624,8 +631,13 @@ main:focus {
 
 .mobile-navigation .profile-chip {
   margin-top: 0;
-  padding: 0.8rem 0 0;
+  padding-top: 0.8rem;
   border-top: 1px solid var(--ink-200);
+}
+
+.mobile-navigation .profile-chip .account-menu__trigger:hover,
+.mobile-navigation .profile-chip .account-menu__trigger[aria-expanded="true"] {
+  background: var(--paper-100);
 }
 
 .cfp-builder-page {
