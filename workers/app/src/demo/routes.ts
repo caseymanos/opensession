@@ -1,6 +1,9 @@
 import {
   demoBootstrapRequestSchema,
   demoBootstrapResponseSchema,
+  demoRoleProvisioningPlanResponseSchema,
+  demoRoleProvisioningRequestSchema,
+  demoRoleProvisioningResponseSchema,
   demoResetRequestSchema,
   demoResetResponseSchema,
   type DemoBootstrapResponse,
@@ -30,6 +33,10 @@ import {
   DemoResetError,
   DemoResetService,
 } from "./reset.js";
+import {
+  DemoRoleProvisioningError,
+  DemoRoleProvisioningService,
+} from "./role-provisioning.js";
 import type { DemoSeedAuthorityReceipt } from "./types.js";
 
 interface BootstrapAuthorizationRow {
@@ -53,6 +60,8 @@ interface BootstrapAuthorizationRow {
 const bodyLimitBytes = 4 * 1024;
 const bootstrapTokenPattern = /^[A-Za-z0-9_-]{40,160}$/;
 const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
+const provisioningIdempotencyKeyPattern =
+  /^[A-Za-z0-9][A-Za-z0-9_.:-]{15,127}$/;
 const planPromise = compileDemoSeed(demoSeedSource);
 
 function parsedJson(context: Context<AppContext>): Promise<unknown> {
@@ -228,6 +237,52 @@ function resetFailure(context: Context<AppContext>, error: unknown) {
   }
 }
 
+function roleProvisioningFailure(context: Context<AppContext>, error: unknown) {
+  if (error instanceof DemoRoleProvisioningError) {
+    const status =
+      error.code === "invalid_confirmation"
+        ? 400
+        : error.code === "missing_fixture_identity"
+          ? 409
+          : error.code === "identity_collision" ||
+              error.code === "idempotency_conflict" ||
+              error.code === "stale_fixture_fingerprint"
+            ? 409
+            : 503;
+    return errorResponse(
+      context,
+      status,
+      error.code,
+      status === 503
+        ? "Demo role provisioning is temporarily unavailable."
+        : error.message,
+    );
+  }
+  try {
+    return authFailure(context, error);
+  } catch {
+    return errorResponse(
+      context,
+      503,
+      "role_provisioning_unavailable",
+      "Demo role provisioning is temporarily unavailable.",
+    );
+  }
+}
+
+async function exactDemoEvent(context: Context<AppContext>) {
+  const eventKey = context.req.param("eventKey");
+  return context.env.DB.prepare(
+    `SELECT id, organization_id FROM p_events
+     WHERE organization_id = ?1 AND id = ?2
+       AND (id = ?3 OR slug = ?3) AND is_demo = 1
+       AND source_deleted_at IS NULL
+     LIMIT 1`,
+  )
+    .bind(demoOrganizationId, demoEventId, eventKey)
+    .first<{ id: string; organization_id: string }>();
+}
+
 export function registerDemoRoutes(app: Hono<AppContext>): void {
   app.use(
     "/api/internal/demo/bootstrap",
@@ -244,6 +299,19 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
   );
   app.use(
     "/api/events/:eventKey/demo/reset",
+    bodyLimit({
+      maxSize: bodyLimitBytes,
+      onError: (context) =>
+        errorResponse(
+          context,
+          413,
+          "request_too_large",
+          "The request body is too large.",
+        ),
+    }),
+  );
+  app.use(
+    "/api/events/:eventKey/demo/role-identities/*",
     bodyLimit({
       maxSize: bodyLimitBytes,
       onError: (context) =>
@@ -418,16 +486,7 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
         session,
         context.req.header("X-CSRF-Token") ?? null,
       );
-      const eventKey = context.req.param("eventKey");
-      const event = await context.env.DB.prepare(
-        `SELECT id, organization_id FROM p_events
-         WHERE organization_id = ?1 AND id = ?2
-           AND (id = ?3 OR slug = ?3) AND is_demo = 1
-           AND source_deleted_at IS NULL
-         LIMIT 1`,
-      )
-        .bind(demoOrganizationId, demoEventId, eventKey)
-        .first<{ id: string; organization_id: string }>();
+      const event = await exactDemoEvent(context);
       if (!event) {
         return errorResponse(
           context,
@@ -506,4 +565,157 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
       return resetFailure(context, error);
     }
   });
+
+  app.get(
+    "/api/events/:eventKey/demo/role-identities/plan",
+    async (context) => {
+      try {
+        const authentication = authService(context);
+        const session = await authentication.authenticate(
+          sessionToken(context),
+        );
+        const event = await exactDemoEvent(context);
+        if (!event) {
+          return errorResponse(
+            context,
+            404,
+            "not_demo",
+            "The requested demo event does not exist.",
+          );
+        }
+        const access = await loadEventAccess(
+          context.env.DB,
+          session.user,
+          event.organization_id,
+          event.id,
+        );
+        if (!hasEventPermission(access, "organization:manage")) {
+          return errorResponse(
+            context,
+            403,
+            "not_privileged",
+            "Demo role provisioning requires an organization owner.",
+          );
+        }
+        const plan = await new DemoRoleProvisioningService({
+          database: context.env.DB,
+          hashPepper: context.env.AUTH_HASH_PEPPER,
+        }).plan();
+        return context.json(demoRoleProvisioningPlanResponseSchema.parse(plan));
+      } catch (error) {
+        return roleProvisioningFailure(context, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/events/:eventKey/demo/role-identities/provision",
+    async (context) => {
+      if (!isFeatureEnabled(context.env.FEATURE_FLAGS, "writes")) {
+        return errorResponse(
+          context,
+          503,
+          "writes_disabled",
+          "Changes are temporarily disabled in this environment.",
+        );
+      }
+      if (!requireSameOrigin(context)) {
+        return errorResponse(
+          context,
+          403,
+          "invalid_origin",
+          "This request must originate from OpenSession.",
+        );
+      }
+      const request = demoRoleProvisioningRequestSchema.safeParse(
+        await parsedJson(context),
+      );
+      const commandId = context.req.header("Idempotency-Key") ?? "";
+      if (
+        !request.success ||
+        !provisioningIdempotencyKeyPattern.test(commandId)
+      ) {
+        return errorResponse(
+          context,
+          400,
+          "invalid_request",
+          "The exact demo role contract and one valid idempotency key are required.",
+        );
+      }
+
+      try {
+        const authentication = authService(context);
+        const session = await authentication.authenticate(
+          sessionToken(context),
+        );
+        await authentication.verifyCsrf(
+          session,
+          context.req.header("X-CSRF-Token") ?? null,
+        );
+        const event = await exactDemoEvent(context);
+        if (!event) {
+          return errorResponse(
+            context,
+            404,
+            "not_demo",
+            "The requested demo event does not exist.",
+          );
+        }
+        const access = await loadEventAccess(
+          context.env.DB,
+          session.user,
+          event.organization_id,
+          event.id,
+        );
+        if (!hasEventPermission(access, "organization:manage")) {
+          return errorResponse(
+            context,
+            403,
+            "not_privileged",
+            "Demo role provisioning requires an organization owner.",
+          );
+        }
+        const limited = await requireAbuseCapacity(
+          context,
+          "demo_identity_provisioning",
+          {
+            event: event.id,
+            identity: session.user.id,
+            ip: context.req.header("CF-Connecting-IP") ?? null,
+          },
+        );
+        if (limited) return limited;
+        const response = await new DemoRoleProvisioningService({
+          database: context.env.DB,
+          hashPepper: context.env.AUTH_HASH_PEPPER,
+        }).provision({
+          actorId: session.user.id,
+          commandId,
+          request: request.data,
+        });
+        emitOperationalLog("info", context.env, {
+          event: "demo.role_identities.provisioned",
+          event_id: event.id,
+          job_id: commandId,
+          organization_id: event.organization_id,
+          outcome: "success",
+          request_id: context.get("requestId"),
+        });
+        return context.json(demoRoleProvisioningResponseSchema.parse(response));
+      } catch (error) {
+        emitOperationalLog("error", context.env, {
+          error_type:
+            error instanceof DemoRoleProvisioningError
+              ? error.code
+              : "unexpected_failure",
+          event: "demo.role_identities.failed",
+          event_id: demoEventId,
+          organization_id: demoOrganizationId,
+          outcome: "failure",
+          request_id: context.get("requestId"),
+        });
+        return roleProvisioningFailure(context, error);
+      }
+    },
+  );
 }

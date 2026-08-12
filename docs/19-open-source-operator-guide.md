@@ -178,6 +178,26 @@ The bootstrap accepts only an empty base or the exact managed demo roots. It cre
 
 Production additionally requires `--confirm-production` and `DEMO_PRODUCTION_CONFIRM=production`. Normal demo reset remains an authenticated in-product operation; there is no public reset or arbitrary seed endpoint.
 
+### Post-reset demo role identities
+
+The exact AI Engineer Summit demo has a separate owner-controlled post-reset step for its organizer, reviewer, and speaker sign-in aliases. The fixture intentionally contains no recipient aliases. Supply all three addresses only in the same-origin request body at runtime; do not place them in source, shell history, screenshots, logs, tickets, or deployment configuration.
+
+With email still disabled, an authenticated organization owner first reads `GET /api/events/ai-engineer-summit/demo/role-identities/plan`. The response names the three supported identities and returns the current confirmation and fixture fingerprint. Submit those values unchanged to `POST /api/events/ai-engineer-summit/demo/role-identities/provision` with the current CSRF token, one fresh `Idempotency-Key`, and exactly these entries:
+
+```json
+{
+  "confirmation": "<confirmation from plan>",
+  "fixture_fingerprint": "<fingerprint from plan>",
+  "identities": [
+    { "role": "organizer", "email": "owner+organizer@example.test" },
+    { "role": "reviewer", "email": "owner+reviewer@example.test" },
+    { "role": "speaker", "email": "owner+speaker@example.test" }
+  ]
+}
+```
+
+Replace the example addresses in process memory only. Provisioning is atomic, does not enqueue email, preserves plus tags, rejects normalized collisions or fixture drift, and returns only non-reversible identity IDs. Reusing the same idempotency key with the same contract returns the stored replay receipt; a changed contract fails closed. If a deliberate demo reset clears auth identity state, read a fresh plan and repeat this step with a fresh key before enabling the separately approved bounded send window.
+
 ## Deploy and verify
 
 Preview:

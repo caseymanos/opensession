@@ -1,7 +1,12 @@
 import { fingerprint } from "../auth/crypto";
 
 export type AbuseOperation =
-  "account" | "autosave" | "demo_reset" | "submit" | "upload_intent";
+  | "account"
+  | "autosave"
+  | "demo_identity_provisioning"
+  | "demo_reset"
+  | "submit"
+  | "upload_intent";
 export type AbuseDimension = "email" | "event" | "identity" | "ip";
 
 interface AbusePolicy {
@@ -22,6 +27,11 @@ const policies: Record<
     event: { blockSeconds: 300, limit: 1_200, windowSeconds: 60 },
     identity: { blockSeconds: 120, limit: 120, windowSeconds: 60 },
     ip: { blockSeconds: 300, limit: 240, windowSeconds: 60 },
+  },
+  demo_identity_provisioning: {
+    event: { blockSeconds: 1_800, limit: 3, windowSeconds: 900 },
+    identity: { blockSeconds: 1_800, limit: 3, windowSeconds: 900 },
+    ip: { blockSeconds: 1_800, limit: 6, windowSeconds: 900 },
   },
   demo_reset: {
     event: { blockSeconds: 900, limit: 5, windowSeconds: 900 },

@@ -344,9 +344,10 @@ export class D1ReviewOperationsRepository {
     return event;
   }
 
-  async reviewerIdForEmail(
+  async reviewerIdForIdentity(
     scope: ReviewScope,
     email: string,
+    userId: string,
   ): Promise<string | null> {
     const row = await this.#database
       .prepare(
@@ -357,7 +358,18 @@ export class D1ReviewOperationsRepository {
           AND contact.id = membership.contact_id
           AND contact.source_deleted_at IS NULL
          WHERE membership.organization_id = ?1 AND membership.event_id = ?2
-           AND contact.email_normalized = ?3 COLLATE NOCASE
+           AND (
+             contact.email_normalized = ?3 COLLATE NOCASE
+             OR EXISTS (
+               SELECT 1 FROM event_memberships identity_membership
+               WHERE identity_membership.organization_id = membership.organization_id
+                 AND identity_membership.event_id = membership.event_id
+                 AND identity_membership.user_id = ?4
+                 AND identity_membership.contact_id = membership.contact_id
+                 AND identity_membership.role = 'reviewer'
+                 AND identity_membership.revoked_at IS NULL
+             )
+           )
            AND membership.source_deleted_at IS NULL
            AND EXISTS (
              SELECT 1 FROM json_each(membership.roles_json)
@@ -365,7 +377,7 @@ export class D1ReviewOperationsRepository {
            )
          LIMIT 1`,
       )
-      .bind(scope.organizationId, scope.eventId, email)
+      .bind(scope.organizationId, scope.eventId, email, userId)
       .first<{ id: string }>();
     return row?.id ?? null;
   }

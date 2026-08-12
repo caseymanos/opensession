@@ -1005,6 +1005,7 @@ describe("D1 operational foundation", () => {
       "campaign_command_receipts",
       "campaign_message_receipts",
       "event_memberships",
+      "event_contact_identity_bindings",
       "email_delivery_attempts",
       "email_provider_events",
       "email_suppressions",
@@ -1089,6 +1090,45 @@ describe("D1 operational foundation", () => {
         "schedule_version",
       ]),
     );
+  });
+
+  it("keeps event contact identity bindings speaker-only and event-scoped", () => {
+    query(`
+      INSERT INTO users
+        (id, email_normalized, display_name, created_at, updated_at)
+      VALUES
+        ('usr_bound_speaker', 'bound-speaker@example.test', 'Bound Speaker',
+         '${timestamp}', '${timestamp}');
+
+      INSERT INTO event_contact_identity_bindings (
+        organization_id, event_id, user_id, contact_id, relationship_role,
+        created_at, updated_at
+      ) VALUES (
+        'org_one', 'evt_one', 'usr_bound_speaker', 'contact_one', 'speaker',
+        '${timestamp}', '${timestamp}'
+      );
+    `);
+    expect(
+      query<{ contact_id: string; relationship_role: string }>(`
+        SELECT contact_id, relationship_role
+        FROM event_contact_identity_bindings
+        WHERE user_id = 'usr_bound_speaker';
+      `).results,
+    ).toEqual([{ contact_id: "contact_one", relationship_role: "speaker" }]);
+    expectSqlFailure(`
+      UPDATE event_contact_identity_bindings
+      SET relationship_role = 'reviewer'
+      WHERE user_id = 'usr_bound_speaker';
+    `);
+    expectSqlFailure(`
+      INSERT INTO event_contact_identity_bindings (
+        organization_id, event_id, user_id, contact_id, relationship_role,
+        created_at, updated_at
+      ) VALUES (
+        'org_two', 'evt_two', 'usr_bound_speaker', 'contact_one', 'speaker',
+        '${timestamp}', '${timestamp}'
+      );
+    `);
   });
 
   it("stores only constrained per-key salts and supports scoped management reads", () => {

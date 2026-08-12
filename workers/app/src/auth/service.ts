@@ -1721,8 +1721,7 @@ export class AuthService {
             AND tenant_scope.status = 'active'
             AND tenant_scope.authority_ready_at IS NOT NULL
            JOIN p_contacts contact
-             ON contact.email_normalized = user.email_normalized COLLATE NOCASE
-            AND contact.organization_id = ?1
+             ON contact.organization_id = ?1
             AND contact.source_deleted_at IS NULL
            JOIN p_event_contacts event_contact
              ON event_contact.organization_id = contact.organization_id
@@ -1732,6 +1731,18 @@ export class AuthService {
             AND event_contact.source_deleted_at IS NULL
            WHERE user.email_normalized = ?3 COLLATE NOCASE
              AND user.status = 'active'
+             AND (
+               contact.email_normalized = user.email_normalized COLLATE NOCASE
+               OR EXISTS (
+                 SELECT 1 FROM event_contact_identity_bindings binding
+                 WHERE binding.organization_id = contact.organization_id
+                   AND binding.event_id = event_contact.event_id
+                   AND binding.contact_id = contact.id
+                   AND binding.user_id = user.id
+                   AND binding.relationship_role = 'speaker'
+                   AND binding.revoked_at IS NULL
+               )
+             )
              AND EXISTS (
                SELECT 1 FROM json_each(event_contact.roles_json)
                WHERE json_each.value = 'speaker'
@@ -1989,7 +2000,18 @@ export class AuthService {
           AND event_scope.source_deleted_at IS NULL
          WHERE contact.organization_id = ?1
            AND contact.id = ?3
-           AND contact.email_normalized = ?4 COLLATE NOCASE
+           AND (
+             contact.email_normalized = ?4 COLLATE NOCASE
+             OR EXISTS (
+               SELECT 1 FROM event_contact_identity_bindings binding
+               WHERE binding.organization_id = contact.organization_id
+                 AND binding.event_id = event_contact.event_id
+                 AND binding.contact_id = contact.id
+                 AND binding.user_id = ?5
+                 AND binding.relationship_role = 'speaker'
+                 AND binding.revoked_at IS NULL
+             )
+           )
            AND contact.source_deleted_at IS NULL
            AND EXISTS (
              SELECT 1 FROM json_each(event_contact.roles_json)
@@ -2002,6 +2024,7 @@ export class AuthService {
         candidate.event_id,
         candidate.contact_id,
         candidate.email_normalized,
+        candidate.user_id,
       )
       .first<{ eligible: number }>();
 
