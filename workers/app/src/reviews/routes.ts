@@ -299,12 +299,13 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
         );
       }
       const repository = new D1ReviewOperationsRepository(context.env.DB);
-      const reviewerId = await repository.reviewerIdForEmail(
+      const reviewerId = await repository.reviewerIdForIdentity(
         {
           eventId: resolution.eventId,
           organizationId: resolution.organizationId,
         },
         session.user.email,
+        session.user.id,
       );
       if (!reviewerId) {
         return simpleError(
@@ -392,12 +393,13 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
         }
         const reviewerId = await new D1ReviewOperationsRepository(
           context.env.DB,
-        ).reviewerIdForEmail(
+        ).reviewerIdForIdentity(
           {
             eventId: resolution.eventId,
             organizationId: resolution.organizationId,
           },
           session.user.email,
+          session.user.id,
         );
         if (!reviewerId) {
           return simpleError(
@@ -787,12 +789,13 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
           }
           const reviewerId = await new D1ReviewOperationsRepository(
             context.env.DB,
-          ).reviewerIdForEmail(
+          ).reviewerIdForIdentity(
             {
               eventId: resolution.eventId,
               organizationId: resolution.organizationId,
             },
             session.user.email,
+            session.user.id,
           );
           if (!reviewerId) {
             return simpleError(

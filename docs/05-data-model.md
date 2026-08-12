@@ -149,6 +149,7 @@ Run: `ID, Integration, Trigger, Mode, Cursor, Counts, Status, Started/finished, 
 - `users`
 - `organization_memberships`
 - `event_memberships`
+- `event_contact_identity_bindings`
 - `auth_sessions`
 - `magic_link_tokens`
 - `portal_grants`
@@ -157,6 +158,8 @@ Run: `ID, Integration, Trigger, Mode, Cursor, Counts, Status, Started/finished, 
 Token tables store hashes, prefix, expiry/use/revoke timestamps, never plaintext.
 
 `portal_grants` is operational authorization evidence, not a second copy of the speaker business domain. A grant binds one hashed magic-link capability to an organization, event, and contact; active uniqueness, expiry, consumption, revocation, supersession, and audit rows enforce the one-time lifecycle. The current `p_event_contacts` relationship remains the authority gate at exchange and on every portal bootstrap, so deleting or revoking the Airtable-owned relationship fails closed immediately.
+
+`event_contact_identity_bindings` maps an authenticated user to an existing Airtable-owned event contact without copying or replacing profile/program fields. Its current contract is speaker-only, event-scoped, revocable, and unique for both the user and contact relationship. Organizer and reviewer grants remain in `event_memberships`; every access path still revalidates the authoritative projected event-contact relationship where one is required.
 
 ### Delivery and consistency
 

@@ -28,6 +28,7 @@ Forward-only D1 migrations live here. Schema tickets add numbered SQL files and 
 - `0023_review_scoring.sql`: event review deadlines plus atomic draft, score, note, submit, and reopen projections.
 - `0024_review_decisions.sql`: authoritative decision snapshots for auditable organizer decisions and downstream orchestration.
 - `0025_task_reminder_workflows.sql`: durable task-reminder Workflow plans/results, eligibility snapshots, and stable delivery identities.
+- `0026_event_contact_identity_bindings.sql`: canonical event-scoped speaker identity bindings that preserve Airtable-owned contact emails and relationship authority.
 
 The guarded Cloudflare deploy command applies every pending remote migration before the Worker version and Wrangler captures a D1 backup for each migration. A failed migration is rolled back while earlier successful migrations remain applied. A later Worker deploy or smoke failure can therefore leave additive schema in place; migrations must remain forward-compatible and rollback continues to mean Worker code/configuration only.
 

@@ -138,7 +138,18 @@ export async function loadEventAccess(
            AND pc.source_deleted_at IS NULL
           WHERE pec.organization_id = ?1
             AND pec.event_id = ?2
-            AND pc.email_normalized = ?4 COLLATE NOCASE
+            AND (
+              pc.email_normalized = ?4 COLLATE NOCASE
+              OR EXISTS (
+                SELECT 1 FROM event_contact_identity_bindings binding
+                WHERE binding.organization_id = pec.organization_id
+                  AND binding.event_id = pec.event_id
+                  AND binding.contact_id = pec.contact_id
+                  AND binding.user_id = ?3
+                  AND binding.relationship_role = 'speaker'
+                  AND binding.revoked_at IS NULL
+              )
+            )
             AND pec.portal_state IN ('invited', 'active')
             AND pec.source_deleted_at IS NULL
             AND EXISTS (

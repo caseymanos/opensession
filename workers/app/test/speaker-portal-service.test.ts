@@ -348,6 +348,56 @@ describe("speaker portal authority", () => {
     expect(serialized).not.toContain('"private"');
   });
 
+  it("resolves an event-scoped bound identity without rewriting the contact", async () => {
+    const { database, portal } = await service();
+    const alias = session(
+      "usr_speaker_alias",
+      "owner+speaker@example.test",
+      "Sam Speaker",
+    );
+    await database.batch([
+      database
+        .prepare(
+          `INSERT INTO users
+            (id, email_normalized, display_name, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?4)`,
+        )
+        .bind(
+          alias.user.id,
+          alias.user.email,
+          alias.user.displayName,
+          timestamp,
+        ),
+      database
+        .prepare(
+          `INSERT INTO event_contact_identity_bindings (
+             organization_id, event_id, user_id, contact_id,
+             relationship_role, created_at, updated_at
+           ) VALUES ('org_one', 'evt_one', ?1, 'contact_one', 'speaker', ?2, ?2)`,
+        )
+        .bind(alias.user.id, timestamp),
+    ]);
+
+    try {
+      const result = await portal.bootstrap(
+        alias,
+        "open-session-summit",
+        "req_bound_alias",
+      );
+      expect(result.speaker).toEqual({
+        contact_id: "contact_one",
+        display_name: "Sam Speaker",
+        email: "speaker-one@example.test",
+      });
+      expect(result.sessions.map(({ id }) => id)).toEqual(["session_shared"]);
+    } finally {
+      await database
+        .prepare("DELETE FROM users WHERE id = ?1")
+        .bind(alias.user.id)
+        .run();
+    }
+  });
+
   it("isolates tasks and assignments between speakers in the same event", async () => {
     const { portal } = await service();
     const result = await portal.bootstrap(

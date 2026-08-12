@@ -503,13 +503,35 @@ export class D1SpeakerPortalService {
          JOIN users user
            ON user.id = ?4
           AND user.status = 'active'
-          AND user.email_normalized = contact.email_normalized COLLATE NOCASE
+          AND (
+            user.email_normalized = contact.email_normalized COLLATE NOCASE
+            OR EXISTS (
+              SELECT 1 FROM event_contact_identity_bindings binding
+              WHERE binding.organization_id = event_contact.organization_id
+                AND binding.event_id = event_contact.event_id
+                AND binding.contact_id = event_contact.contact_id
+                AND binding.user_id = user.id
+                AND binding.relationship_role = 'speaker'
+                AND binding.revoked_at IS NULL
+            )
+          )
          WHERE event_contact.organization_id = ?1
            AND event_contact.event_id = ?2
            AND event_contact.contact_id = ?3
            AND event_contact.portal_state IN ('invited', 'active')
            AND event_contact.source_deleted_at IS NULL
-           AND contact.email_normalized = ?5 COLLATE NOCASE
+           AND (
+             contact.email_normalized = ?5 COLLATE NOCASE
+             OR EXISTS (
+               SELECT 1 FROM event_contact_identity_bindings binding
+               WHERE binding.organization_id = event_contact.organization_id
+                 AND binding.event_id = event_contact.event_id
+                 AND binding.contact_id = event_contact.contact_id
+                 AND binding.user_id = ?4
+                 AND binding.relationship_role = 'speaker'
+                 AND binding.revoked_at IS NULL
+             )
+           )
            AND EXISTS (
              SELECT 1 FROM json_each(event_contact.roles_json)
              WHERE json_each.value = 'speaker'

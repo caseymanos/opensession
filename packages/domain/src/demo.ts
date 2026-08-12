@@ -6,6 +6,8 @@ export const demoEventDateLabel = "October 13–14, 2026";
 export const demoEventStartsAt = "2026-10-13T16:00:00.000Z";
 export const demoEventEndsAt = "2026-10-15T00:00:00.000Z";
 export const demoResetPhrase = "RESET AI ENGINEER SUMMIT 2026";
+export const demoRoleProvisioningConfirmation =
+  "PROVISION AI ENGINEER SUMMIT DEMO ROLES";
 export const demoSeedVersion = 1;
 
 export const demoOrganizationRootFields = {
