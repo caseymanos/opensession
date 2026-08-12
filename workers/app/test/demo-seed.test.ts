@@ -31,7 +31,7 @@ describe("deterministic demo seed compiler", () => {
 
     expect(second).toEqual(first);
     expect(first.digest).toBe(
-      "69e644c746f7a9fe4f157d3f4220da7af7cd920ae065b79527fd129299b948e6",
+      "00894df39f13e95e14822cda4c8ab3b67104087ff95027111c8e3e81b759e220",
     );
     expect(first.operations).toHaveLength(139);
     expect(first.snapshotId).toBe(`snapshot_${first.digest.slice(0, 24)}`);
@@ -230,6 +230,62 @@ describe("deterministic demo seed compiler", () => {
     expect(emails.every((address) => /\.invalid$/i.test(String(address)))).toBe(
       true,
     );
+  });
+
+  it("publishes exactly the reciprocal public-schedule speaker profiles", async () => {
+    const plan = await compileDemoSeed(demoSeedSource);
+    const counts = Object.groupBy(plan.operations, ({ table }) => table);
+    const publishedSessionIds = new Set(
+      (counts.sessions ?? [])
+        .filter(
+          ({ fields }) =>
+            fields.Public === true && fields.Status === "published",
+        )
+        .map(({ entityId }) => entityId),
+    );
+    const scheduledSessionIds = new Set(
+      (counts.schedule_slots ?? [])
+        .filter(({ fields }) => fields["Published version"] === 3)
+        .flatMap(({ dependencies }) =>
+          dependencies.filter((id) => id.startsWith("session_")),
+        ),
+    );
+    const reciprocalContactIds = new Set(
+      (counts.session_participants ?? [])
+        .filter(
+          ({ dependencies, fields }) =>
+            fields["Confirmed state"] === "confirmed" &&
+            fields.Role === "speaker" &&
+            dependencies.some(
+              (id) =>
+                publishedSessionIds.has(id) && scheduledSessionIds.has(id),
+            ),
+        )
+        .flatMap(({ dependencies }) =>
+          dependencies.filter((id) => id.startsWith("contact_")),
+        ),
+    );
+    const publishedProfiles = (counts.contacts ?? []).filter(
+      ({ fields }) => fields["Profile publication state"] === "published",
+    );
+
+    expect([...reciprocalContactIds].sort()).toEqual([
+      "contact_speaker_01",
+      "contact_speaker_02",
+      "contact_speaker_03",
+    ]);
+    expect(publishedProfiles.map(({ entityId }) => entityId).sort()).toEqual(
+      [...reciprocalContactIds].sort(),
+    );
+    expect(
+      publishedProfiles.every(
+        ({ fields }) =>
+          typeof fields["Headshot alt text"] === "string" &&
+          String(fields["Headshot alt text"]).length > 0 &&
+          fields["Profile approved at"] === "2026-08-05T20:00:00.000Z" &&
+          fields["Profile approved by"] === "system_demo_seed",
+      ),
+    ).toBe(true);
   });
 
   it("resolves stable entity links only after authority record IDs exist", async () => {

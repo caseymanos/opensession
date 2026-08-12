@@ -20,6 +20,8 @@ export { demoEventId, demoOrganizationId, demoResetPhrase };
 const createdAt = "2026-07-01T16:00:00.000Z";
 const futureDue = "2026-08-15T23:59:00.000Z";
 const overdueDue = "2026-08-01T23:59:00.000Z";
+const publicProfileApprovedAt = "2026-08-05T20:00:00.000Z";
+const publicProfileApprovedBy = "system_demo_seed";
 
 function reference(entityId: string): DemoEntityReference {
   return { entityId, kind: "entity_reference" };
@@ -270,14 +272,24 @@ const readinessStates = [
 const speakerContacts: DemoSeedEntity[] = speakerProfiles.map(
   ([firstName, lastName, pronouns, title, company], index) => {
     const number = String(index + 1).padStart(2, "0");
+    const publicProfile = index < 3;
     return entity("contacts", `contact_speaker_${number}`, {
       Bio: `${firstName} builds dependable AI products and shares field-tested lessons.`,
       Company: company,
       "Display name": `${firstName} ${lastName}`,
       "Email normalized": `speaker-${number}@demo.opensession.invalid`,
       "First name": firstName,
-      "Headshot object key":
-        index < 3 ? `demo/${demoEventId}/headshots/speaker-${number}.png` : "",
+      ...(publicProfile
+        ? {
+            "Headshot alt text": `Portrait of ${firstName} ${lastName}`,
+            "Profile approved at": publicProfileApprovedAt,
+            "Profile approved by": publicProfileApprovedBy,
+            "Profile publication state": "published",
+          }
+        : {}),
+      "Headshot object key": publicProfile
+        ? `demo/${demoEventId}/headshots/speaker-${number}.png`
+        : "",
       "Last name": lastName,
       Organization: links(demoOrganizationId),
       Pronouns: pronouns,
