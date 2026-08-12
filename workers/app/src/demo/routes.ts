@@ -13,6 +13,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
+import { requestDatabase } from "../database.js";
 import { hasEventPermission, loadEventAccess } from "../auth/authorization.js";
 import { fingerprint, sha256Hex } from "../auth/crypto.js";
 import {
@@ -272,13 +273,14 @@ function roleProvisioningFailure(context: Context<AppContext>, error: unknown) {
 
 async function exactDemoEvent(context: Context<AppContext>) {
   const eventKey = context.req.param("eventKey");
-  return context.env.DB.prepare(
-    `SELECT id, organization_id FROM p_events
+  return requestDatabase(context)
+    .prepare(
+      `SELECT id, organization_id FROM p_events
      WHERE organization_id = ?1 AND id = ?2
        AND (id = ?3 OR slug = ?3) AND is_demo = 1
        AND source_deleted_at IS NULL
      LIMIT 1`,
-  )
+    )
     .bind(demoOrganizationId, demoEventId, eventKey)
     .first<{ id: string; organization_id: string }>();
 }
@@ -496,7 +498,7 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
         );
       }
       const access = await loadEventAccess(
-        context.env.DB,
+        requestDatabase(context),
         session.user,
         event.organization_id,
         event.id,
@@ -584,7 +586,7 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
           );
         }
         const access = await loadEventAccess(
-          context.env.DB,
+          requestDatabase(context),
           session.user,
           event.organization_id,
           event.id,
@@ -662,7 +664,7 @@ export function registerDemoRoutes(app: Hono<AppContext>): void {
           );
         }
         const access = await loadEventAccess(
-          context.env.DB,
+          requestDatabase(context),
           session.user,
           event.organization_id,
           event.id,

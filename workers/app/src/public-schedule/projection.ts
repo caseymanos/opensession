@@ -5,6 +5,8 @@ import {
   type PublicSpeakerView,
 } from "@sessionbox-killer/contracts";
 
+import type { D1QueryExecutor } from "../database.js";
+
 interface EventRow {
   brand_json: string;
   ends_at: string | null;
@@ -126,9 +128,9 @@ function speakerView(row: SpeakerRow): PublicSpeakerView {
 }
 
 export class D1PublicScheduleProjectionReader implements PublicScheduleProjectionReader {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 

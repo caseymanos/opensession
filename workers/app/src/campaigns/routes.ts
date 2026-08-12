@@ -10,6 +10,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
+import { requestDatabase } from "../database.js";
 import { hasEventPermission, loadEventAccess } from "../auth/authorization.js";
 import {
   authFailure,
@@ -83,7 +84,7 @@ async function resolveAuthorizedEvent(
   const permitted: EmailTemplateEventProjection[] = [];
   for (const candidate of candidates) {
     const access = await loadEventAccess(
-      context.env.DB,
+      requestDatabase(context),
       user,
       candidate.organizationId,
       candidate.id,
@@ -280,7 +281,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
   }
 
   app.get("/api/events/:eventKey/campaigns", async (context) => {
-    const repository = new D1CampaignRepository(context.env.DB);
+    const repository = new D1CampaignRepository(requestDatabase(context));
     try {
       const { resolution } = await authenticatedEvent(context, repository);
       if (resolution.kind !== "resolved") {
@@ -320,7 +321,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
         input.error.issues[0]?.message ?? "The preview request is invalid.",
       );
     }
-    const repository = new D1CampaignRepository(context.env.DB);
+    const repository = new D1CampaignRepository(requestDatabase(context));
     try {
       const { resolution, session } = await authenticatedEvent(
         context,
@@ -363,7 +364,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
         input.error.issues[0]?.message ?? "The confirmation is invalid.",
       );
     }
-    const repository = new D1CampaignRepository(context.env.DB);
+    const repository = new D1CampaignRepository(requestDatabase(context));
     try {
       const { resolution, session } = await authenticatedEvent(
         context,
@@ -415,7 +416,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
           "The provider acceptance command is invalid.",
         );
       }
-      const repository = new D1CampaignRepository(context.env.DB);
+      const repository = new D1CampaignRepository(requestDatabase(context));
       try {
         const config = parseEmailDeliveryConfig(
           context.env.EMAIL_DELIVERY_CONFIG,
@@ -434,7 +435,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
           return eventFailure(context, resolution);
         }
         const access = await loadEventAccess(
-          context.env.DB,
+          requestDatabase(context),
           session.user,
           resolution.event.organizationId,
           resolution.event.id,
@@ -491,7 +492,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
           "The campaign was not found in this event.",
         );
       }
-      const repository = new D1CampaignRepository(context.env.DB);
+      const repository = new D1CampaignRepository(requestDatabase(context));
       try {
         const { resolution } = await authenticatedEvent(context, repository);
         if (resolution.kind !== "resolved") {
@@ -537,7 +538,7 @@ export function registerCampaignRoutes(app: Hono<AppContext>): void {
             : (input.error.issues[0]?.message ?? "The replay is invalid."),
         );
       }
-      const repository = new D1CampaignRepository(context.env.DB);
+      const repository = new D1CampaignRepository(requestDatabase(context));
       try {
         const { resolution, session } = await authenticatedEvent(
           context,

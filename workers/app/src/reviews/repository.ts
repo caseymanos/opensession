@@ -12,6 +12,8 @@ import {
   type ReviewerAssignmentListResponse,
 } from "@sessionbox-killer/contracts";
 
+import type { D1QueryExecutor } from "../database.js";
+
 import { safeSpeakerPortalBrand } from "../portal/brand.js";
 
 interface ReviewScope {
@@ -193,9 +195,9 @@ function listAnswer(value: unknown): string[] {
 }
 
 export class D1ReviewOperationsRepository {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 

@@ -3,6 +3,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context.js";
+import { requestDatabase } from "../database.js";
 import { hasEventPermission, loadEventAccess } from "../auth/authorization.js";
 import {
   authFailure,
@@ -56,20 +57,22 @@ async function resolveAccess(
   }
   const authentication = authService(context);
   const session = await authentication.authenticate(sessionToken(context));
-  const event = await context.env.DB.prepare(
-    `SELECT event.id, event.organization_id, event.slug
+  const database = requestDatabase(context);
+  const event = await database
+    .prepare(
+      `SELECT event.id, event.organization_id, event.slug
      FROM p_events AS event
      JOIN tenant_registry AS tenant
        ON tenant.organization_id = event.organization_id
       AND tenant.status = 'active'
      WHERE (event.id = ? OR event.slug = ?) AND event.source_deleted_at IS NULL
      ORDER BY CASE WHEN event.id = ? THEN 0 ELSE 1 END LIMIT 1`,
-  )
+    )
     .bind(eventKey, eventKey, eventKey)
     .first<{ id: string; organization_id: string; slug: string }>();
   if (!event) return null;
   const access = await loadEventAccess(
-    context.env.DB,
+    database,
     session.user,
     event.organization_id,
     event.id,

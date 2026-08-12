@@ -8,10 +8,12 @@ import { bodyLimit } from "hono/body-limit";
 import { getCookie } from "hono/cookie";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import { createOpaqueToken } from "../auth/crypto";
 import {
   authFailure,
   authService,
+  publicAuthService,
   requestMetadata,
   requireSameOrigin,
   sessionToken,
@@ -155,7 +157,7 @@ export function registerSpeakerPortalRoutes(app: Hono<AppContext>): void {
         context.env.DB,
       ).resolve(slug.data);
       if (event) {
-        const result = await authService(context).requestMagicLink(
+        const result = await publicAuthService(context).requestMagicLink(
           {
             email: input.data.email,
             event_id: event.eventId,
@@ -215,7 +217,7 @@ export function registerSpeakerPortalRoutes(app: Hono<AppContext>): void {
         sessionToken(context),
       );
       const result = await new D1SpeakerPortalService({
-        database: context.env.DB,
+        database: requestDatabase(context),
       }).bootstrap(session, slug.data, context.get("requestId"));
       return context.json(result);
     } catch (error) {

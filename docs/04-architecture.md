@@ -1,6 +1,6 @@
 # Cloudflare/Airtable architecture
 
-Status: current through Airtable schema v10 and D1 migration `0025_task_reminder_workflows.sql` at the 2026-08-11 release-candidate base. Provider and optional integration gates are called out explicitly below.
+Status: current through Airtable schema v10 and D1 migration `0026_event_contact_identity_bindings.sql` at the 2026-08-12 release-candidate base. Provider and optional integration gates are called out explicitly below.
 
 ## Decision summary
 
@@ -75,6 +75,8 @@ Constraints:
 ### D1: auth, operations, and fast projection
 
 Stores users, memberships, sessions/magic links, API key hashes, webhook configs/deliveries, outbox/jobs, idempotency responses, audit events, provider delivery state, demo reset state, and normalized read models used by dashboard/agenda/public pages.
+
+Protected browser requests lazily create one D1 Sessions API context with `DB.withSession("first-primary")`. Authentication, event lookup, active membership/contact relationships, and other identity-dependent authorization reads reuse that exact request-local `D1DatabaseSession`. Per the [D1 Sessions API](https://developers.cloudflare.com/d1/worker-api/d1-database/#withsession), the first query is served by the primary and later queries are sequentially consistent with the session bookmark, so a protected request cannot authenticate against one unconstrained database version and authorize against an older one. This is a primary-anchored sequential-consistency guarantee, not a multi-statement snapshot transaction. Anonymous public projection routes continue to use the ordinary binding and do not create a primary session.
 
 Projection rules:
 

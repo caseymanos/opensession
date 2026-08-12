@@ -10,6 +10,8 @@ import {
   type SpeakerProfileResponse,
 } from "@sessionbox-killer/contracts";
 
+import type { D1QueryExecutor } from "../database.js";
+
 import { getBaseAuthority } from "../authority/binding.js";
 import {
   AuthorityCommandFailedError,
@@ -136,7 +138,7 @@ export class SpeakerProfileError extends Error {
 
 export interface SpeakerProfileServiceOptions {
   readonly bucket: R2Bucket;
-  readonly database: D1Database;
+  readonly database: D1QueryExecutor;
   readonly environment: Env;
   readonly now?: () => Date;
 }
@@ -273,7 +275,7 @@ function authorityError(error: unknown, expectedVersion: number): never {
 
 export class SpeakerProfileService {
   readonly #bucket: R2Bucket;
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
   readonly #environment: Env;
   readonly #now: () => Date;
   readonly #eventResolver: D1SpeakerPortalEventResolver;

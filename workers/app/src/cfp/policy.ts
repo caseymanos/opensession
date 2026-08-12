@@ -2,6 +2,8 @@ import {
   publicCfpConfigurationResponseSchema,
   type PublicCfpConfigurationResponse,
 } from "@sessionbox-killer/contracts";
+
+import type { D1QueryExecutor } from "../database.js";
 import {
   resolveCfpTrackRoute,
   validateCfpRules,
@@ -251,9 +253,9 @@ function assertValidTimezone(timezone: string): void {
 }
 
 export class D1PublicCfpPolicyReader {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 

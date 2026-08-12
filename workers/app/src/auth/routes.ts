@@ -22,6 +22,7 @@ import { createOpaqueToken } from "./crypto";
 import {
   authFailure,
   authService,
+  publicAuthService,
   requestMetadata,
   requireSameOrigin,
   sessionCookieName,
@@ -245,7 +246,7 @@ export function registerAuthRoutes(app: Hono<AppContext>): void {
       }
       result =
         !input.data.event_slug || registerUnprivilegedUser
-          ? await authService(context).requestMagicLink(
+          ? await publicAuthService(context).requestMagicLink(
               magicLinkInput,
               requestMetadata(context),
               browserBindingToken,
@@ -321,7 +322,7 @@ export function registerAuthRoutes(app: Hono<AppContext>): void {
     }
 
     try {
-      const result = await authService(context).exchangeMagicLink(
+      const result = await publicAuthService(context).exchangeMagicLink(
         input.data.token,
         getCookie(context, authAttemptCookieName, "host") ?? null,
         requestMetadata(context),

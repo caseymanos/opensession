@@ -21,6 +21,7 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase } from "../database.js";
 import {
   hasEventPermission,
   loadEventAccess,
@@ -57,8 +58,10 @@ async function resolveAuthorizedEvent(
   user: { email: string; id: string },
   permission: EventPermission,
 ): Promise<EventResolution> {
-  const candidates = await context.env.DB.prepare(
-    `SELECT event.id, event.organization_id, event.slug
+  const database = requestDatabase(context);
+  const candidates = await database
+    .prepare(
+      `SELECT event.id, event.organization_id, event.slug
      FROM p_events AS event
      JOIN tenant_registry AS tenant
        ON tenant.organization_id = event.organization_id
@@ -69,7 +72,7 @@ async function resolveAuthorizedEvent(
      ORDER BY CASE WHEN event.id = ?1 THEN 0 ELSE 1 END,
               event.organization_id
      LIMIT 33`,
-  )
+    )
     .bind(eventKey)
     .all<EventCandidate>();
   if (candidates.results.length === 0) return { kind: "not_found" };
@@ -77,7 +80,7 @@ async function resolveAuthorizedEvent(
   const permitted: EventCandidate[] = [];
   for (const candidate of candidates.results) {
     const access = await loadEventAccess(
-      context.env.DB,
+      database,
       user,
       candidate.organization_id,
       candidate.id,

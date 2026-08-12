@@ -18,6 +18,7 @@ import {
   type DetectedUploadContentType,
   uploadPolicyError,
 } from "./policy";
+import type { D1QueryExecutor } from "../database.js";
 import { isPptxArchive } from "./pptx";
 
 const uploadCapabilityLifetimeMs = 5 * 60 * 1000;
@@ -145,7 +146,7 @@ export interface DownloadedUpload {
 
 export interface UploadServiceOptions {
   readonly bucket: R2Bucket;
-  readonly database: D1Database;
+  readonly database: D1QueryExecutor;
   readonly now?: () => Date;
   readonly tokenFactory?: () => string;
 }
@@ -192,7 +193,7 @@ function metadataMatches(
 
 export class UploadService {
   readonly #bucket: R2Bucket;
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
   readonly #now: () => Date;
   readonly #tokenFactory: () => string;
 

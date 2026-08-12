@@ -5,6 +5,8 @@ import {
   type PublicCfpOwnedDraft,
   type PublicCfpOwnedSubmission,
 } from "@sessionbox-killer/contracts";
+
+import type { D1QueryExecutor } from "../database.js";
 import {
   evaluateCfpRules,
   resolveCfpTrackRoute,
@@ -246,9 +248,9 @@ function ownedSubmission(row: OwnedDraftRow): PublicCfpOwnedSubmission {
 }
 
 export class D1OwnedCfpDraftReader {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 
@@ -488,7 +490,7 @@ function normalizedParticipants(
 }
 
 async function contactRows(
-  database: D1Database,
+  database: D1QueryExecutor,
   organizationId: string,
   emails: readonly string[],
 ): Promise<Map<string, ContactRow>> {
@@ -525,7 +527,7 @@ async function derivedId(prefix: string, value: string): Promise<string> {
 }
 
 export async function cfpContactIdForEmail(
-  database: D1Database,
+  database: D1QueryExecutor,
   organizationId: string,
   email: string,
 ): Promise<string> {
@@ -559,9 +561,9 @@ function contactReference(
 }
 
 export class D1CfpSubmissionCompiler {
-  readonly #database: D1Database;
+  readonly #database: D1QueryExecutor;
 
-  constructor(database: D1Database) {
+  constructor(database: D1QueryExecutor) {
     this.#database = database;
   }
 

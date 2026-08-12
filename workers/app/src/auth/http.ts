@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 
 import type { AppContext } from "../app-context";
+import { requestDatabase, type D1QueryExecutor } from "../database.js";
 import { isFeatureEnabled } from "../features";
 import { AuthError, AuthService } from "./service";
 
@@ -14,13 +15,24 @@ export function requestMetadata(context: Context<AppContext>) {
   };
 }
 
-export function authService(context: Context<AppContext>) {
+function createAuthService(
+  context: Context<AppContext>,
+  database: D1QueryExecutor,
+) {
   return new AuthService({
-    database: context.env.DB,
+    database,
     emailEnabled: isFeatureEnabled(context.env.FEATURE_FLAGS, "email"),
     emailQueue: context.env.EMAIL_QUEUE,
     hashPepper: context.env.AUTH_HASH_PEPPER,
   });
+}
+
+export function authService(context: Context<AppContext>) {
+  return createAuthService(context, requestDatabase(context));
+}
+
+export function publicAuthService(context: Context<AppContext>) {
+  return createAuthService(context, context.env.DB);
 }
 
 export function sessionToken(context: Context<AppContext>) {
