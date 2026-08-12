@@ -35,6 +35,28 @@ export interface QueueMeasurement {
   queueName: string;
 }
 
+export interface AuthorityScanEvent {
+  eventType:
+    | "authority.full_scan.completed"
+    | "authority.full_scan.failed"
+    | "authority.full_scan.started";
+  jobId: string;
+  occurredAt: string;
+}
+
+export interface ProductionWriteWindowReceipt {
+  activatedAt: string;
+  environment: "production";
+  plannedEndAt: string;
+  plannedStartAt: string;
+  scanCron: string;
+  schemaVersion: 1;
+  sourceCommit: string;
+  sourceTree: string;
+  versionId: string;
+  workerName: string;
+}
+
 export interface WorkerResourceFingerprint {
   name: string;
   resource: string;
@@ -57,6 +79,14 @@ const versionIdPattern = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const queueIdPattern = /^[a-f\d]{32}$/i;
 const gitObjectPattern = /^[a-f\d]{40}$/i;
 const scriptEtagPattern = /^[a-f\d]{64}$/i;
+const authorityScanJobPattern = /^authority_scan_[0-9]{12}$/;
+const authorityScanEvents = new Set<AuthorityScanEvent["eventType"]>([
+  "authority.full_scan.completed",
+  "authority.full_scan.failed",
+  "authority.full_scan.started",
+]);
+export const productionWriteWindowMaximumDurationMs = 10 * 60 * 1_000;
+export const productionWriteWindowSafetyMarginMs = 2 * 60 * 1_000;
 const dangerousFlags = [
   "ai",
   "embeds",
@@ -73,6 +103,289 @@ const resourceTypes = new Set([
   "r2_bucket",
   "workflow",
 ]);
+
+export function productionReleaseTransition(
+  activeWrites: unknown,
+  targetWrites: unknown,
+): "locked" | "relock" | "writable" {
+  if (typeof activeWrites !== "boolean" || typeof targetWrites !== "boolean") {
+    throw new Error("Production release requires an explicit writes flag.");
+  }
+  if (targetWrites) return "writable";
+  return activeWrites ? "relock" : "locked";
+}
+
+export function getHourlyCronMinute(cron: string): number {
+  const match = /^(\d{1,2}) \* \* \* \*$/.exec(cron);
+  const minute = Number(match?.[1]);
+  if (!match || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    throw new Error(
+      "Authority scan must use one machine-readable hourly cron.",
+    );
+  }
+  return minute;
+}
+
+export function assertProductionWriteWindow(options: {
+  cron: string;
+  now: Date;
+  plannedEndAt: string;
+  plannedStartAt: string;
+}): void {
+  const start = parseTimestamp(options.plannedStartAt, "start");
+  const end = parseTimestamp(options.plannedEndAt, "end");
+  const now = options.now.getTime();
+  if (!Number.isFinite(now)) {
+    throw new Error("Production writes window clock is invalid.");
+  }
+  if (start > now + 60_000 || start < now - 60_000) {
+    throw new Error(
+      "Production writes window must start within one minute of the current UTC clock.",
+    );
+  }
+  const duration = end - start;
+  if (duration <= 0 || duration > productionWriteWindowMaximumDurationMs) {
+    throw new Error(
+      "Production writes window must be positive and at most 10 minutes.",
+    );
+  }
+
+  const minute = getHourlyCronMinute(options.cron);
+  const guardedStart = start - productionWriteWindowSafetyMarginMs;
+  const guardedEnd = end + productionWriteWindowSafetyMarginMs;
+  const firstHour = Math.floor(guardedStart / 3_600_000) * 3_600_000;
+  for (let hour = firstHour; hour <= guardedEnd; hour += 3_600_000) {
+    const cronMinuteStart = hour + minute * 60_000;
+    const cronMinuteEnd = cronMinuteStart + 60_000;
+    if (guardedStart <= cronMinuteEnd && guardedEnd >= cronMinuteStart) {
+      throw new Error(
+        `Production writes window plus two-minute safety margins overlaps ${String(minute).padStart(2, "0")} * * * * UTC.`,
+      );
+    }
+  }
+}
+
+export function cronFireTimesBetween(options: {
+  cron: string;
+  endAt: string;
+  startAt: string;
+}): string[] {
+  const start = parseTimestamp(options.startAt, "start");
+  const end = parseTimestamp(options.endAt, "end");
+  if (end < start || end - start > 24 * 60 * 60 * 1_000) {
+    throw new Error(
+      "Production relock interval is invalid or exceeds 24 hours.",
+    );
+  }
+  const minute = getHourlyCronMinute(options.cron);
+  const result: string[] = [];
+  const firstHour = Math.floor(start / 3_600_000) * 3_600_000;
+  for (let hour = firstHour; hour <= end; hour += 3_600_000) {
+    const scheduledAt = hour + minute * 60_000;
+    if (scheduledAt >= start && scheduledAt <= end) {
+      result.push(new Date(scheduledAt).toISOString());
+    }
+  }
+  return result;
+}
+
+export function parseProductionWriteWindowReceipt(
+  value: unknown,
+): ProductionWriteWindowReceipt {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.environment !== "production" ||
+    typeof value.workerName !== "string" ||
+    !versionIdPattern.test(String(value.versionId)) ||
+    !gitObjectPattern.test(String(value.sourceCommit)) ||
+    !gitObjectPattern.test(String(value.sourceTree)) ||
+    !isTimestamp(value.plannedStartAt) ||
+    !isTimestamp(value.plannedEndAt) ||
+    !isTimestamp(value.activatedAt) ||
+    typeof value.scanCron !== "string"
+  ) {
+    throw new Error("Production writes window receipt is invalid.");
+  }
+  assertProductionWriteWindow({
+    cron: value.scanCron,
+    now: new Date(value.plannedStartAt),
+    plannedEndAt: value.plannedEndAt,
+    plannedStartAt: value.plannedStartAt,
+  });
+  return value as unknown as ProductionWriteWindowReceipt;
+}
+
+export function assertProductionWriteWindowReceipt(options: {
+  activeVersionId: string;
+  cron: string;
+  receipt: ProductionWriteWindowReceipt;
+  workerName: string;
+}): void {
+  if (
+    options.receipt.versionId !== options.activeVersionId ||
+    options.receipt.workerName !== options.workerName ||
+    options.receipt.scanCron !== options.cron
+  ) {
+    throw new Error(
+      "Production writes window receipt does not match the active Worker and scan schedule.",
+    );
+  }
+}
+
+export function parseAuthorityScanEvents(value: unknown): AuthorityScanEvent[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Authority scan telemetry is invalid.");
+  }
+  return value.map((event) => {
+    if (
+      !isRecord(event) ||
+      !authorityScanEvents.has(
+        event.eventType as AuthorityScanEvent["eventType"],
+      ) ||
+      typeof event.jobId !== "string" ||
+      !authorityScanJobPattern.test(event.jobId) ||
+      !isTimestamp(event.occurredAt)
+    ) {
+      throw new Error("Authority scan telemetry is invalid.");
+    }
+    return event as unknown as AuthorityScanEvent;
+  });
+}
+
+export async function waitForProductionRelock(options: {
+  baseline: QueueBaselineReceipt;
+  expectedEnvironment: "production";
+  expectedQueueNames: string[];
+  expectedScanTimes: string[];
+  maxBaselineAgeMs: number;
+  now: () => Date;
+  pollIntervalMs: number;
+  readQueues: () => Promise<QueueMeasurement[]>;
+  readScanEvents: () => Promise<AuthorityScanEvent[]>;
+  sleep: (milliseconds: number) => Promise<void>;
+  timeoutMs: number;
+}): Promise<{ scans: AuthorityScanEvent[]; queues: QueueMeasurement[] }> {
+  if (
+    !Number.isInteger(options.pollIntervalMs) ||
+    options.pollIntervalMs < 1 ||
+    !Number.isInteger(options.timeoutMs) ||
+    options.timeoutMs < options.pollIntervalMs
+  ) {
+    throw new Error("Production relock polling bounds are invalid.");
+  }
+  const startedAt = options.now().getTime();
+  if (!Number.isFinite(startedAt)) {
+    throw new Error("Production relock clock is invalid.");
+  }
+  const deadline = startedAt + options.timeoutMs;
+  let previousQueues: QueueMeasurement[] | null = null;
+
+  while (true) {
+    const scans = await options.readScanEvents();
+    const scansComplete = assertAuthorityScansComplete(
+      scans,
+      options.expectedScanTimes,
+    );
+    const queues = await options.readQueues();
+    if (scansComplete) {
+      if (previousQueues) {
+        try {
+          assertQueueReleaseGate({
+            baseline: options.baseline,
+            expectedEnvironment: options.expectedEnvironment,
+            expectedQueueNames: options.expectedQueueNames,
+            first: previousQueues,
+            maxBaselineAgeMs: options.maxBaselineAgeMs,
+            now: options.now(),
+            second: queues,
+          });
+          return { queues, scans };
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            (!error.message.includes("must have zero backlog") &&
+              !error.message.includes("active ingress"))
+          ) {
+            throw error;
+          }
+          previousQueues = queues;
+        }
+      } else {
+        previousQueues = queues;
+      }
+    } else {
+      previousQueues = null;
+    }
+
+    const remaining = deadline - options.now().getTime();
+    if (remaining <= 0) {
+      throw new Error(
+        "Production relock timed out waiting for authority scan completion and Queue convergence.",
+      );
+    }
+    await options.sleep(Math.min(options.pollIntervalMs, remaining));
+  }
+}
+
+function assertAuthorityScansComplete(
+  events: AuthorityScanEvent[],
+  expectedScanTimes: string[],
+): boolean {
+  const byJob = new Map<string, Set<AuthorityScanEvent["eventType"]>>();
+  const startedByTime = new Map<string, string>();
+  for (const event of events) {
+    const types = byJob.get(event.jobId) ?? new Set();
+    if (types.has(event.eventType)) {
+      throw new Error("Authority scan telemetry contains duplicate events.");
+    }
+    types.add(event.eventType);
+    byJob.set(event.jobId, types);
+    if (event.eventType === "authority.full_scan.started") {
+      if (startedByTime.has(event.occurredAt)) {
+        throw new Error("Authority scan telemetry contains duplicate starts.");
+      }
+      startedByTime.set(event.occurredAt, event.jobId);
+    }
+  }
+
+  for (const [jobId, types] of byJob) {
+    if (types.has("authority.full_scan.failed")) {
+      throw new Error(
+        `Authority scan ${jobId} failed before production relock.`,
+      );
+    }
+  }
+
+  const requiredJobs = expectedScanTimes.map((scheduledAt) =>
+    startedByTime.get(scheduledAt),
+  );
+  if (requiredJobs.some((jobId) => !jobId)) return false;
+  for (const [jobId, types] of byJob) {
+    if (
+      types.has("authority.full_scan.started") &&
+      !types.has("authority.full_scan.completed")
+    ) {
+      return false;
+    }
+    if (!types.has("authority.full_scan.started")) {
+      throw new Error(`Authority scan ${jobId} has no start evidence.`);
+    }
+  }
+  return requiredJobs.every((jobId) =>
+    byJob.get(jobId ?? "")?.has("authority.full_scan.completed"),
+  );
+}
+
+function parseTimestamp(value: string, label: string): number {
+  const timestamp = Date.parse(value);
+  if (!value.endsWith("Z") || !Number.isFinite(timestamp)) {
+    throw new Error(
+      `Production writes window ${label} must be a UTC timestamp.`,
+    );
+  }
+  return timestamp;
+}
 
 export function parseLockedLkgReceipt(value: unknown): LockedLkgReceipt {
   if (

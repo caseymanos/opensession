@@ -23,6 +23,7 @@ import { ResendEmailDeliveryProvider } from "./email/provider.js";
 import { registerEmailWebhookRoutes } from "./email/routes.js";
 import { registerEmailTemplateRoutes } from "./email-templates/routes.js";
 import {
+  durableOperationalEventStatement,
   elapsedMilliseconds,
   emitOperationalLog,
   pruneExpiredOperationalEvents,
@@ -624,13 +625,30 @@ const worker = {
           }),
       );
       if (isFeatureEnabled(environment.FEATURE_FLAGS, "writes")) {
+        const authorityScanStartedAt = performance.now();
+        const authorityScanJobId = `authority_scan_${scheduledAt
+          .toISOString()
+          .slice(0, 16)
+          .replaceAll(/[-T:]/g, "")}`;
         executionContext.waitUntil(
-          environment.DB.prepare(
-            `SELECT organization_id FROM tenant_registry
-             WHERE base_key = ? AND status = 'active' ORDER BY organization_id`,
-          )
-            .bind(`${environment.APP_ENV}:${environment.AIRTABLE_BASE_ID}`)
-            .all<{ organization_id: string }>()
+          Promise.resolve()
+            .then(() =>
+              durableOperationalEventStatement(environment.DB, {
+                dedupe_key: `cron:${authorityScanJobId}:started`,
+                event: "authority.full_scan.started",
+                job_id: authorityScanJobId,
+                occurred_at: scheduledAt.toISOString(),
+                outcome: "accepted",
+              }).run(),
+            )
+            .then(() =>
+              environment.DB.prepare(
+                `SELECT organization_id FROM tenant_registry
+                 WHERE base_key = ? AND status = 'active' ORDER BY organization_id`,
+              )
+                .bind(`${environment.APP_ENV}:${environment.AIRTABLE_BASE_ID}`)
+                .all<{ organization_id: string }>(),
+            )
             .then(async ({ results }) => {
               const webhook = await environment.DB.prepare(
                 `SELECT webhook_id, committed_cursor FROM airtable_webhooks
@@ -654,17 +672,49 @@ const worker = {
                   results.map(({ organization_id }) => organization_id),
                 );
               }
+              await durableOperationalEventStatement(environment.DB, {
+                dedupe_key: `cron:${authorityScanJobId}:completed`,
+                duration_ms: roundedDuration(
+                  authorityScanStartedAt,
+                  performance.now(),
+                ),
+                event: "authority.full_scan.completed",
+                job_id: authorityScanJobId,
+                outcome: "success",
+              }).run();
               emitOperationalLog("info", environment, {
                 attempt: results.length,
+                duration_ms: roundedDuration(
+                  authorityScanStartedAt,
+                  performance.now(),
+                ),
                 event: "authority.full_scan.completed",
+                job_id: authorityScanJobId,
                 outcome: "success",
               });
             })
-            .catch((error: unknown) => {
-              emitOperationalLog("error", environment, {
+            .catch(async (error: unknown) => {
+              await durableOperationalEventStatement(environment.DB, {
+                dedupe_key: `cron:${authorityScanJobId}:failed`,
+                duration_ms: roundedDuration(
+                  authorityScanStartedAt,
+                  performance.now(),
+                ),
                 error_type:
                   error instanceof Error ? error.name : "UnknownError",
                 event: "authority.full_scan.failed",
+                job_id: authorityScanJobId,
+                outcome: "failure",
+              }).run();
+              emitOperationalLog("error", environment, {
+                duration_ms: roundedDuration(
+                  authorityScanStartedAt,
+                  performance.now(),
+                ),
+                error_type:
+                  error instanceof Error ? error.name : "UnknownError",
+                event: "authority.full_scan.failed",
+                job_id: authorityScanJobId,
                 outcome: "failure",
               });
               throw error;

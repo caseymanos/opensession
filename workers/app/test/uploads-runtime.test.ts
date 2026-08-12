@@ -948,7 +948,7 @@ describe("private R2 upload runtime", () => {
     server.clearLogs();
     await server.getWorker<Env>().scheduled({
       cron: "17 * * * *",
-      scheduledTime: new Date(),
+      scheduledTime: new Date("2026-08-12T09:17:00.000Z"),
     });
     expect(
       await environment.UPLOADS.head(row?.object_key ?? "missing"),
@@ -964,7 +964,22 @@ describe("private R2 upload runtime", () => {
     expect(state).toEqual({ intent_status: "expired", status: "deleted" });
     const logs = JSON.stringify(server.getLogs());
     expect(logs).toContain("upload.cleanup.completed");
+    expect(logs).toContain("authority.full_scan.failed");
     expect(logs).not.toContain(row?.object_key ?? "missing");
+    expect(
+      await environment.DB.prepare(
+        `SELECT event_type, occurred_at FROM operational_events
+         WHERE job_id = 'authority_scan_202608120917' ORDER BY id`,
+      ).all<{ event_type: string; occurred_at: string }>(),
+    ).toMatchObject({
+      results: [
+        {
+          event_type: "authority.full_scan.started",
+          occurred_at: "2026-08-12T09:17:00.000Z",
+        },
+        { event_type: "authority.full_scan.failed" },
+      ],
+    });
     const recovered = await createIntent(
       owner,
       new TextEncoder().encode("%PDF-1.7\nquota recovered"),

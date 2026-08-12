@@ -82,7 +82,7 @@ Projection rules:
 
 - A successful command durably records the Airtable result in the base authority object before attempting the atomic D1 projection/idempotency/audit/outbox batch.
 - If D1 fails after Airtable succeeds, the repair state remains in the object that survived the failed D1 call. The response is committed-with-repair, and an object alarm retries D1 convergence without replaying Airtable.
-- `BaseAuthority` implements webhook-cursor ingestion and bounded full-scan reconciliation for organizer edits. The current public config does not attach an Airtable webhook or a reconciliation Cron, so release operations must invoke and evidence reconciliation explicitly; a future trigger must use these same methods. Reconciliation compares canonical managed-content hashes, not only app-written source versions.
+- `BaseAuthority` implements webhook-cursor ingestion and bounded full-scan reconciliation for organizer edits. The current public config invokes the same synchronization path from the hourly `:17 UTC` trigger only while writes are enabled; release tooling keeps bounded write windows away from that minute and requires durable scan-completion plus Queue-convergence evidence before relock acceptance. Reconciliation compares canonical managed-content hashes, not only app-written source versions.
 - D1 projection rows include `source_record_id`, `source_version`, `source_content_hash`, provider change cursor/time, and `projected_at`.
 
 ### R2: binary objects
