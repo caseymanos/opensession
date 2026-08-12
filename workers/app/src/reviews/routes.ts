@@ -1,6 +1,7 @@
 import {
   reviewOperationsCommandResponseSchema,
   reviewOperationsCommandSchema,
+  reviewWorkspaceAccessResponseSchema,
   reviewScoringCommandSchema,
   recordDecisionCommandSchema,
 } from "@sessionbox-killer/contracts";
@@ -226,6 +227,23 @@ export function registerReviewOperationsRoutes(app: Hono<AppContext>): void {
       }),
     );
   }
+
+  app.get("/api/events/:eventKey/review-workspace", async (context) => {
+    try {
+      const { resolution } = await authenticate(context);
+      if (resolution.kind !== "resolved")
+        return resolutionError(context, resolution);
+      return context.json(
+        reviewWorkspaceAccessResponseSchema.parse({
+          surface: hasEventPermission(resolution.access, "event:manage")
+            ? "organizer"
+            : "reviewer",
+        }),
+      );
+    } catch (error) {
+      return authFailure(context, error);
+    }
+  });
 
   app.get("/api/events/:eventKey/review-operations", async (context) => {
     try {

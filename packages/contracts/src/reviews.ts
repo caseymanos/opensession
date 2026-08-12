@@ -231,6 +231,12 @@ export const reviewOperationsResponseSchema = z
   })
   .strict();
 
+export const reviewWorkspaceAccessResponseSchema = z
+  .object({
+    surface: z.enum(["organizer", "reviewer"]),
+  })
+  .strict();
+
 const reviewCommandBaseSchema = z.object({
   commandId: reviewIdentifierSchema,
   expectedVersion: z.int().nonnegative(),
@@ -398,6 +404,9 @@ export type ReviewerWorkspaceAssignment = z.infer<
 >;
 export type ReviewOperationsResponse = z.infer<
   typeof reviewOperationsResponseSchema
+>;
+export type ReviewWorkspaceAccessResponse = z.infer<
+  typeof reviewWorkspaceAccessResponseSchema
 >;
 export type ReviewOperationsCommand = z.infer<
   typeof reviewOperationsCommandSchema
