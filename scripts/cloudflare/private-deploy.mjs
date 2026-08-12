@@ -31,6 +31,8 @@ const commands = new Set([
   "rollback",
   "smoke",
   "status",
+  "verify-lkg",
+  "verify-queues",
 ]);
 const locations = new Set(["weur", "eeur", "apac", "oc", "wnam", "enam"]);
 
@@ -55,13 +57,23 @@ function validateProvisionArguments(argv) {
         );
       }
       index += 1;
-    } else if (argument === "--version-id") {
+    } else if (argument === "--lkg-receipt" || argument === "--dlq-baseline") {
       if (
-        !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(
+        !/^\.cloudflare\/[A-Za-z0-9._-]+\.json$/.test(
           arguments_[index + 1] ?? "",
         )
       ) {
-        throw new Error("Private deploy requires a valid rollback version.");
+        throw new Error(
+          "Private deploy requires an ignored Cloudflare receipt path.",
+        );
+      }
+      index += 1;
+    } else if (argument === "--queue-observation-seconds") {
+      const seconds = Number(arguments_[index + 1]);
+      if (!Number.isInteger(seconds) || seconds < 10 || seconds > 60) {
+        throw new Error(
+          "Private deploy Queue observation must be 10 to 60 seconds.",
+        );
       }
       index += 1;
     } else if (argument === "--confirm-production") {
