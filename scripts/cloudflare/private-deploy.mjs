@@ -57,7 +57,11 @@ function validateProvisionArguments(argv) {
         );
       }
       index += 1;
-    } else if (argument === "--lkg-receipt" || argument === "--dlq-baseline") {
+    } else if (
+      argument === "--lkg-receipt" ||
+      argument === "--dlq-baseline" ||
+      argument === "--writes-window-receipt"
+    ) {
       if (
         !/^\.cloudflare\/[A-Za-z0-9._-]+\.json$/.test(
           arguments_[index + 1] ?? "",
@@ -66,6 +70,15 @@ function validateProvisionArguments(argv) {
         throw new Error(
           "Private deploy requires an ignored Cloudflare receipt path.",
         );
+      }
+      index += 1;
+    } else if (
+      argument === "--writes-window-start" ||
+      argument === "--writes-window-end"
+    ) {
+      const timestamp = arguments_[index + 1] ?? "";
+      if (!timestamp.endsWith("Z") || !Number.isFinite(Date.parse(timestamp))) {
+        throw new Error("Private deploy writes-window bounds must be UTC.");
       }
       index += 1;
     } else if (argument === "--queue-observation-seconds") {

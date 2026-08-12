@@ -14,11 +14,21 @@ import {
 } from "./release.js";
 import {
   assertLockedLkgCandidate,
+  assertProductionWriteWindow,
+  assertProductionWriteWindowReceipt,
   assertQueueReleaseGate,
+  cronFireTimesBetween,
+  getHourlyCronMinute,
+  parseAuthorityScanEvents,
   parseLockedLkgReceipt,
+  parseProductionWriteWindowReceipt,
   parseQueueBaselineReceipt,
   parseWorkerVersionSafety,
+  productionReleaseTransition,
+  waitForProductionRelock,
+  type AuthorityScanEvent,
   type LockedLkgReceipt,
+  type ProductionWriteWindowReceipt,
   type QueueMeasurement,
 } from "./release-safety.js";
 
@@ -99,6 +109,7 @@ interface WranglerEnvironment extends Record<string, unknown> {
   };
   r2_buckets?: R2Config[];
   routes?: RouteConfig[];
+  triggers?: { crons?: string[] };
   vars?: Record<string, unknown>;
   workers_dev?: boolean;
 }
@@ -145,6 +156,9 @@ interface CliOptions {
   lkgReceiptPath: string | null;
   location: ResourceLocation;
   queueObservationSeconds: number;
+  writesWindowEndAt: string | null;
+  writesWindowReceiptPath: string | null;
+  writesWindowStartAt: string | null;
 }
 
 interface WranglerResult {
@@ -175,6 +189,7 @@ const verifiedEmailSender = "OpenSession <auth@updates.opensessionboard.com>";
 const monitoredEmailReplyTo = "hello@opensessionboard.com";
 const maximumProductionRecipients = 6;
 const privateDeployLauncherMarker = "opensession-private-deploy-v1";
+const productionRelockTimeoutMs = 4 * 60 * 1_000;
 const ansiEscapePattern = new RegExp(
   `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
   "g",
@@ -660,6 +675,41 @@ export function renderDeploymentConfig(
   return rendered;
 }
 
+export function getAuthorityScanCron(
+  config: WranglerConfig,
+  environment: EnvironmentName,
+): string {
+  const crons = config.env?.[environment]?.triggers?.crons;
+  if (!Array.isArray(crons)) {
+    throw new Error(`${environment} must declare Cron triggers.`);
+  }
+  const hourly = crons.filter((cron) => {
+    try {
+      getHourlyCronMinute(cron);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (hourly.length !== 1 || !hourly[0]) {
+    throw new Error(
+      `${environment} must declare exactly one hourly authority scan Cron.`,
+    );
+  }
+  return hourly[0];
+}
+
+export function getConfiguredWrites(
+  config: WranglerConfig,
+  environment: EnvironmentName,
+): boolean {
+  const flags = config.env?.[environment]?.vars?.FEATURE_FLAGS;
+  if (!isRecord(flags) || typeof flags.writes !== "boolean") {
+    throw new Error(`${environment} must declare an explicit writes flag.`);
+  }
+  return flags.writes;
+}
+
 function runWrangler(
   arguments_: string[],
   { print = false }: { print?: boolean } = {},
@@ -1013,7 +1063,9 @@ async function readOwnerReceipt(path: string): Promise<unknown> {
   return JSON.parse(await readFile(resolvedPath, "utf8"));
 }
 
-function assertReceiptGitSource(receipt: LockedLkgReceipt): void {
+function assertReceiptGitSource(
+  receipt: Pick<LockedLkgReceipt, "sourceCommit" | "sourceTree">,
+): void {
   const result = spawnSync(
     "git",
     ["rev-parse", `${receipt.sourceCommit}^{tree}`],
@@ -1152,22 +1204,17 @@ async function readQueueMeasurements(
 async function runProductionQueueGate(
   plan: ResourcePlan,
   options: CliOptions,
+  baseline?: Awaited<ReturnType<typeof readProductionQueueBaseline>>,
 ): Promise<void> {
-  if (!options.dlqBaselinePath) {
-    throw new Error(
-      "Production deploy requires --dlq-baseline with an accepted operator receipt.",
-    );
-  }
-  const baseline = parseQueueBaselineReceipt(
-    await readOwnerReceipt(options.dlqBaselinePath),
-  );
+  const acceptedBaseline =
+    baseline ?? (await readProductionQueueBaseline(options));
   const first = await readQueueMeasurements(plan);
   await new Promise((resolveDelay) =>
     setTimeout(resolveDelay, options.queueObservationSeconds * 1_000),
   );
   const second = await readQueueMeasurements(plan);
   assertQueueReleaseGate({
-    baseline,
+    baseline: acceptedBaseline,
     expectedEnvironment: plan.environment,
     expectedQueueNames: plan.queues.map(({ name }) => name),
     first,
@@ -1179,7 +1226,7 @@ async function runProductionQueueGate(
     `release-queue-gate.${plan.environment}.${Date.now()}.json`,
   );
   await writeJsonAtomic(receiptPath, {
-    baseline,
+    baseline: acceptedBaseline,
     environment: plan.environment,
     first,
     observationSeconds: options.queueObservationSeconds,
@@ -1188,6 +1235,122 @@ async function runProductionQueueGate(
     workerName: plan.workerName,
   });
   console.log(`queue-gate ${receiptPath}`);
+}
+
+async function readProductionQueueBaseline(
+  options: Pick<CliOptions, "dlqBaselinePath">,
+): Promise<ReturnType<typeof parseQueueBaselineReceipt>> {
+  if (!options.dlqBaselinePath) {
+    throw new Error(
+      "Production deploy requires --dlq-baseline with an accepted operator receipt.",
+    );
+  }
+  return parseQueueBaselineReceipt(
+    await readOwnerReceipt(options.dlqBaselinePath),
+  );
+}
+
+interface D1Execution {
+  results?: unknown[];
+  success?: boolean;
+}
+
+export function parseAuthorityScanQuery(value: string): AuthorityScanEvent[] {
+  const parsed: unknown = JSON.parse(stripAnsi(value));
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some(
+      (execution) =>
+        !isRecord(execution) ||
+        execution.success !== true ||
+        !Array.isArray(execution.results),
+    )
+  ) {
+    throw new Error("D1 returned invalid authority scan telemetry.");
+  }
+  return parseAuthorityScanEvents(
+    (parsed as D1Execution[]).flatMap((execution) => execution.results ?? []),
+  );
+}
+
+function readAuthorityScanEvents(
+  plan: ResourcePlan,
+  configPath: string,
+  sinceAt: string,
+): AuthorityScanEvent[] {
+  if (!sinceAt.endsWith("Z") || !Number.isFinite(Date.parse(sinceAt))) {
+    throw new Error("Authority scan telemetry start must be UTC.");
+  }
+  const escapedSinceAt = sinceAt.replaceAll("'", "''");
+  return parseAuthorityScanQuery(
+    runWrangler([
+      "d1",
+      "execute",
+      plan.d1.binding,
+      "--remote",
+      "--config",
+      configPath,
+      "--command",
+      `SELECT event_type AS eventType, job_id AS jobId, occurred_at AS occurredAt
+       FROM operational_events
+       WHERE event_type IN (
+         'authority.full_scan.started',
+         'authority.full_scan.completed',
+         'authority.full_scan.failed'
+       ) AND occurred_at >= '${escapedSinceAt}'
+       ORDER BY occurred_at, id`,
+      "--json",
+    ]).stdout,
+  );
+}
+
+async function runProductionRelockGate(options: {
+  baseline: ReturnType<typeof parseQueueBaselineReceipt>;
+  configPath: string;
+  plan: ResourcePlan;
+  receipt: ProductionWriteWindowReceipt;
+  relockedAt: string;
+  queueObservationSeconds: number;
+}): Promise<void> {
+  const expectedScanTimes = cronFireTimesBetween({
+    cron: options.receipt.scanCron,
+    endAt: options.relockedAt,
+    startAt: options.receipt.activatedAt,
+  });
+  const result = await waitForProductionRelock({
+    baseline: options.baseline,
+    expectedEnvironment: "production",
+    expectedQueueNames: options.plan.queues.map(({ name }) => name),
+    expectedScanTimes,
+    maxBaselineAgeMs: 6 * 60 * 60 * 1_000,
+    now: () => new Date(),
+    pollIntervalMs: options.queueObservationSeconds * 1_000,
+    readQueues: () => readQueueMeasurements(options.plan),
+    readScanEvents: async () =>
+      readAuthorityScanEvents(
+        options.plan,
+        options.configPath,
+        options.receipt.activatedAt,
+      ),
+    sleep: (milliseconds) =>
+      new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+    timeoutMs: productionRelockTimeoutMs,
+  });
+  const receiptPath = join(
+    generatedDirectory,
+    `release-relock-gate.production.${Date.now()}.json`,
+  );
+  await writeJsonAtomic(receiptPath, {
+    environment: "production",
+    expectedScanTimes,
+    queues: result.queues,
+    relockedAt: options.relockedAt,
+    scanEvents: result.scans,
+    schemaVersion: 1,
+    workerName: options.plan.workerName,
+    writesWindow: options.receipt,
+  });
+  console.log(`relock-gate ${receiptPath}`);
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -1504,6 +1667,12 @@ async function deploy(
 ): Promise<void> {
   assertProductionConfirmation(plan.environment, options);
   const previousInventory = await readInventory(plan.environment);
+  let productionTransition: "locked" | "relock" | "writable" | null = null;
+  let productionBaseline: Awaited<
+    ReturnType<typeof readProductionQueueBaseline>
+  > | null = null;
+  let scanCron: string | null = null;
+  let writeWindowReceipt: ProductionWriteWindowReceipt | null = null;
 
   if (!previousInventory) {
     throw new Error(
@@ -1521,7 +1690,68 @@ async function deploy(
   }
 
   if (plan.environment === "production") {
-    await runProductionQueueGate(plan, options);
+    const activeVersionId = getActiveVersionId(readDeployments(plan));
+    const active = activeVersionId
+      ? readWorkerVersion(plan, activeVersionId)
+      : null;
+    const targetWrites = getConfiguredWrites(config, "production");
+    productionTransition = productionReleaseTransition(
+      active?.flags.writes ?? false,
+      targetWrites,
+    );
+    productionBaseline = await readProductionQueueBaseline(options);
+
+    if (productionTransition === "writable") {
+      scanCron = getAuthorityScanCron(config, "production");
+      if (
+        !options.writesWindowStartAt ||
+        !options.writesWindowEndAt ||
+        options.writesWindowReceiptPath
+      ) {
+        throw new Error(
+          "Writable production deploy requires --writes-window-start and --writes-window-end, and cannot accept a prior window receipt.",
+        );
+      }
+      assertProductionWriteWindow({
+        cron: scanCron,
+        now: new Date(),
+        plannedEndAt: options.writesWindowEndAt,
+        plannedStartAt: options.writesWindowStartAt,
+      });
+    } else if (productionTransition === "relock") {
+      scanCron = getAuthorityScanCron(config, "production");
+      if (
+        options.writesWindowStartAt ||
+        options.writesWindowEndAt ||
+        !options.writesWindowReceiptPath
+      ) {
+        throw new Error(
+          "Production relock requires only --writes-window-receipt for the active writable version.",
+        );
+      }
+      writeWindowReceipt = parseProductionWriteWindowReceipt(
+        await readOwnerReceipt(options.writesWindowReceiptPath),
+      );
+      assertReceiptGitSource(writeWindowReceipt);
+      assertProductionWriteWindowReceipt({
+        activeVersionId: activeVersionId ?? "",
+        cron: scanCron,
+        receipt: writeWindowReceipt,
+        workerName: plan.workerName,
+      });
+    } else if (
+      options.writesWindowStartAt ||
+      options.writesWindowEndAt ||
+      options.writesWindowReceiptPath
+    ) {
+      throw new Error(
+        "Fully locked production deploy does not accept writes-window arguments.",
+      );
+    }
+
+    if (productionTransition !== "relock") {
+      await runProductionQueueGate(plan, options, productionBaseline);
+    }
   }
 
   const inventory = await writeInventory(plan, resources, previousInventory);
@@ -1556,8 +1786,57 @@ async function deploy(
     throw new Error("Wrangler did not return a deployed Worker version ID.");
   }
 
-  const smokeResults = await smokeDeployments(urls, plan.environment);
   const activeVersionId = await waitForActiveVersion(plan, deployedVersionId);
+  const activatedAt = new Date().toISOString();
+  const sourceCommit = runGit(["rev-parse", "HEAD"]);
+  const sourceTree = runGit(["rev-parse", "HEAD^{tree}"]);
+
+  if (
+    productionTransition === "writable" &&
+    scanCron &&
+    options.writesWindowStartAt &&
+    options.writesWindowEndAt
+  ) {
+    const receiptPath = join(
+      generatedDirectory,
+      `writes-window.production.${activeVersionId}.json`,
+    );
+    await writeJsonAtomic(receiptPath, {
+      activatedAt,
+      environment: "production",
+      plannedEndAt: options.writesWindowEndAt,
+      plannedStartAt: options.writesWindowStartAt,
+      scanCron,
+      schemaVersion: 1,
+      sourceCommit,
+      sourceTree,
+      versionId: activeVersionId,
+      workerName: plan.workerName,
+    } satisfies ProductionWriteWindowReceipt);
+    console.log(`writes-window ${receiptPath}`);
+    if (Date.parse(activatedAt) >= Date.parse(options.writesWindowEndAt)) {
+      throw new Error(
+        "Writable production version activated after its bounded window; relock immediately with the emitted receipt.",
+      );
+    }
+  }
+
+  if (
+    productionTransition === "relock" &&
+    productionBaseline &&
+    writeWindowReceipt
+  ) {
+    await runProductionRelockGate({
+      baseline: productionBaseline,
+      configPath,
+      plan,
+      queueObservationSeconds: options.queueObservationSeconds,
+      receipt: writeWindowReceipt,
+      relockedAt: activatedAt,
+    });
+  }
+
+  const smokeResults = await smokeDeployments(urls, plan.environment);
   const updatedInventory: Inventory = {
     ...inventory,
     generatedAt: new Date().toISOString(),
@@ -1581,8 +1860,6 @@ async function deploy(
       "The release receipt cannot identify the active deployment.",
     );
   }
-  const sourceCommit = runGit(["rev-parse", "HEAD"]);
-  const sourceTree = runGit(["rev-parse", "HEAD^{tree}"]);
   await writeJsonAtomic(
     join(
       generatedDirectory,
@@ -1753,6 +2030,9 @@ export function parseArguments(argv: string[]): CliOptions {
     lkgReceiptPath: string | null;
     location: string;
     queueObservationSeconds: number;
+    writesWindowEndAt: string | null;
+    writesWindowReceiptPath: string | null;
+    writesWindowStartAt: string | null;
   } = {
     command,
     confirmProduction: false,
@@ -1761,6 +2041,9 @@ export function parseArguments(argv: string[]): CliOptions {
     lkgReceiptPath: null,
     location: "wnam",
     queueObservationSeconds: 30,
+    writesWindowEndAt: null,
+    writesWindowReceiptPath: null,
+    writesWindowStartAt: null,
   };
 
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -1780,6 +2063,15 @@ export function parseArguments(argv: string[]): CliOptions {
       index += 1;
     } else if (argument === "--queue-observation-seconds") {
       options.queueObservationSeconds = Number(arguments_[index + 1]);
+      index += 1;
+    } else if (argument === "--writes-window-start") {
+      options.writesWindowStartAt = arguments_[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--writes-window-end") {
+      options.writesWindowEndAt = arguments_[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--writes-window-receipt") {
+      options.writesWindowReceiptPath = arguments_[index + 1] ?? null;
       index += 1;
     } else if (argument === "--confirm-production") {
       options.confirmProduction = true;
@@ -1830,6 +2122,31 @@ export function parseArguments(argv: string[]): CliOptions {
     throw new Error("verify-queues requires --dlq-baseline.");
   }
   if (
+    (options.writesWindowStartAt ||
+      options.writesWindowEndAt ||
+      options.writesWindowReceiptPath) &&
+    !(command === "deploy" && options.environment === "production")
+  ) {
+    throw new Error(
+      "Writes-window arguments are only valid with production deploy.",
+    );
+  }
+  if (
+    Boolean(options.writesWindowStartAt) !== Boolean(options.writesWindowEndAt)
+  ) {
+    throw new Error(
+      "--writes-window-start and --writes-window-end must be provided together.",
+    );
+  }
+  if (
+    options.writesWindowReceiptPath &&
+    (options.writesWindowStartAt || options.writesWindowEndAt)
+  ) {
+    throw new Error(
+      "--writes-window-receipt cannot be combined with planned window bounds.",
+    );
+  }
+  if (
     !Number.isInteger(options.queueObservationSeconds) ||
     options.queueObservationSeconds < 10 ||
     options.queueObservationSeconds > 60
@@ -1847,6 +2164,9 @@ export function parseArguments(argv: string[]): CliOptions {
     lkgReceiptPath: options.lkgReceiptPath,
     location: options.location,
     queueObservationSeconds: options.queueObservationSeconds,
+    writesWindowEndAt: options.writesWindowEndAt,
+    writesWindowReceiptPath: options.writesWindowReceiptPath,
+    writesWindowStartAt: options.writesWindowStartAt,
   };
 }
 

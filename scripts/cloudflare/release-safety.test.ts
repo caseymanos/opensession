@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertLockedLkgCandidate,
+  assertProductionWriteWindow,
+  assertProductionWriteWindowReceipt,
+  cronFireTimesBetween,
   assertQueueReleaseGate,
   parseLockedLkgReceipt,
+  parseProductionWriteWindowReceipt,
   parseQueueBaselineReceipt,
   parseWorkerVersionSafety,
+  productionReleaseTransition,
+  waitForProductionRelock,
+  type AuthorityScanEvent,
   type QueueMeasurement,
 } from "./release-safety";
 
@@ -73,6 +80,126 @@ function receipt() {
 }
 
 describe("release safety", () => {
+  it("accepts a short UTC writes window outside the configured Cron minute", () => {
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T09:20:01.000Z"),
+        plannedEndAt: "2026-08-12T09:27:00.000Z",
+        plannedStartAt: "2026-08-12T09:20:01.000Z",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T09:05:00.000Z"),
+        plannedEndAt: "2026-08-12T09:14:59.000Z",
+        plannedStartAt: "2026-08-12T09:05:00.000Z",
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects windows before, across, and on the guarded Cron boundaries", () => {
+    for (const [start, end] of [
+      ["2026-08-12T09:14:00.000Z", "2026-08-12T09:18:00.000Z"],
+      ["2026-08-12T09:10:00.000Z", "2026-08-12T09:15:00.000Z"],
+      ["2026-08-12T09:20:00.000Z", "2026-08-12T09:25:00.000Z"],
+    ] as const) {
+      expect(() =>
+        assertProductionWriteWindow({
+          cron: "17 * * * *",
+          now: new Date(start),
+          plannedEndAt: end,
+          plannedStartAt: start,
+        }),
+      ).toThrow("safety margins");
+    }
+  });
+
+  it("handles UTC clock boundaries and rejects multi-hour windows", () => {
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T09:58:00.000Z"),
+        plannedEndAt: "2026-08-12T10:05:00.000Z",
+        plannedStartAt: "2026-08-12T09:58:00.000Z",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T09:58:00.000Z"),
+        plannedEndAt: "2026-08-12T11:05:00.000Z",
+        plannedStartAt: "2026-08-12T09:58:00.000Z",
+      }),
+    ).toThrow("at most 10 minutes");
+    expect(
+      cronFireTimesBetween({
+        cron: "17 * * * *",
+        endAt: "2026-08-12T11:18:00.000Z",
+        startAt: "2026-08-12T09:16:00.000Z",
+      }),
+    ).toEqual([
+      "2026-08-12T09:17:00.000Z",
+      "2026-08-12T10:17:00.000Z",
+      "2026-08-12T11:17:00.000Z",
+    ]);
+  });
+
+  it("uses the injected clock and leaves fully locked deploys unchanged", () => {
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T10:00:00.000Z"),
+        plannedEndAt: "2026-08-12T09:27:00.000Z",
+        plannedStartAt: "2026-08-12T09:20:01.000Z",
+      }),
+    ).toThrow("current UTC clock");
+    expect(() =>
+      assertProductionWriteWindow({
+        cron: "17 * * * *",
+        now: new Date("2026-08-12T16:20:01.000Z"),
+        plannedEndAt: "2026-08-12T09:27:00.000-07:00",
+        plannedStartAt: "2026-08-12T09:20:01.000-07:00",
+      }),
+    ).toThrow("UTC timestamp");
+    expect(productionReleaseTransition(false, false)).toBe("locked");
+    expect(productionReleaseTransition(false, true)).toBe("writable");
+    expect(productionReleaseTransition(true, false)).toBe("relock");
+  });
+
+  it("validates the exact active writable version receipt", () => {
+    const window = {
+      activatedAt: "2026-08-12T09:20:30.000Z",
+      environment: "production",
+      plannedEndAt: "2026-08-12T09:27:00.000Z",
+      plannedStartAt: "2026-08-12T09:20:01.000Z",
+      scanCron: "17 * * * *",
+      schemaVersion: 1,
+      sourceCommit: "b".repeat(40),
+      sourceTree: "c".repeat(40),
+      versionId: activeVersionId,
+      workerName: "sessionbox-killer-prod",
+    } as const;
+    const parsed = parseProductionWriteWindowReceipt(window);
+    expect(parsed).toMatchObject({ versionId: activeVersionId });
+    expect(() =>
+      assertProductionWriteWindowReceipt({
+        activeVersionId: lkgVersionId,
+        cron: "17 * * * *",
+        receipt: parsed,
+        workerName: "sessionbox-killer-prod",
+      }),
+    ).toThrow("does not match");
+    expect(() =>
+      parseProductionWriteWindowReceipt({
+        ...window,
+        plannedEndAt: "2026-08-12T10:18:00.000Z",
+        plannedStartAt: "2026-08-12T10:14:00.000Z",
+      }),
+    ).toThrow("safety margins");
+  });
+
   it("accepts only the explicit fully locked LKG deployment", () => {
     const target = version(lkgVersionId);
     expect(() =>
@@ -210,7 +337,104 @@ describe("release safety", () => {
       }),
     ).toThrow("must have zero backlog");
   });
+
+  it("waits for an in-flight scan and then two converged Queue reads", async () => {
+    const baseline = freshBaseline();
+    let clock = Date.parse("2026-08-12T09:18:00.000Z");
+    let scanRead = 0;
+    let queueRead = 0;
+    const started = scanEvent("authority.full_scan.started");
+    const completed = scanEvent("authority.full_scan.completed");
+    const result = await waitForProductionRelock({
+      baseline,
+      expectedEnvironment: "production",
+      expectedQueueNames: [
+        "projection-repair-prod",
+        "projection-repair-prod-dlq",
+      ],
+      expectedScanTimes: ["2026-08-12T09:17:00.000Z"],
+      maxBaselineAgeMs: 6 * 60 * 60 * 1_000,
+      now: () => new Date(clock),
+      pollIntervalMs: 10_000,
+      readQueues: async () => {
+        queueRead += 1;
+        const current = measurements(
+          224,
+          29_764,
+          new Date(clock).toISOString(),
+        );
+        if (queueRead === 1 && current[0]) {
+          current[0] = { ...current[0], backlogCount: 1 };
+        }
+        return current;
+      },
+      readScanEvents: async () => {
+        scanRead += 1;
+        return scanRead === 1 ? [started] : [started, completed];
+      },
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      timeoutMs: 60_000,
+    });
+    expect(result.scans).toEqual([started, completed]);
+    expect(scanRead).toBe(3);
+    expect(queueRead).toBe(3);
+  });
+
+  it("fails closed when scan completion never arrives before timeout", async () => {
+    const baseline = freshBaseline();
+    let clock = Date.parse("2026-08-12T09:18:00.000Z");
+    await expect(
+      waitForProductionRelock({
+        baseline,
+        expectedEnvironment: "production",
+        expectedQueueNames: [
+          "projection-repair-prod",
+          "projection-repair-prod-dlq",
+        ],
+        expectedScanTimes: ["2026-08-12T09:17:00.000Z"],
+        maxBaselineAgeMs: 6 * 60 * 60 * 1_000,
+        now: () => new Date(clock),
+        pollIntervalMs: 10_000,
+        readQueues: async () =>
+          measurements(224, 29_764, new Date(clock).toISOString()),
+        readScanEvents: async () => [scanEvent("authority.full_scan.started")],
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+        timeoutMs: 20_000,
+      }),
+    ).rejects.toThrow("timed out");
+  });
 });
+
+function freshBaseline() {
+  return parseQueueBaselineReceipt({
+    acceptedBy: "release-owner",
+    backlogBytes: 29_764,
+    backlogCount: 224,
+    environment: "production",
+    observedAt: "2026-08-12T09:00:00.000Z",
+    oldestMessageTimestampMs: 0,
+    queueId: "b22b5dde94bd45d6a4f962c30dd2b819",
+    queueName: "projection-repair-prod-dlq",
+    schemaVersion: 1,
+  });
+}
+
+function scanEvent(
+  eventType: AuthorityScanEvent["eventType"],
+): AuthorityScanEvent {
+  return {
+    eventType,
+    jobId: "authority_scan_202608120917",
+    occurredAt:
+      eventType === "authority.full_scan.started"
+        ? "2026-08-12T09:17:00.000Z"
+        : "2026-08-12T09:18:12.000Z",
+  };
+}
 
 function measurements(
   dlqCount: number,

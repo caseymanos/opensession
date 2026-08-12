@@ -24,7 +24,7 @@ Airtable is the authoritative store for event-program business records and must 
 - Batch record operations where supported; honor `Retry-After` with jitter.
 - Stable internal ID is stored in an Airtable field and is the app's public identity; record IDs are implementation metadata.
 - Write `Source version` and `Updated at`; projection consumes only newer versions.
-- `BaseAuthority` exposes webhook-cursor and bounded full-scan reconciliation that reports created/updated/missing/divergent rows. The current public config does not claim a provider webhook or reconciliation Cron; release operations invoke and evidence the full scan explicitly.
+- `BaseAuthority` exposes webhook-cursor and bounded full-scan reconciliation that reports created/updated/missing/divergent rows. The current public config has no provider webhook; its hourly `:17 UTC` trigger invokes synchronization only while writes are enabled, and production release tooling guards that minute and requires durable completion evidence before relock acceptance.
 
 ### Operator health proof
 

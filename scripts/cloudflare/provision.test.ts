@@ -22,10 +22,13 @@ import {
   assertProductionConfirmation,
   createWranglerChildEnvironment,
   getCustomDomainUrls,
+  getAuthorityScanCron,
+  getConfiguredWrites,
   getDeploymentSmokeUrls,
   getResourcePlan,
   isMissingWorkerError,
   parseD1List,
+  parseAuthorityScanQuery,
   parseArguments,
   parseQueueList,
   parseR2List,
@@ -1070,6 +1073,72 @@ describe("Cloudflare provisioner", () => {
     ).toThrow("only valid with production deploy");
   });
 
+  it("scopes bounded writes-window inputs to production deploy", () => {
+    expect(
+      parseArguments([
+        "deploy",
+        "--environment",
+        "production",
+        "--dlq-baseline",
+        ".cloudflare/dlq.production.json",
+        "--writes-window-start",
+        "2026-08-12T09:20:01.000Z",
+        "--writes-window-end",
+        "2026-08-12T09:27:00.000Z",
+      ]),
+    ).toMatchObject({
+      writesWindowEndAt: "2026-08-12T09:27:00.000Z",
+      writesWindowReceiptPath: null,
+      writesWindowStartAt: "2026-08-12T09:20:01.000Z",
+    });
+    expect(() =>
+      parseArguments([
+        "deploy",
+        "--environment",
+        "production",
+        "--writes-window-start",
+        "2026-08-12T09:20:01.000Z",
+      ]),
+    ).toThrow("provided together");
+    expect(() =>
+      parseArguments([
+        "deploy",
+        "--environment",
+        "preview",
+        "--writes-window-receipt",
+        ".cloudflare/writes-window.production.json",
+      ]),
+    ).toThrow("only valid with production deploy");
+  });
+
+  it("derives the scan schedule and writes state from the target config", () => {
+    const configured = isolatedConfig();
+    const production = configured.env?.production;
+    if (!production) throw new Error("Expected production config.");
+    production.triggers = { crons: ["17 3 * * *", "17 * * * *"] };
+    expect(getAuthorityScanCron(configured, "production")).toBe("17 * * * *");
+    expect(getConfiguredWrites(configured, "production")).toBe(false);
+  });
+
+  it("parses machine-readable authority scan telemetry from D1", () => {
+    expect(
+      parseAuthorityScanQuery(
+        JSON.stringify([
+          {
+            results: [
+              {
+                eventType: "authority.full_scan.started",
+                jobId: "authority_scan_202608120917",
+                occurredAt: "2026-08-12T09:17:00.000Z",
+              },
+            ],
+            success: true,
+          },
+        ]),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("accepts a read-only smoke command", () => {
     expect(parseArguments(["smoke", "--environment", "preview"])).toEqual({
       command: "smoke",
@@ -1079,6 +1148,9 @@ describe("Cloudflare provisioner", () => {
       lkgReceiptPath: null,
       location: "wnam",
       queueObservationSeconds: 30,
+      writesWindowEndAt: null,
+      writesWindowReceiptPath: null,
+      writesWindowStartAt: null,
     });
   });
 

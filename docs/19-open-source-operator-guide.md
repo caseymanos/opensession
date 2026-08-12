@@ -282,7 +282,7 @@ Airtable owns conference-program records; D1 owns the operational ledger and que
 4. `unknown`: an ambiguous provider result must be reconciled by stable command markers before another mutation.
 5. `failed`: the authority rejected or terminally failed before a committed business result.
 
-`BaseAuthority` stores provider attempts and the original response in SQLite before projection. Its alarm and the projection-repair queue call `recoverPending()`; identical retries return the stored response. Direct Airtable edits converge when webhook-cursor ingestion or the bounded full scan is invoked. The current public config does not attach an Airtable webhook or reconciliation Cron, so explicit full-scan evidence is a release gate. Protected lifecycle tampering fails closed rather than being adopted.
+`BaseAuthority` stores provider attempts and the original response in SQLite before projection. Its alarm and the projection-repair queue call `recoverPending()`; identical retries return the stored response. Direct Airtable edits converge when webhook-cursor ingestion or the bounded full scan is invoked. The public config runs that synchronization on its hourly `:17 UTC` trigger only while writes are enabled and records durable start/completion/failure telemetry. A bounded production writes window is limited to ten minutes and must remain more than the provisioner's two-minute safety margin away from the Cron minute. Relock uses the emitted version-bound window receipt and is not accepted until bounded polling proves any expected/in-flight scan completed and two Queue reads converged; timeout or missing telemetry is a hard stop. Protected lifecycle tampering fails closed rather than being adopted.
 
 ### Read-only diagnosis
 
