@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 test("organizer shell exposes the five-part information architecture", async ({
   page,
 }, testInfo) => {
-  await page.goto("/");
+  await page.goto("/app/ai-engineer-summit/home");
 
   if (testInfo.project.name === "mobile-chromium") {
     await page.getByRole("button", { name: "Open navigation" }).click();
@@ -51,7 +51,7 @@ test("mobile navigation traps focus, closes with Escape, and restores focus", as
   page,
 }) => {
   await page.setViewportSize({ width: 360, height: 800 });
-  await page.goto("/");
+  await page.goto("/app/ai-engineer-summit/home");
 
   const trigger = page.getByRole("button", { name: "Open navigation" });
   await trigger.click();
@@ -162,7 +162,7 @@ test("@judge @judge-e2e-07 demo reset requires the exact phrase and reports the 
     );
   });
 
-  await page.goto("/");
+  await page.goto("/app/ai-engineer-summit/home");
   await page.getByRole("button", { name: "Reset demo" }).click();
   const dialog = page.getByRole("dialog", { name: "Reset all demo data?" });
   const submit = dialog.getByRole("button", { name: "Reset demo data" });
@@ -211,7 +211,7 @@ test("@judge @judge-a11y workspace remains usable at a 200 percent text scale", 
   page,
 }) => {
   await page.setViewportSize({ width: 640, height: 450 });
-  await page.goto("/");
+  await page.goto("/app/ai-engineer-summit/home");
 
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(

@@ -34,6 +34,7 @@ import {
   publicScheduleProjectionSchema,
   type PublicScheduleProjection,
 } from "@sessionbox-killer/contracts";
+import { demoEventSlug } from "@sessionbox-killer/domain";
 
 import {
   publicScheduleProjectionFixture,
@@ -1211,7 +1212,12 @@ function PublicNotFound({ sessionId }: { sessionId?: string }) {
 function currentRoute() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   return {
-    eventSlug: parts[0] === "e" ? parts[1] : undefined,
+    eventSlug:
+      window.location.pathname === "/"
+        ? demoEventSlug
+        : parts[0] === "e"
+          ? parts[1]
+          : undefined,
     sessionId: parts[2] === "sessions" ? parts[3] : undefined,
   };
 }

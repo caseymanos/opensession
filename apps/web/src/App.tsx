@@ -185,6 +185,8 @@ export function App() {
     );
   } else if (window.location.pathname.startsWith("/portal/")) {
     route = <SpeakerPortal />;
+  } else if (window.location.pathname === "/") {
+    route = <PublicSchedule />;
   } else if (/^\/e\/[^/]+\/cfp\/?$/.test(window.location.pathname)) {
     route = <PublicCfpFlow />;
   } else if (

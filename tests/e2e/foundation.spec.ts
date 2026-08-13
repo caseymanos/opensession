@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("serves the organizer shell and health endpoint", async ({
+test("serves the organizer shell at its app route and health endpoint", async ({
   page,
   request,
 }, testInfo) => {
@@ -8,7 +8,7 @@ test("serves the organizer shell and health endpoint", async ({
   expect(health.ok()).toBe(true);
   await expect(health.json()).resolves.toMatchObject({ status: "ok" });
 
-  await page.goto("/");
+  await page.goto("/app/ai-engineer-summit/home");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
     "Good afternoon, Casey.",
   );
