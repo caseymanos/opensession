@@ -34,7 +34,7 @@ beforeAll(async () => {
   await worker.applyD1Migrations("DB");
   const environment = await worker.getEnv();
   const now = "2026-08-11T20:00:00.000Z";
-  const future = "2026-08-12T20:00:00.000Z";
+  const future = "2099-08-12T20:00:00.000Z";
   const sourceHash = "a".repeat(64);
   const ownerToken = `ral72-owner-${"o".repeat(40)}`;
   const viewerToken = `ral72-viewer-${"v".repeat(40)}`;

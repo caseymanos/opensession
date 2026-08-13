@@ -28,6 +28,25 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("bare domain opens the anonymous public program", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("heading", { name: "AI Engineer Summit" }),
+  ).toBeVisible();
+  await expect(page.getByText("Public version 4")).toBeVisible();
+  await expect(page.locator(".profile-chip")).toHaveCount(0);
+  await expect(
+    page.getByRole("navigation", { name: "Primary navigation" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Production demo", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("link", { name: "Organizer sign in" }),
+  ).toBeVisible();
+});
+
 test("anonymous schedule exposes only the current published projection", async ({
   context,
   page,

@@ -213,13 +213,18 @@ test("RAL-80 organizer desktop LCP remains within the repeated budget", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium");
-  const values = await measureLargestContentfulPaint(page, "/", async () => {
-    await expect(
-      page.getByRole("heading", {
-        name: /Good (?:morning|afternoon|evening), Casey\./,
-      }),
-    ).toBeVisible();
-  });
+  const organizerUrl = "/app/ai-engineer-summit/home";
+  const values = await measureLargestContentfulPaint(
+    page,
+    organizerUrl,
+    async () => {
+      await expect(
+        page.getByRole("heading", {
+          name: /Good (?:morning|afternoon|evening), Casey\./,
+        }),
+      ).toBeVisible();
+    },
+  );
   const p75 = percentile(values, 0.75);
   expect(p75).toBeLessThanOrEqual(2_500);
   const receipt = {
@@ -232,7 +237,7 @@ test("RAL-80 organizer desktop LCP remains within the repeated budget", async ({
       seed: "organizer-workspace-v1",
     },
     p75Milliseconds: p75,
-    url: "/",
+    url: organizerUrl,
     valuesMilliseconds: values,
   };
   await testInfo.attach("ral-80-organizer-desktop-lcp.json", {
