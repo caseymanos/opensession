@@ -38,7 +38,7 @@ jobs:
         run: pnpm exec vitest run --config vitest.config.ts workers/app/test/scale-resilience.test.ts --reporter=verbose
       - name: Upload scale and resilience receipt
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ral-80-scale-resilience-evidence
           path: coverage/ral-80-scale-resilience.json
